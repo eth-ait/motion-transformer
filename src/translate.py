@@ -49,10 +49,11 @@ tf.app.flags.DEFINE_integer("save_every", 1000, "How often to compute error on t
 tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
+tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 
 FLAGS = tf.app.flags.FLAGS
 
-train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, FLAGS.action,
+train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                           'out_{0}'.format(FLAGS.seq_length_out),
                                           'iterations_{0}'.format(FLAGS.iterations),
                                           FLAGS.architecture,
@@ -72,23 +73,23 @@ def create_eth_model():
 
 def create_martinez_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
-
     model = seq2seq_model.Seq2SeqModel(
-        FLAGS.architecture,
-        FLAGS.seq_length_in if not sampling else 50,
-        FLAGS.seq_length_out if not sampling else 100,
-        FLAGS.size,  # hidden layer size
-        FLAGS.num_layers,
-        FLAGS.max_gradient_norm,
-        FLAGS.batch_size,
-        FLAGS.learning_rate,
-        FLAGS.learning_rate_decay_factor,
-        summaries_dir,
-        FLAGS.loss_to_use if not sampling else "sampling_based",
-        len(actions),
-        not FLAGS.omit_one_hot,
-        FLAGS.residual_velocities,
+        architecture=FLAGS.architecture,
+        source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+        target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+        rnn_size=FLAGS.size,  # hidden layer size
+        num_layers=FLAGS.num_layers,
+        max_gradient_norm=FLAGS.max_gradient_norm,
+        batch_size=FLAGS.batch_size,
+        learning_rate=FLAGS.learning_rate,
+        learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
+        summaries_dir=summaries_dir,
+        loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+        number_of_actions=len(actions),
+        one_hot=not FLAGS.omit_one_hot,
+        residual_velocities=FLAGS.residual_velocities,
         dtype=tf.float32)
+    model.build_graph()
 
     if FLAGS.load <= 0:
         print("Creating model with fresh parameters.")
