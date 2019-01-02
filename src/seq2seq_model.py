@@ -34,6 +34,7 @@ class BaseModel(object):
         self.learning_rate = None
         self.gradient_norms = None
         self.updates = None
+        self.saver = None
 
         # Hard-coded parameters.
         self.HUMAN_SIZE = 54
@@ -43,6 +44,8 @@ class BaseModel(object):
         self.build_network()
         self.optimization_routines()
         self.summary_routines()
+        self.loss_summary = tf.summary.scalar('loss/loss', self.loss)
+        self.saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
 
     def build_network(self):
         pass
@@ -484,7 +487,6 @@ class Seq2SeqModel(BaseModel):
         super(Seq2SeqModel, self).__init__(source_seq_len=source_seq_len, target_seq_len=target_seq_len,
                                            batch_size=batch_size, max_gradient_norm=max_gradient_norm,
                                            number_of_actions=number_of_actions, one_hot=one_hot, **kwargs)
-
         self.residual_velocities = residual_velocities
         self.num_layers = num_layers
         self.dtype = dtype
@@ -511,18 +513,13 @@ class Seq2SeqModel(BaseModel):
 
         # === Transform the inputs ===
         with tf.name_scope("inputs"):
+            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
+            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
+            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
 
-            enc_in = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
-            dec_in = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
-            dec_out = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
-
-            self.encoder_inputs = enc_in
-            self.decoder_inputs = dec_in
-            self.decoder_outputs = dec_out
-
-            enc_in = tf.transpose(enc_in, [1, 0, 2])
-            dec_in = tf.transpose(dec_in, [1, 0, 2])
-            dec_out = tf.transpose(dec_out, [1, 0, 2])
+            enc_in = tf.transpose(self.encoder_inputs, [1, 0, 2])
+            dec_in = tf.transpose(self.decoder_inputs, [1, 0, 2])
+            dec_out = tf.transpose(self.decoder_outputs, [1, 0, 2])
 
             enc_in = tf.reshape(enc_in, [-1, self.input_size])
             dec_in = tf.reshape(dec_in, [-1, self.input_size])
@@ -539,9 +536,6 @@ class Seq2SeqModel(BaseModel):
         if self.residual_velocities:
             cell = rnn_cell_extensions.ResidualWrapper(cell)
 
-        # Store the outputs here
-        outputs = []
-
         # Define the loss function
         lf = None
         if self.loss_to_use == "sampling_based":
@@ -557,21 +551,14 @@ class Seq2SeqModel(BaseModel):
             # Basic RNN does not have a loop function in its API, so copying here.
             with vs.variable_scope("basic_rnn_seq2seq"):
                 _, enc_state = tf.contrib.rnn.static_rnn(cell, enc_in, dtype=tf.float32)  # Encoder
-                outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell,
-                                                                             loop_function=lf)  # Decoder
+                self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell, loop_function=lf)  # Decoder
         elif self.architecture == "tied":
-            outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell, loop_function=lf)
+            self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell, loop_function=lf)
         else:
-            raise (ValueError, "Uknown architecture: %s" % self.architecture)
-
-        self.outputs = outputs
+            raise (ValueError, "Unknown architecture: %s" % self.architecture)
 
         with tf.name_scope("loss_angles"):
-            loss_angles = tf.reduce_mean(tf.square(tf.subtract(dec_out, outputs)))
-
-        self.loss = loss_angles
-        self.loss_summary = tf.summary.scalar('loss/loss', self.loss)
-        self.saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
+            self.loss = tf.reduce_mean(tf.square(tf.subtract(dec_out, self.outputs)))
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -633,7 +620,5 @@ class Seq2SeqModel(BaseModel):
             output_feed = [self.loss,  # Loss for this batch.
                            self.outputs,
                            self.loss_summary]
-
             outputs = session.run(output_feed, input_feed)
-
             return outputs[0], outputs[1], outputs[2]  # No gradient norm, loss, outputs.

@@ -53,7 +53,24 @@ tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the 
 
 FLAGS = tf.app.flags.FLAGS
 
-train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
+experiment_name_format = "{}-{}-out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
+# Unique timestamp to distinguish experiments with the same configuration.
+experiment_timestamp = str(int(time.time()))
+experiment_name = experiment_name_format.format(experiment_timestamp,
+                                                FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
+                                                FLAGS.seq_length_out,
+                                                FLAGS.iterations,
+                                                FLAGS.architecture,
+                                                FLAGS.loss_to_use,
+                                                'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                FLAGS.num_layers,
+                                                FLAGS.size,
+                                                FLAGS.learning_rate,
+                                                'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel')
+train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
+"""
+train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, 
+                                          FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                           'out_{0}'.format(FLAGS.seq_length_out),
                                           'iterations_{0}'.format(FLAGS.iterations),
                                           FLAGS.architecture,
@@ -63,7 +80,7 @@ train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, FLAGS.action if FLAGS
                                           'size_{0}'.format(FLAGS.size),
                                           'lr_{0}'.format(FLAGS.learning_rate),
                                           'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel'))
-
+"""
 summaries_dir = os.path.normpath(os.path.join(train_dir, "log"))  # Directory for TB summaries
 
 
