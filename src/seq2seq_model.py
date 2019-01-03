@@ -356,7 +356,10 @@ class BaseModel(object):
             data_sel = data[the_key][idx:idx + total_frames, :]
             # Add the data
             encoder_inputs[i, :, 0:self.input_size] = data_sel[0:self.source_seq_len - 1, :]
-            decoder_inputs[i, :, 0:self.input_size] = data_sel[self.source_seq_len - 1:self.source_seq_len + self.target_seq_len - 1, :]
+            decoder_inputs[i, :, 0:self.input_size] = data_sel[
+                                                      self.source_seq_len - 1:self.source_seq_len +
+                                                                              self.target_seq_len - 1,
+                                                      :]
             decoder_outputs[i, :, 0:self.input_size] = data_sel[self.source_seq_len:, 0:self.input_size]
         return encoder_inputs, decoder_inputs, decoder_outputs
 
@@ -417,7 +420,7 @@ class BaseModel(object):
         source_seq_len = self.source_seq_len
         target_seq_len = self.target_seq_len
 
-        seeds = [(action, (i % 2) + 1, frames[action][i]) for i in range(batch_size)]
+        seeds = [(action, (i%2) + 1, frames[action][i]) for i in range(batch_size)]
 
         encoder_inputs = np.zeros((batch_size, source_seq_len - 1, self.input_size), dtype=float)
         decoder_inputs = np.zeros((batch_size, target_seq_len, self.input_size), dtype=float)
@@ -494,7 +497,7 @@ class Seq2SeqModel(BaseModel):
         self.architecture = architecture
 
         print("One hot is ", one_hot)
-        print("Input size is %d" % self.input_size)
+        print("Input size is %d"%self.input_size)
 
         # Summary writers for train and test runs
         self.train_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'train')))
@@ -513,9 +516,12 @@ class Seq2SeqModel(BaseModel):
 
         # === Transform the inputs ===
         with tf.name_scope("inputs"):
-            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
-            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
-            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
+            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size],
+                                                 name="enc_in")
+            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size],
+                                                 name="dec_in")
+            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size],
+                                                  name="dec_out")
 
             enc_in = tf.transpose(self.encoder_inputs, [1, 0, 2])
             dec_in = tf.transpose(self.decoder_inputs, [1, 0, 2])
@@ -544,18 +550,20 @@ class Seq2SeqModel(BaseModel):
         elif self.loss_to_use == "supervised":
             pass
         else:
-            raise (ValueError, "unknown loss: %s" % self.loss_to_use)
+            raise (ValueError, "unknown loss: %s"%self.loss_to_use)
 
         # Build the RNN
         if self.architecture == "basic":
             # Basic RNN does not have a loop function in its API, so copying here.
             with vs.variable_scope("basic_rnn_seq2seq"):
                 _, enc_state = tf.contrib.rnn.static_rnn(cell, enc_in, dtype=tf.float32)  # Encoder
-                self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell, loop_function=lf)  # Decoder
+                self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell,
+                                                                                  loop_function=lf)  # Decoder
         elif self.architecture == "tied":
-            self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell, loop_function=lf)
+            self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell,
+                                                                                   loop_function=lf)
         else:
-            raise (ValueError, "Unknown architecture: %s" % self.architecture)
+            raise (ValueError, "Unknown architecture: %s"%self.architecture)
 
         with tf.name_scope("loss_angles"):
             self.loss = tf.reduce_mean(tf.square(tf.subtract(dec_out, self.outputs)))
