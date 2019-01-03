@@ -16,16 +16,27 @@ import tensorflow as tf
 import rnn_cell_extensions  # my extensions of the tf repos
 import data_utils
 
+# ETH imports
+from constants import Constants as C
+
 
 class BaseModel(object):
     def __init__(self, **kwargs):
+        self.session = kwargs["session"]
+        self.mode = kwargs["mode"]
+        self.reuse = kwargs["reuse"]
         self.source_seq_len = kwargs["source_seq_len"]
         self.target_seq_len = kwargs["target_seq_len"]
         self.batch_size = kwargs["batch_size"]
         self.max_gradient_norm = kwargs["max_gradient_norm"]
         self.number_of_actions = kwargs["number_of_actions"]
         self.one_hot = kwargs["one_hot"]
-        self.global_step = tf.Variable(0, trainable=False)
+        self.loss_to_use = kwargs["loss_to_use"]
+        self.dtype = kwargs["dtype"]
+        self.global_step = tf.train.get_global_step(graph=None)
+
+        self.is_eval = self.mode == C.SAMPLE
+        self.is_training = self.mode == C.TRAIN
 
         # Set by the child model class.
         self.outputs = None
@@ -34,7 +45,6 @@ class BaseModel(object):
         self.learning_rate = None
         self.gradient_norms = None
         self.updates = None
-        self.saver = None
 
         # Hard-coded parameters.
         self.HUMAN_SIZE = 54
@@ -42,10 +52,6 @@ class BaseModel(object):
 
     def build_graph(self):
         self.build_network()
-        self.optimization_routines()
-        self.summary_routines()
-        self.loss_summary = tf.summary.scalar('loss/loss', self.loss)
-        self.saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
 
     def build_network(self):
         pass
@@ -53,276 +59,273 @@ class BaseModel(object):
     def optimization_routines(self):
         pass
 
-    def step(self, session, encoder_inputs, decoder_inputs, decoder_outputs, forward_only, srnn_seeds=False):
+    def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
         pass
 
     def summary_routines(self):
+        self.loss_summary = tf.summary.scalar(self.mode + '/loss', self.loss)
+
         # Keep track of the learning rate
-        self.learning_rate_summary = tf.summary.scalar('learning_rate/learning_rate', self.learning_rate)
+        if self.is_training:
+            self.learning_rate_summary = tf.summary.scalar('learning_rate', self.learning_rate)
+            self.gradient_norm_summary = tf.summary.scalar('gradient_norms', self.gradient_norms)
 
         # === variables for loss in Euler Angles -- for each action
-        with tf.name_scope("euler_error_walking"):
-            self.walking_err80 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0080")
-            self.walking_err160 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0160")
-            self.walking_err320 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0320")
-            self.walking_err400 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0400")
-            self.walking_err560 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0560")
-            self.walking_err1000 = tf.placeholder(tf.float32, name="walking_srnn_seeds_1000")
+        if self.is_eval:
+            with tf.name_scope("euler_error_walking"):
+                self.walking_err80 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0080")
+                self.walking_err160 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0160")
+                self.walking_err320 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0320")
+                self.walking_err400 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0400")
+                self.walking_err560 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0560")
+                self.walking_err1000 = tf.placeholder(tf.float32, name="walking_srnn_seeds_1000")
 
-            self.walking_err80_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0080', self.walking_err80)
-            self.walking_err160_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0160', self.walking_err160)
-            self.walking_err320_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0320', self.walking_err320)
-            self.walking_err400_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0400', self.walking_err400)
-            self.walking_err560_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0560', self.walking_err560)
-            self.walking_err1000_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_1000',
-                                                             self.walking_err1000)
-        with tf.name_scope("euler_error_eating"):
-            self.eating_err80 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0080")
-            self.eating_err160 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0160")
-            self.eating_err320 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0320")
-            self.eating_err400 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0400")
-            self.eating_err560 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0560")
-            self.eating_err1000 = tf.placeholder(tf.float32, name="eating_srnn_seeds_1000")
+                self.walking_err80_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0080', self.walking_err80)
+                self.walking_err160_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0160', self.walking_err160)
+                self.walking_err320_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0320', self.walking_err320)
+                self.walking_err400_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0400', self.walking_err400)
+                self.walking_err560_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_0560', self.walking_err560)
+                self.walking_err1000_summary = tf.summary.scalar('euler_error_walking/srnn_seeds_1000', self.walking_err1000)
+            with tf.name_scope("euler_error_eating"):
+                self.eating_err80 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0080")
+                self.eating_err160 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0160")
+                self.eating_err320 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0320")
+                self.eating_err400 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0400")
+                self.eating_err560 = tf.placeholder(tf.float32, name="eating_srnn_seeds_0560")
+                self.eating_err1000 = tf.placeholder(tf.float32, name="eating_srnn_seeds_1000")
 
-            self.eating_err80_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0080', self.eating_err80)
-            self.eating_err160_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0160', self.eating_err160)
-            self.eating_err320_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0320', self.eating_err320)
-            self.eating_err400_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0400', self.eating_err400)
-            self.eating_err560_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0560', self.eating_err560)
-            self.eating_err1000_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_1000', self.eating_err1000)
-        with tf.name_scope("euler_error_smoking"):
-            self.smoking_err80 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0080")
-            self.smoking_err160 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0160")
-            self.smoking_err320 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0320")
-            self.smoking_err400 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0400")
-            self.smoking_err560 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0560")
-            self.smoking_err1000 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_1000")
+                self.eating_err80_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0080', self.eating_err80)
+                self.eating_err160_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0160', self.eating_err160)
+                self.eating_err320_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0320', self.eating_err320)
+                self.eating_err400_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0400', self.eating_err400)
+                self.eating_err560_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_0560', self.eating_err560)
+                self.eating_err1000_summary = tf.summary.scalar('euler_error_eating/srnn_seeds_1000', self.eating_err1000)
+            with tf.name_scope("euler_error_smoking"):
+                self.smoking_err80 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0080")
+                self.smoking_err160 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0160")
+                self.smoking_err320 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0320")
+                self.smoking_err400 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0400")
+                self.smoking_err560 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_0560")
+                self.smoking_err1000 = tf.placeholder(tf.float32, name="smoking_srnn_seeds_1000")
 
-            self.smoking_err80_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0080', self.smoking_err80)
-            self.smoking_err160_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0160', self.smoking_err160)
-            self.smoking_err320_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0320', self.smoking_err320)
-            self.smoking_err400_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0400', self.smoking_err400)
-            self.smoking_err560_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0560', self.smoking_err560)
-            self.smoking_err1000_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_1000',
-                                                             self.smoking_err1000)
-        with tf.name_scope("euler_error_discussion"):
-            self.discussion_err80 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0080")
-            self.discussion_err160 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0160")
-            self.discussion_err320 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0320")
-            self.discussion_err400 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0400")
-            self.discussion_err560 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0560")
-            self.discussion_err1000 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_1000")
+                self.smoking_err80_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0080', self.smoking_err80)
+                self.smoking_err160_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0160', self.smoking_err160)
+                self.smoking_err320_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0320', self.smoking_err320)
+                self.smoking_err400_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0400', self.smoking_err400)
+                self.smoking_err560_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_0560', self.smoking_err560)
+                self.smoking_err1000_summary = tf.summary.scalar('euler_error_smoking/srnn_seeds_1000',
+                                                                 self.smoking_err1000)
+            with tf.name_scope("euler_error_discussion"):
+                self.discussion_err80 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0080")
+                self.discussion_err160 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0160")
+                self.discussion_err320 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0320")
+                self.discussion_err400 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0400")
+                self.discussion_err560 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_0560")
+                self.discussion_err1000 = tf.placeholder(tf.float32, name="discussion_srnn_seeds_1000")
 
-            self.discussion_err80_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0080',
-                                                              self.discussion_err80)
-            self.discussion_err160_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0160',
-                                                               self.discussion_err160)
-            self.discussion_err320_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0320',
-                                                               self.discussion_err320)
-            self.discussion_err400_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0400',
-                                                               self.discussion_err400)
-            self.discussion_err560_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0560',
-                                                               self.discussion_err560)
-            self.discussion_err1000_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_1000',
-                                                                self.discussion_err1000)
-        with tf.name_scope("euler_error_directions"):
-            self.directions_err80 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0080")
-            self.directions_err160 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0160")
-            self.directions_err320 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0320")
-            self.directions_err400 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0400")
-            self.directions_err560 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0560")
-            self.directions_err1000 = tf.placeholder(tf.float32, name="directions_srnn_seeds_1000")
+                self.discussion_err80_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0080',
+                                                                  self.discussion_err80)
+                self.discussion_err160_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0160',
+                                                                   self.discussion_err160)
+                self.discussion_err320_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0320',
+                                                                   self.discussion_err320)
+                self.discussion_err400_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0400',
+                                                                   self.discussion_err400)
+                self.discussion_err560_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_0560',
+                                                                   self.discussion_err560)
+                self.discussion_err1000_summary = tf.summary.scalar('euler_error_discussion/srnn_seeds_1000',
+                                                                    self.discussion_err1000)
+            with tf.name_scope("euler_error_directions"):
+                self.directions_err80 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0080")
+                self.directions_err160 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0160")
+                self.directions_err320 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0320")
+                self.directions_err400 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0400")
+                self.directions_err560 = tf.placeholder(tf.float32, name="directions_srnn_seeds_0560")
+                self.directions_err1000 = tf.placeholder(tf.float32, name="directions_srnn_seeds_1000")
 
-            self.directions_err80_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0080',
-                                                              self.directions_err80)
-            self.directions_err160_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0160',
-                                                               self.directions_err160)
-            self.directions_err320_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0320',
-                                                               self.directions_err320)
-            self.directions_err400_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0400',
-                                                               self.directions_err400)
-            self.directions_err560_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0560',
-                                                               self.directions_err560)
-            self.directions_err1000_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_1000',
-                                                                self.directions_err1000)
-        with tf.name_scope("euler_error_greeting"):
-            self.greeting_err80 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0080")
-            self.greeting_err160 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0160")
-            self.greeting_err320 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0320")
-            self.greeting_err400 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0400")
-            self.greeting_err560 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0560")
-            self.greeting_err1000 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_1000")
+                self.directions_err80_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0080',
+                                                                  self.directions_err80)
+                self.directions_err160_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0160',
+                                                                   self.directions_err160)
+                self.directions_err320_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0320',
+                                                                   self.directions_err320)
+                self.directions_err400_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0400',
+                                                                   self.directions_err400)
+                self.directions_err560_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_0560',
+                                                                   self.directions_err560)
+                self.directions_err1000_summary = tf.summary.scalar('euler_error_directions/srnn_seeds_1000',
+                                                                    self.directions_err1000)
+            with tf.name_scope("euler_error_greeting"):
+                self.greeting_err80 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0080")
+                self.greeting_err160 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0160")
+                self.greeting_err320 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0320")
+                self.greeting_err400 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0400")
+                self.greeting_err560 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_0560")
+                self.greeting_err1000 = tf.placeholder(tf.float32, name="greeting_srnn_seeds_1000")
 
-            self.greeting_err80_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0080', self.greeting_err80)
-            self.greeting_err160_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0160',
-                                                             self.greeting_err160)
-            self.greeting_err320_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0320',
-                                                             self.greeting_err320)
-            self.greeting_err400_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0400',
-                                                             self.greeting_err400)
-            self.greeting_err560_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0560',
-                                                             self.greeting_err560)
-            self.greeting_err1000_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_1000',
-                                                              self.greeting_err1000)
-        with tf.name_scope("euler_error_phoning"):
-            self.phoning_err80 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0080")
-            self.phoning_err160 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0160")
-            self.phoning_err320 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0320")
-            self.phoning_err400 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0400")
-            self.phoning_err560 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0560")
-            self.phoning_err1000 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_1000")
+                self.greeting_err80_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0080', self.greeting_err80)
+                self.greeting_err160_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0160',
+                                                                 self.greeting_err160)
+                self.greeting_err320_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0320',
+                                                                 self.greeting_err320)
+                self.greeting_err400_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0400',
+                                                                 self.greeting_err400)
+                self.greeting_err560_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_0560',
+                                                                 self.greeting_err560)
+                self.greeting_err1000_summary = tf.summary.scalar('euler_error_greeting/srnn_seeds_1000',
+                                                                  self.greeting_err1000)
+            with tf.name_scope("euler_error_phoning"):
+                self.phoning_err80 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0080")
+                self.phoning_err160 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0160")
+                self.phoning_err320 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0320")
+                self.phoning_err400 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0400")
+                self.phoning_err560 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_0560")
+                self.phoning_err1000 = tf.placeholder(tf.float32, name="phoning_srnn_seeds_1000")
 
-            self.phoning_err80_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0080', self.phoning_err80)
-            self.phoning_err160_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0160', self.phoning_err160)
-            self.phoning_err320_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0320', self.phoning_err320)
-            self.phoning_err400_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0400', self.phoning_err400)
-            self.phoning_err560_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0560', self.phoning_err560)
-            self.phoning_err1000_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_1000',
-                                                             self.phoning_err1000)
-        with tf.name_scope("euler_error_posing"):
-            self.posing_err80 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0080")
-            self.posing_err160 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0160")
-            self.posing_err320 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0320")
-            self.posing_err400 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0400")
-            self.posing_err560 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0560")
-            self.posing_err1000 = tf.placeholder(tf.float32, name="posing_srnn_seeds_1000")
+                self.phoning_err80_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0080', self.phoning_err80)
+                self.phoning_err160_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0160', self.phoning_err160)
+                self.phoning_err320_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0320', self.phoning_err320)
+                self.phoning_err400_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0400', self.phoning_err400)
+                self.phoning_err560_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_0560', self.phoning_err560)
+                self.phoning_err1000_summary = tf.summary.scalar('euler_error_phoning/srnn_seeds_1000',
+                                                                 self.phoning_err1000)
+            with tf.name_scope("euler_error_posing"):
+                self.posing_err80 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0080")
+                self.posing_err160 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0160")
+                self.posing_err320 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0320")
+                self.posing_err400 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0400")
+                self.posing_err560 = tf.placeholder(tf.float32, name="posing_srnn_seeds_0560")
+                self.posing_err1000 = tf.placeholder(tf.float32, name="posing_srnn_seeds_1000")
 
-            self.posing_err80_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0080', self.posing_err80)
-            self.posing_err160_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0160', self.posing_err160)
-            self.posing_err320_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0320', self.posing_err320)
-            self.posing_err400_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0400', self.posing_err400)
-            self.posing_err560_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0560', self.posing_err560)
-            self.posing_err1000_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_1000', self.posing_err1000)
-        with tf.name_scope("euler_error_purchases"):
-            self.purchases_err80 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0080")
-            self.purchases_err160 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0160")
-            self.purchases_err320 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0320")
-            self.purchases_err400 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0400")
-            self.purchases_err560 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0560")
-            self.purchases_err1000 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_1000")
+                self.posing_err80_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0080', self.posing_err80)
+                self.posing_err160_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0160', self.posing_err160)
+                self.posing_err320_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0320', self.posing_err320)
+                self.posing_err400_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0400', self.posing_err400)
+                self.posing_err560_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_0560', self.posing_err560)
+                self.posing_err1000_summary = tf.summary.scalar('euler_error_posing/srnn_seeds_1000', self.posing_err1000)
+            with tf.name_scope("euler_error_purchases"):
+                self.purchases_err80 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0080")
+                self.purchases_err160 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0160")
+                self.purchases_err320 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0320")
+                self.purchases_err400 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0400")
+                self.purchases_err560 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_0560")
+                self.purchases_err1000 = tf.placeholder(tf.float32, name="purchases_srnn_seeds_1000")
 
-            self.purchases_err80_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0080',
-                                                             self.purchases_err80)
-            self.purchases_err160_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0160',
-                                                              self.purchases_err160)
-            self.purchases_err320_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0320',
-                                                              self.purchases_err320)
-            self.purchases_err400_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0400',
-                                                              self.purchases_err400)
-            self.purchases_err560_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0560',
-                                                              self.purchases_err560)
-            self.purchases_err1000_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_1000',
-                                                               self.purchases_err1000)
-        with tf.name_scope("euler_error_sitting"):
-            self.sitting_err80 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0080")
-            self.sitting_err160 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0160")
-            self.sitting_err320 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0320")
-            self.sitting_err400 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0400")
-            self.sitting_err560 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0560")
-            self.sitting_err1000 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_1000")
+                self.purchases_err80_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0080',
+                                                                 self.purchases_err80)
+                self.purchases_err160_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0160',
+                                                                  self.purchases_err160)
+                self.purchases_err320_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0320',
+                                                                  self.purchases_err320)
+                self.purchases_err400_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0400',
+                                                                  self.purchases_err400)
+                self.purchases_err560_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_0560',
+                                                                  self.purchases_err560)
+                self.purchases_err1000_summary = tf.summary.scalar('euler_error_purchases/srnn_seeds_1000',
+                                                                   self.purchases_err1000)
+            with tf.name_scope("euler_error_sitting"):
+                self.sitting_err80 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0080")
+                self.sitting_err160 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0160")
+                self.sitting_err320 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0320")
+                self.sitting_err400 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0400")
+                self.sitting_err560 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_0560")
+                self.sitting_err1000 = tf.placeholder(tf.float32, name="sitting_srnn_seeds_1000")
 
-            self.sitting_err80_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0080', self.sitting_err80)
-            self.sitting_err160_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0160', self.sitting_err160)
-            self.sitting_err320_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0320', self.sitting_err320)
-            self.sitting_err400_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0400', self.sitting_err400)
-            self.sitting_err560_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0560', self.sitting_err560)
-            self.sitting_err1000_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_1000',
-                                                             self.sitting_err1000)
-        with tf.name_scope("euler_error_sittingdown"):
-            self.sittingdown_err80 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0080")
-            self.sittingdown_err160 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0160")
-            self.sittingdown_err320 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0320")
-            self.sittingdown_err400 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0400")
-            self.sittingdown_err560 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0560")
-            self.sittingdown_err1000 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_1000")
+                self.sitting_err80_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0080', self.sitting_err80)
+                self.sitting_err160_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0160', self.sitting_err160)
+                self.sitting_err320_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0320', self.sitting_err320)
+                self.sitting_err400_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0400', self.sitting_err400)
+                self.sitting_err560_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_0560', self.sitting_err560)
+                self.sitting_err1000_summary = tf.summary.scalar('euler_error_sitting/srnn_seeds_1000',
+                                                                 self.sitting_err1000)
+            with tf.name_scope("euler_error_sittingdown"):
+                self.sittingdown_err80 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0080")
+                self.sittingdown_err160 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0160")
+                self.sittingdown_err320 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0320")
+                self.sittingdown_err400 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0400")
+                self.sittingdown_err560 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_0560")
+                self.sittingdown_err1000 = tf.placeholder(tf.float32, name="sittingdown_srnn_seeds_1000")
 
-            self.sittingdown_err80_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0080',
-                                                               self.sittingdown_err80)
-            self.sittingdown_err160_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0160',
-                                                                self.sittingdown_err160)
-            self.sittingdown_err320_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0320',
-                                                                self.sittingdown_err320)
-            self.sittingdown_err400_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0400',
-                                                                self.sittingdown_err400)
-            self.sittingdown_err560_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0560',
-                                                                self.sittingdown_err560)
-            self.sittingdown_err1000_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_1000',
-                                                                 self.sittingdown_err1000)
-        with tf.name_scope("euler_error_takingphoto"):
-            self.takingphoto_err80 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0080")
-            self.takingphoto_err160 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0160")
-            self.takingphoto_err320 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0320")
-            self.takingphoto_err400 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0400")
-            self.takingphoto_err560 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0560")
-            self.takingphoto_err1000 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_1000")
+                self.sittingdown_err80_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0080',
+                                                                   self.sittingdown_err80)
+                self.sittingdown_err160_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0160',
+                                                                    self.sittingdown_err160)
+                self.sittingdown_err320_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0320',
+                                                                    self.sittingdown_err320)
+                self.sittingdown_err400_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0400',
+                                                                    self.sittingdown_err400)
+                self.sittingdown_err560_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_0560',
+                                                                    self.sittingdown_err560)
+                self.sittingdown_err1000_summary = tf.summary.scalar('euler_error_sittingdown/srnn_seeds_1000',
+                                                                     self.sittingdown_err1000)
+            with tf.name_scope("euler_error_takingphoto"):
+                self.takingphoto_err80 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0080")
+                self.takingphoto_err160 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0160")
+                self.takingphoto_err320 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0320")
+                self.takingphoto_err400 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0400")
+                self.takingphoto_err560 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_0560")
+                self.takingphoto_err1000 = tf.placeholder(tf.float32, name="takingphoto_srnn_seeds_1000")
 
-            self.takingphoto_err80_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0080',
-                                                               self.takingphoto_err80)
-            self.takingphoto_err160_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0160',
-                                                                self.takingphoto_err160)
-            self.takingphoto_err320_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0320',
-                                                                self.takingphoto_err320)
-            self.takingphoto_err400_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0400',
-                                                                self.takingphoto_err400)
-            self.takingphoto_err560_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0560',
-                                                                self.takingphoto_err560)
-            self.takingphoto_err1000_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_1000',
-                                                                 self.takingphoto_err1000)
-        with tf.name_scope("euler_error_waiting"):
-            self.waiting_err80 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0080")
-            self.waiting_err160 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0160")
-            self.waiting_err320 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0320")
-            self.waiting_err400 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0400")
-            self.waiting_err560 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0560")
-            self.waiting_err1000 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_1000")
+                self.takingphoto_err80_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0080',
+                                                                   self.takingphoto_err80)
+                self.takingphoto_err160_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0160',
+                                                                    self.takingphoto_err160)
+                self.takingphoto_err320_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0320',
+                                                                    self.takingphoto_err320)
+                self.takingphoto_err400_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0400',
+                                                                    self.takingphoto_err400)
+                self.takingphoto_err560_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_0560',
+                                                                    self.takingphoto_err560)
+                self.takingphoto_err1000_summary = tf.summary.scalar('euler_error_takingphoto/srnn_seeds_1000',
+                                                                     self.takingphoto_err1000)
+            with tf.name_scope("euler_error_waiting"):
+                self.waiting_err80 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0080")
+                self.waiting_err160 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0160")
+                self.waiting_err320 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0320")
+                self.waiting_err400 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0400")
+                self.waiting_err560 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_0560")
+                self.waiting_err1000 = tf.placeholder(tf.float32, name="waiting_srnn_seeds_1000")
 
-            self.waiting_err80_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0080', self.waiting_err80)
-            self.waiting_err160_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0160', self.waiting_err160)
-            self.waiting_err320_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0320', self.waiting_err320)
-            self.waiting_err400_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0400', self.waiting_err400)
-            self.waiting_err560_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0560', self.waiting_err560)
-            self.waiting_err1000_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_1000',
-                                                             self.waiting_err1000)
-        with tf.name_scope("euler_error_walkingdog"):
-            self.walkingdog_err80 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0080")
-            self.walkingdog_err160 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0160")
-            self.walkingdog_err320 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0320")
-            self.walkingdog_err400 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0400")
-            self.walkingdog_err560 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0560")
-            self.walkingdog_err1000 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_1000")
+                self.waiting_err80_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0080', self.waiting_err80)
+                self.waiting_err160_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0160', self.waiting_err160)
+                self.waiting_err320_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0320', self.waiting_err320)
+                self.waiting_err400_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0400', self.waiting_err400)
+                self.waiting_err560_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_0560', self.waiting_err560)
+                self.waiting_err1000_summary = tf.summary.scalar('euler_error_waiting/srnn_seeds_1000',
+                                                                 self.waiting_err1000)
+            with tf.name_scope("euler_error_walkingdog"):
+                self.walkingdog_err80 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0080")
+                self.walkingdog_err160 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0160")
+                self.walkingdog_err320 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0320")
+                self.walkingdog_err400 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0400")
+                self.walkingdog_err560 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_0560")
+                self.walkingdog_err1000 = tf.placeholder(tf.float32, name="walkingdog_srnn_seeds_1000")
 
-            self.walkingdog_err80_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0080',
-                                                              self.walkingdog_err80)
-            self.walkingdog_err160_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0160',
-                                                               self.walkingdog_err160)
-            self.walkingdog_err320_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0320',
-                                                               self.walkingdog_err320)
-            self.walkingdog_err400_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0400',
-                                                               self.walkingdog_err400)
-            self.walkingdog_err560_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0560',
-                                                               self.walkingdog_err560)
-            self.walkingdog_err1000_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_1000',
-                                                                self.walkingdog_err1000)
-        with tf.name_scope("euler_error_walkingtogether"):
-            self.walkingtogether_err80 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0080")
-            self.walkingtogether_err160 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0160")
-            self.walkingtogether_err320 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0320")
-            self.walkingtogether_err400 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0400")
-            self.walkingtogether_err560 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0560")
-            self.walkingtogether_err1000 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_1000")
-
-            self.walkingtogether_err80_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0080',
-                                                                   self.walkingtogether_err80)
-            self.walkingtogether_err160_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0160',
-                                                                    self.walkingtogether_err160)
-            self.walkingtogether_err320_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0320',
-                                                                    self.walkingtogether_err320)
-            self.walkingtogether_err400_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0400',
-                                                                    self.walkingtogether_err400)
-            self.walkingtogether_err560_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0560',
-                                                                    self.walkingtogether_err560)
-            self.walkingtogether_err1000_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_1000',
-                                                                     self.walkingtogether_err1000)
+                self.walkingdog_err80_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0080',
+                                                                  self.walkingdog_err80)
+                self.walkingdog_err160_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0160',
+                                                                   self.walkingdog_err160)
+                self.walkingdog_err320_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0320',
+                                                                   self.walkingdog_err320)
+                self.walkingdog_err400_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0400',
+                                                                   self.walkingdog_err400)
+                self.walkingdog_err560_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_0560',
+                                                                   self.walkingdog_err560)
+                self.walkingdog_err1000_summary = tf.summary.scalar('euler_error_walkingdog/srnn_seeds_1000',
+                                                                    self.walkingdog_err1000)
+            with tf.name_scope("euler_error_walkingtogether"):
+                self.walkingtogether_err80 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0080")
+                self.walkingtogether_err160 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0160")
+                self.walkingtogether_err320 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0320")
+                self.walkingtogether_err400 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0400")
+                self.walkingtogether_err560 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_0560")
+                self.walkingtogether_err1000 = tf.placeholder(tf.float32, name="walkingtogether_srnn_seeds_1000")
+                self.walkingtogether_err80_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0080', self.walkingtogether_err80)
+                self.walkingtogether_err160_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0160', self.walkingtogether_err160)
+                self.walkingtogether_err320_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0320', self.walkingtogether_err320)
+                self.walkingtogether_err400_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0400', self.walkingtogether_err400)
+                self.walkingtogether_err560_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_0560', self.walkingtogether_err560)
+                self.walkingtogether_err1000_summary = tf.summary.scalar('euler_error_walkingtogether/srnn_seeds_1000', self.walkingtogether_err1000)
 
     def get_batch(self, data, actions):
         """Get a random batch of data from the specified bucket, prepare for step.
@@ -448,6 +451,9 @@ class Seq2SeqModel(BaseModel):
     """Sequence-to-sequence model for human motion prediction"""
 
     def __init__(self,
+                 session,
+                 mode,
+                 reuse,
                  architecture,
                  source_seq_len,
                  target_seq_len,
@@ -487,28 +493,24 @@ class Seq2SeqModel(BaseModel):
           residual_velocities: whether to use a residual connection that models velocities.
           dtype: the data type to use to store internal variables.
         """
-        super(Seq2SeqModel, self).__init__(source_seq_len=source_seq_len, target_seq_len=target_seq_len,
-                                           batch_size=batch_size, max_gradient_norm=max_gradient_norm,
-                                           number_of_actions=number_of_actions, one_hot=one_hot, **kwargs)
+        super(Seq2SeqModel, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
+                                           target_seq_len=target_seq_len, batch_size=batch_size,
+                                           max_gradient_norm=max_gradient_norm, number_of_actions=number_of_actions,
+                                           one_hot=one_hot, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
         self.residual_velocities = residual_velocities
         self.num_layers = num_layers
-        self.dtype = dtype
-        self.loss_to_use = loss_to_use
         self.architecture = architecture
-
-        print("One hot is ", one_hot)
-        print("Input size is %d"%self.input_size)
-
-        # Summary writers for train and test runs
-        self.train_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'train')))
-        self.test_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'test')))
-
         self.rnn_size = rnn_size
-        self.learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=dtype)
-        self.learning_rate_decay_op = self.learning_rate.assign(self.learning_rate*learning_rate_decay_factor)
+        if self.is_training:
+            self.learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=dtype, name="learning_rate")
+            self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*learning_rate_decay_factor)
+
+        if self.reuse is False:
+            print("One hot is ", one_hot)
+            print("Input size is %d" % self.input_size)
+            print('rnn_size = {0}'.format(self.rnn_size))
 
         # === Create the RNN that will keep the state ===
-        print('rnn_size = {0}'.format(self.rnn_size))
         cell = tf.contrib.rnn.GRUCell(self.rnn_size)
 
         if self.num_layers > 1:
@@ -516,12 +518,9 @@ class Seq2SeqModel(BaseModel):
 
         # === Transform the inputs ===
         with tf.name_scope("inputs"):
-            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size],
-                                                 name="enc_in")
-            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size],
-                                                 name="dec_in")
-            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size],
-                                                  name="dec_out")
+            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
+            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
+            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
 
             enc_in = tf.transpose(self.encoder_inputs, [1, 0, 2])
             dec_in = tf.transpose(self.decoder_inputs, [1, 0, 2])
@@ -535,38 +534,38 @@ class Seq2SeqModel(BaseModel):
             dec_in = tf.split(dec_in, self.target_seq_len, axis=0)
             dec_out = tf.split(dec_out, self.target_seq_len, axis=0)
 
-        # === Add space decoder ===
-        cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
+        with tf.name_scope(self.mode):
+            with tf.variable_scope("seq2seq", reuse=self.reuse):
+                # === Add space decoder ===
+                cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
 
-        # Finally, wrap everything in a residual layer if we want to model velocities
-        if self.residual_velocities:
-            cell = rnn_cell_extensions.ResidualWrapper(cell)
+                # Finally, wrap everything in a residual layer if we want to model velocities
+                if self.residual_velocities:
+                    cell = rnn_cell_extensions.ResidualWrapper(cell)
 
-        # Define the loss function
-        lf = None
-        if self.loss_to_use == "sampling_based":
-            def lf(prev, i):  # function for sampling_based loss
-                return prev
-        elif self.loss_to_use == "supervised":
-            pass
-        else:
-            raise (ValueError, "unknown loss: %s"%self.loss_to_use)
+                # Define the loss function
+                lf = None
+                if self.loss_to_use == "sampling_based":
+                    def lf(prev, i):  # function for sampling_based loss
+                        return prev
+                elif self.loss_to_use == "supervised":
+                    pass
+                else:
+                    raise (ValueError, "unknown loss: %s" % self.loss_to_use)
 
-        # Build the RNN
-        if self.architecture == "basic":
-            # Basic RNN does not have a loop function in its API, so copying here.
-            with vs.variable_scope("basic_rnn_seq2seq"):
-                _, enc_state = tf.contrib.rnn.static_rnn(cell, enc_in, dtype=tf.float32)  # Encoder
-                self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell,
-                                                                                  loop_function=lf)  # Decoder
-        elif self.architecture == "tied":
-            self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell,
-                                                                                   loop_function=lf)
-        else:
-            raise (ValueError, "Unknown architecture: %s"%self.architecture)
+                # Build the RNN
+                if self.architecture == "basic":
+                    # Basic RNN does not have a loop function in its API, so copying here.
+                    with vs.variable_scope("basic_rnn_seq2seq"):
+                        _, enc_state = tf.contrib.rnn.static_rnn(cell, enc_in, dtype=tf.float32)  # Encoder
+                        self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell, loop_function=lf)  # Decoder
+                elif self.architecture == "tied":
+                    self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell, loop_function=lf)
+                else:
+                    raise (ValueError, "Unknown architecture: %s"%self.architecture)
 
-        with tf.name_scope("loss_angles"):
-            self.loss = tf.reduce_mean(tf.square(tf.subtract(dec_out, self.outputs)))
+            with tf.name_scope("loss_angles"):
+                self.loss = tf.reduce_mean(tf.square(tf.subtract(dec_out, self.outputs)))
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -581,7 +580,7 @@ class Seq2SeqModel(BaseModel):
         self.gradient_norms = norm
         self.updates = opt.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
-    def step(self, session, encoder_inputs, decoder_inputs, decoder_outputs, forward_only, srnn_seeds=False):
+    def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
         """Run a step of the model feeding the given inputs.
 
         Args
@@ -589,8 +588,6 @@ class Seq2SeqModel(BaseModel):
           encoder_inputs: list of numpy vectors to feed as encoder inputs.
           decoder_inputs: list of numpy vectors to feed as decoder inputs.
           decoder_outputs: list of numpy vectors that are the expected decoder outputs.
-          forward_only: whether to do the backward step or only forward.
-          srnn_seeds: True if you want to evaluate using the sequences of SRNN
         Returns
           A triple consisting of gradient norm (or None if we did not do backward),
           mean squared error, and the outputs.
@@ -603,30 +600,21 @@ class Seq2SeqModel(BaseModel):
                       self.decoder_outputs: decoder_outputs}
 
         # Output feed: depends on whether we do a backward step or not.
-        if not srnn_seeds:
-            if not forward_only:
+        if self.is_training:
+            # Training step
+            output_feed = [self.updates,  # Update Op that does SGD.
+                           self.loss,
+                           self.loss_summary,
+                           self.learning_rate_summary,
+                           self.gradient_norm_summary]
 
-                # Training step
-                output_feed = [self.updates,  # Update Op that does SGD.
-                               self.gradient_norms,  # Gradient norm.
-                               self.loss,
-                               self.loss_summary,
-                               self.learning_rate_summary]
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[1], outputs[2], outputs[3], outputs[4]
 
-                outputs = session.run(output_feed, input_feed)
-                return outputs[1], outputs[2], outputs[3], outputs[4]  # Gradient norm, loss, summaries
-
-            else:
-                # Validation step, not on SRNN's seeds
-                output_feed = [self.loss,  # Loss for this batch.
-                               self.loss_summary]
-
-                outputs = session.run(output_feed, input_feed)
-                return outputs[0], outputs[1]  # No gradient norm
         else:
-            # Validation on SRNN's seeds
+            # Evaluation step
             output_feed = [self.loss,  # Loss for this batch.
-                           self.outputs,
-                           self.loss_summary]
-            outputs = session.run(output_feed, input_feed)
-            return outputs[0], outputs[1], outputs[2]  # No gradient norm, loss, outputs.
+                           self.loss_summary,
+                           self.outputs]
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[0], outputs[1], outputs[2]

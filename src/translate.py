@@ -18,6 +18,10 @@ import tensorflow as tf
 import data_utils
 import seq2seq_model
 
+# ETH imports
+from constants import Constants as C
+import glob
+
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95,
@@ -50,6 +54,7 @@ tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
+tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -67,21 +72,12 @@ experiment_name = experiment_name_format.format(experiment_timestamp,
                                                 FLAGS.size,
                                                 FLAGS.learning_rate,
                                                 'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel')
-train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
-"""
-train_dir = os.path.normpath(os.path.join(FLAGS.train_dir, 
-                                          FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
-                                          'out_{0}'.format(FLAGS.seq_length_out),
-                                          'iterations_{0}'.format(FLAGS.iterations),
-                                          FLAGS.architecture,
-                                          FLAGS.loss_to_use,
-                                          'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
-                                          'depth_{0}'.format(FLAGS.num_layers),
-                                          'size_{0}'.format(FLAGS.size),
-                                          'lr_{0}'.format(FLAGS.learning_rate),
-                                          'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel'))
-"""
-summaries_dir = os.path.normpath(os.path.join(train_dir, "log"))  # Directory for TB summaries
+if FLAGS.experiment_id is None:
+    experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
+else:
+    experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
+
+summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))  # Directory for TB summaries
 
 
 def create_eth_model():
@@ -90,7 +86,11 @@ def create_eth_model():
 
 def create_martinez_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
-    model = seq2seq_model.Seq2SeqModel(
+    # with tf.name_scope(C.TRAIN):
+    train_model = seq2seq_model.Seq2SeqModel(
+        session=session,
+        mode=C.TRAIN,
+        reuse=False,
         architecture=FLAGS.architecture,
         source_seq_len=FLAGS.seq_length_in if not sampling else 50,
         target_seq_len=FLAGS.seq_length_out if not sampling else 100,
@@ -106,29 +106,61 @@ def create_martinez_model(session, actions, sampling=False):
         one_hot=not FLAGS.omit_one_hot,
         residual_velocities=FLAGS.residual_velocities,
         dtype=tf.float32)
-    model.build_graph()
+    train_model.build_graph()
 
-    if FLAGS.load <= 0:
+    # with tf.name_scope(C.SAMPLE):
+    eval_model = seq2seq_model.Seq2SeqModel(
+        session=session,
+        mode=C.SAMPLE,
+        reuse=True,
+        architecture=FLAGS.architecture,
+        source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+        target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+        rnn_size=FLAGS.size,  # hidden layer size
+        num_layers=FLAGS.num_layers,
+        max_gradient_norm=FLAGS.max_gradient_norm,
+        batch_size=FLAGS.batch_size,
+        learning_rate=FLAGS.learning_rate,
+        learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
+        summaries_dir=summaries_dir,
+        loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+        number_of_actions=len(actions),
+        one_hot=not FLAGS.omit_one_hot,
+        residual_velocities=FLAGS.residual_velocities,
+        dtype=tf.float32)
+    eval_model.build_graph()
+
+    train_model.optimization_routines()
+    train_model.summary_routines()
+    eval_model.summary_routines()
+
+    # Create saver.
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
+    # Global step variable.
+    global_step = tf.Variable(1, trainable=False, name='global_step')
+
+    if FLAGS.experiment_id is None:
         print("Creating model with fresh parameters.")
         session.run(tf.global_variables_initializer())
-        return model
+        return train_model, eval_model, saver, global_step
 
-    ckpt = tf.train.get_checkpoint_state(train_dir, latest_filename="checkpoint")
-    print("train_dir", train_dir)
+    # Load a pre-trained model.
+    ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
+    print("Experiment directory: ", experiment_dir)
 
     if ckpt and ckpt.model_checkpoint_path:
         # Check if the specific checkpoint exists
         if FLAGS.load > 0:
-            if os.path.isfile(os.path.join(train_dir, "checkpoint-{0}.index".format(FLAGS.load))):
-                ckpt_name = os.path.normpath(os.path.join(os.path.join(train_dir, "checkpoint-{0}".format(FLAGS.load))))
+            if os.path.isfile(os.path.join(experiment_dir, "checkpoint-{0}.index".format(FLAGS.load))):
+                ckpt_name = os.path.normpath(os.path.join(os.path.join(experiment_dir, "checkpoint-{0}".format(FLAGS.load))))
             else:
                 raise ValueError("Asked to load checkpoint {0}, but it does not seem to exist".format(FLAGS.load))
         else:
             ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
 
         print("Loading model {0}".format(ckpt_name))
-        model.saver.restore(session, ckpt.model_checkpoint_path)
-        return model
+        saver.restore(session, ckpt.model_checkpoint_path)
+        return train_model, eval_model, saver, global_step
     else:
         print("Could not find checkpoint. Aborting.")
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
@@ -139,10 +171,11 @@ def train():
 
     actions = define_actions(FLAGS.action)
 
-    number_of_actions = len(actions)
-
-    train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(
-        actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot)
+    train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(actions,
+                                                                                        FLAGS.seq_length_in,
+                                                                                        FLAGS.seq_length_out,
+                                                                                        FLAGS.data_dir,
+                                                                                        not FLAGS.omit_one_hot)
 
     # Limit TF to take a fraction of the GPU memory
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=1)
@@ -150,11 +183,15 @@ def train():
 
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
 
+        # Summary writers for train and test runs
+        train_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'train')))
+        test_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'test')))
+
         # === Create the model ===
         print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
 
-        model = create_martinez_model(sess, actions)
-        model.train_writer.add_graph(sess.graph)
+        train_model, eval_model, saver, global_step = create_martinez_model(sess, actions)
+        train_writer.add_graph(sess.graph)
         print("Model created")
 
         num_param = 0
@@ -164,8 +201,7 @@ def train():
 
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
-        srnn_gts_euler = get_srnn_gts(actions, model, test_set, data_mean,
-                                      data_std, dim_to_ignore, not FLAGS.omit_one_hot)
+        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore, not FLAGS.omit_one_hot)
 
         # === This is the training loop ===
         step_time, loss, val_loss = 0.0, 0.0, 0.0
@@ -174,18 +210,18 @@ def train():
 
         step_time, loss = 0, 0
 
-        for _ in xrange(FLAGS.iterations):
+        for _ in range(FLAGS.iterations):
 
             start_time = time.time()
 
             # === Training step ===
-            encoder_inputs, decoder_inputs, decoder_outputs = model.get_batch(train_set, not FLAGS.omit_one_hot)
-            _, step_loss, loss_summary, lr_summary = model.step(sess, encoder_inputs, decoder_inputs, decoder_outputs,
-                                                                False)
-            model.train_writer.add_summary(loss_summary, current_step)
-            model.train_writer.add_summary(lr_summary, current_step)
+            encoder_inputs, decoder_inputs, decoder_outputs = train_model.get_batch(train_set, not FLAGS.omit_one_hot)
+            step_loss, loss_summary, lr_summary, grad_summary = train_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
+            train_writer.add_summary(loss_summary, current_step)
+            train_writer.add_summary(lr_summary, current_step)
+            train_writer.add_summary(grad_summary, current_step)
 
-            if current_step%10 == 0:
+            if current_step % 100 == 0:
                 print("step {0:04d}; step_loss: {1:.4f}".format(current_step, step_loss))
 
             step_time += (time.time() - start_time)/FLAGS.test_every
@@ -193,20 +229,18 @@ def train():
             current_step += 1
 
             # === step decay ===
-            if current_step%FLAGS.learning_rate_step == 0:
-                sess.run(model.learning_rate_decay_op)
+            if current_step % FLAGS.learning_rate_step == 0:
+                sess.run(train_model.learning_rate_scheduler)
 
             # Once in a while, we save checkpoint, print statistics, and run evals.
-            if current_step%FLAGS.test_every == 0:
+            if current_step % FLAGS.test_every == 0:
 
                 # === Validation with randomly chosen seeds ===
-                forward_only = True
-
-                encoder_inputs, decoder_inputs, decoder_outputs = model.get_batch(test_set, not FLAGS.omit_one_hot)
-                step_loss, loss_summary = model.step(sess, encoder_inputs, decoder_inputs, decoder_outputs, forward_only)
+                encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch(test_set, not FLAGS.omit_one_hot)
+                step_loss, loss_summary, _ = eval_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
                 val_loss = step_loss  # Loss book-keeping
 
-                model.test_writer.add_summary(loss_summary, current_step)
+                test_writer.add_summary(loss_summary, current_step)
 
                 print()
                 print("{0: <16} |".format("milliseconds"), end="")
@@ -215,12 +249,12 @@ def train():
                 print()
 
                 # === Validation with srnn's seeds ===
+                srnn_loss = 0
                 for action in actions:
 
                     # Evaluate the model on the test batches
-                    encoder_inputs, decoder_inputs, decoder_outputs = model.get_batch_srnn(test_set, action)
-                    srnn_loss, srnn_poses, _ = model.step(sess, encoder_inputs, decoder_inputs,
-                                                          decoder_outputs, True, True)
+                    encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch_srnn(test_set, action)
+                    srnn_loss, _, srnn_poses = eval_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
 
                     # Denormalize the output
                     srnn_pred_expmap = data_utils.revert_output_format(srnn_poses,
@@ -276,219 +310,219 @@ def train():
                     # Ugly massive if-then to log the error to tensorboard :shrug:
                     if action == "walking":
                         summaries = sess.run(
-                            [model.walking_err80_summary,
-                             model.walking_err160_summary,
-                             model.walking_err320_summary,
-                             model.walking_err400_summary,
-                             model.walking_err560_summary,
-                             model.walking_err1000_summary],
-                            {model.walking_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.walking_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.walking_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.walking_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.walking_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.walking_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.walking_err80_summary,
+                             eval_model.walking_err160_summary,
+                             eval_model.walking_err320_summary,
+                             eval_model.walking_err400_summary,
+                             eval_model.walking_err560_summary,
+                             eval_model.walking_err1000_summary],
+                            {eval_model.walking_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.walking_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.walking_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.walking_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.walking_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.walking_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "eating":
                         summaries = sess.run(
-                            [model.eating_err80_summary,
-                             model.eating_err160_summary,
-                             model.eating_err320_summary,
-                             model.eating_err400_summary,
-                             model.eating_err560_summary,
-                             model.eating_err1000_summary],
-                            {model.eating_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.eating_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.eating_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.eating_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.eating_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.eating_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.eating_err80_summary,
+                             eval_model.eating_err160_summary,
+                             eval_model.eating_err320_summary,
+                             eval_model.eating_err400_summary,
+                             eval_model.eating_err560_summary,
+                             eval_model.eating_err1000_summary],
+                            {eval_model.eating_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.eating_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.eating_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.eating_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.eating_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.eating_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "smoking":
                         summaries = sess.run(
-                            [model.smoking_err80_summary,
-                             model.smoking_err160_summary,
-                             model.smoking_err320_summary,
-                             model.smoking_err400_summary,
-                             model.smoking_err560_summary,
-                             model.smoking_err1000_summary],
-                            {model.smoking_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.smoking_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.smoking_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.smoking_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.smoking_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.smoking_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.smoking_err80_summary,
+                             eval_model.smoking_err160_summary,
+                             eval_model.smoking_err320_summary,
+                             eval_model.smoking_err400_summary,
+                             eval_model.smoking_err560_summary,
+                             eval_model.smoking_err1000_summary],
+                            {eval_model.smoking_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.smoking_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.smoking_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.smoking_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.smoking_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.smoking_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "discussion":
                         summaries = sess.run(
-                            [model.discussion_err80_summary,
-                             model.discussion_err160_summary,
-                             model.discussion_err320_summary,
-                             model.discussion_err400_summary,
-                             model.discussion_err560_summary,
-                             model.discussion_err1000_summary],
-                            {model.discussion_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.discussion_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.discussion_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.discussion_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.discussion_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.discussion_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.discussion_err80_summary,
+                             eval_model.discussion_err160_summary,
+                             eval_model.discussion_err320_summary,
+                             eval_model.discussion_err400_summary,
+                             eval_model.discussion_err560_summary,
+                             eval_model.discussion_err1000_summary],
+                            {eval_model.discussion_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.discussion_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.discussion_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.discussion_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.discussion_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.discussion_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "directions":
                         summaries = sess.run(
-                            [model.directions_err80_summary,
-                             model.directions_err160_summary,
-                             model.directions_err320_summary,
-                             model.directions_err400_summary,
-                             model.directions_err560_summary,
-                             model.directions_err1000_summary],
-                            {model.directions_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.directions_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.directions_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.directions_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.directions_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.directions_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.directions_err80_summary,
+                             eval_model.directions_err160_summary,
+                             eval_model.directions_err320_summary,
+                             eval_model.directions_err400_summary,
+                             eval_model.directions_err560_summary,
+                             eval_model.directions_err1000_summary],
+                            {eval_model.directions_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.directions_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.directions_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.directions_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.directions_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.directions_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "greeting":
                         summaries = sess.run(
-                            [model.greeting_err80_summary,
-                             model.greeting_err160_summary,
-                             model.greeting_err320_summary,
-                             model.greeting_err400_summary,
-                             model.greeting_err560_summary,
-                             model.greeting_err1000_summary],
-                            {model.greeting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.greeting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.greeting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.greeting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.greeting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.greeting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.greeting_err80_summary,
+                             eval_model.greeting_err160_summary,
+                             eval_model.greeting_err320_summary,
+                             eval_model.greeting_err400_summary,
+                             eval_model.greeting_err560_summary,
+                             eval_model.greeting_err1000_summary],
+                            {eval_model.greeting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.greeting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.greeting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.greeting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.greeting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.greeting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "phoning":
                         summaries = sess.run(
-                            [model.phoning_err80_summary,
-                             model.phoning_err160_summary,
-                             model.phoning_err320_summary,
-                             model.phoning_err400_summary,
-                             model.phoning_err560_summary,
-                             model.phoning_err1000_summary],
-                            {model.phoning_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.phoning_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.phoning_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.phoning_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.phoning_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.phoning_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.phoning_err80_summary,
+                             eval_model.phoning_err160_summary,
+                             eval_model.phoning_err320_summary,
+                             eval_model.phoning_err400_summary,
+                             eval_model.phoning_err560_summary,
+                             eval_model.phoning_err1000_summary],
+                            {eval_model.phoning_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.phoning_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.phoning_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.phoning_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.phoning_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.phoning_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "posing":
                         summaries = sess.run(
-                            [model.posing_err80_summary,
-                             model.posing_err160_summary,
-                             model.posing_err320_summary,
-                             model.posing_err400_summary,
-                             model.posing_err560_summary,
-                             model.posing_err1000_summary],
-                            {model.posing_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.posing_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.posing_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.posing_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.posing_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.posing_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.posing_err80_summary,
+                             eval_model.posing_err160_summary,
+                             eval_model.posing_err320_summary,
+                             eval_model.posing_err400_summary,
+                             eval_model.posing_err560_summary,
+                             eval_model.posing_err1000_summary],
+                            {eval_model.posing_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.posing_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.posing_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.posing_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.posing_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.posing_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "purchases":
                         summaries = sess.run(
-                            [model.purchases_err80_summary,
-                             model.purchases_err160_summary,
-                             model.purchases_err320_summary,
-                             model.purchases_err400_summary,
-                             model.purchases_err560_summary,
-                             model.purchases_err1000_summary],
-                            {model.purchases_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.purchases_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.purchases_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.purchases_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.purchases_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.purchases_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.purchases_err80_summary,
+                             eval_model.purchases_err160_summary,
+                             eval_model.purchases_err320_summary,
+                             eval_model.purchases_err400_summary,
+                             eval_model.purchases_err560_summary,
+                             eval_model.purchases_err1000_summary],
+                            {eval_model.purchases_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.purchases_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.purchases_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.purchases_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.purchases_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.purchases_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "sitting":
                         summaries = sess.run(
-                            [model.sitting_err80_summary,
-                             model.sitting_err160_summary,
-                             model.sitting_err320_summary,
-                             model.sitting_err400_summary,
-                             model.sitting_err560_summary,
-                             model.sitting_err1000_summary],
-                            {model.sitting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.sitting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.sitting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.sitting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.sitting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.sitting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.sitting_err80_summary,
+                             eval_model.sitting_err160_summary,
+                             eval_model.sitting_err320_summary,
+                             eval_model.sitting_err400_summary,
+                             eval_model.sitting_err560_summary,
+                             eval_model.sitting_err1000_summary],
+                            {eval_model.sitting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.sitting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.sitting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.sitting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.sitting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.sitting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "sittingdown":
                         summaries = sess.run(
-                            [model.sittingdown_err80_summary,
-                             model.sittingdown_err160_summary,
-                             model.sittingdown_err320_summary,
-                             model.sittingdown_err400_summary,
-                             model.sittingdown_err560_summary,
-                             model.sittingdown_err1000_summary],
-                            {model.sittingdown_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.sittingdown_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.sittingdown_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.sittingdown_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.sittingdown_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.sittingdown_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.sittingdown_err80_summary,
+                             eval_model.sittingdown_err160_summary,
+                             eval_model.sittingdown_err320_summary,
+                             eval_model.sittingdown_err400_summary,
+                             eval_model.sittingdown_err560_summary,
+                             eval_model.sittingdown_err1000_summary],
+                            {eval_model.sittingdown_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.sittingdown_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.sittingdown_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.sittingdown_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.sittingdown_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.sittingdown_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "takingphoto":
                         summaries = sess.run(
-                            [model.takingphoto_err80_summary,
-                             model.takingphoto_err160_summary,
-                             model.takingphoto_err320_summary,
-                             model.takingphoto_err400_summary,
-                             model.takingphoto_err560_summary,
-                             model.takingphoto_err1000_summary],
-                            {model.takingphoto_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.takingphoto_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.takingphoto_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.takingphoto_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.takingphoto_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.takingphoto_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.takingphoto_err80_summary,
+                             eval_model.takingphoto_err160_summary,
+                             eval_model.takingphoto_err320_summary,
+                             eval_model.takingphoto_err400_summary,
+                             eval_model.takingphoto_err560_summary,
+                             eval_model.takingphoto_err1000_summary],
+                            {eval_model.takingphoto_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.takingphoto_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.takingphoto_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.takingphoto_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.takingphoto_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.takingphoto_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "waiting":
                         summaries = sess.run(
-                            [model.waiting_err80_summary,
-                             model.waiting_err160_summary,
-                             model.waiting_err320_summary,
-                             model.waiting_err400_summary,
-                             model.waiting_err560_summary,
-                             model.waiting_err1000_summary],
-                            {model.waiting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.waiting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.waiting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.waiting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.waiting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.waiting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.waiting_err80_summary,
+                             eval_model.waiting_err160_summary,
+                             eval_model.waiting_err320_summary,
+                             eval_model.waiting_err400_summary,
+                             eval_model.waiting_err560_summary,
+                             eval_model.waiting_err1000_summary],
+                            {eval_model.waiting_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.waiting_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.waiting_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.waiting_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.waiting_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.waiting_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "walkingdog":
                         summaries = sess.run(
-                            [model.walkingdog_err80_summary,
-                             model.walkingdog_err160_summary,
-                             model.walkingdog_err320_summary,
-                             model.walkingdog_err400_summary,
-                             model.walkingdog_err560_summary,
-                             model.walkingdog_err1000_summary],
-                            {model.walkingdog_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.walkingdog_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.walkingdog_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.walkingdog_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.walkingdog_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
-                             model.walkingdog_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
+                            [eval_model.walkingdog_err80_summary,
+                             eval_model.walkingdog_err160_summary,
+                             eval_model.walkingdog_err320_summary,
+                             eval_model.walkingdog_err400_summary,
+                             eval_model.walkingdog_err560_summary,
+                             eval_model.walkingdog_err1000_summary],
+                            {eval_model.walkingdog_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.walkingdog_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.walkingdog_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.walkingdog_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.walkingdog_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.walkingdog_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
                     elif action == "walkingtogether":
                         summaries = sess.run(
-                            [model.walkingtogether_err80_summary,
-                             model.walkingtogether_err160_summary,
-                             model.walkingtogether_err320_summary,
-                             model.walkingtogether_err400_summary,
-                             model.walkingtogether_err560_summary,
-                             model.walkingtogether_err1000_summary],
-                            {model.walkingtogether_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
-                             model.walkingtogether_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
-                             model.walkingtogether_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
-                             model.walkingtogether_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             model.walkingtogether_err560 : mean_mean_errors[
+                            [eval_model.walkingtogether_err80_summary,
+                             eval_model.walkingtogether_err160_summary,
+                             eval_model.walkingtogether_err320_summary,
+                             eval_model.walkingtogether_err400_summary,
+                             eval_model.walkingtogether_err560_summary,
+                             eval_model.walkingtogether_err1000_summary],
+                            {eval_model.walkingtogether_err80  : mean_mean_errors[1] if FLAGS.seq_length_out >= 2 else None,
+                             eval_model.walkingtogether_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
+                             eval_model.walkingtogether_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
+                             eval_model.walkingtogether_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
+                             eval_model.walkingtogether_err560 : mean_mean_errors[
                                  13] if FLAGS.seq_length_out >= 14 else None,
-                             model.walkingtogether_err1000: mean_mean_errors[
+                             eval_model.walkingtogether_err1000: mean_mean_errors[
                                  24] if FLAGS.seq_length_out >= 25 else None})
 
                     for i in np.arange(len(summaries)):
-                        model.test_writer.add_summary(summaries[i], current_step)
+                        test_writer.add_summary(summaries[i], current_step)
 
                 print()
                 print("============================\n"
@@ -499,19 +533,17 @@ def train():
                       "--------------------------\n"
                       "Val loss:            %.4f\n"
                       "srnn loss:           %.4f\n"
-                      "============================"%(model.global_step.eval(),
-                                                      model.learning_rate.eval(), step_time*1000, loss,
-                                                      val_loss, srnn_loss))
+                      "============================" % (current_step, train_model.learning_rate.eval(), step_time*1000,
+                                                        loss, val_loss, srnn_loss))
                 print()
 
                 previous_losses.append(loss)
 
                 # Save the model
-                if current_step%FLAGS.save_every == 0:
-                    print("Saving the model...");
+                if current_step % FLAGS.save_every == 0:
+                    print("Saving the model...")
                     start_time = time.time()
-                    model.saver.save(sess, os.path.normpath(os.path.join(train_dir, 'checkpoint')),
-                                     global_step=current_step)
+                    saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=current_step)
                     print("done in {0:.2f} ms".format((time.time() - start_time)*1000))
 
                 # Reset global time and loss
@@ -567,8 +599,8 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
 def sample():
     """Sample predictions for srnn's seeds"""
 
-    if FLAGS.load <= 0:
-        raise (ValueError, "Must give an iteration to read parameters from")
+    if FLAGS.experiment_id is None:
+        raise (ValueError, "Must give an experiment id to read parameters from")
 
     actions = define_actions(FLAGS.action)
 
@@ -579,7 +611,7 @@ def sample():
         # === Create the model ===
         print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
         sampling = True
-        model = create_martinez_model(sess, actions, sampling)
+        train_model, eval_model, saver, global_step = create_martinez_model(sess, actions, sampling)
         print("Model created")
 
         # Load all the data
@@ -588,13 +620,13 @@ def sample():
 
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
-        srnn_gts_expmap = get_srnn_gts(actions, model, test_set, data_mean,
-                                       data_std, dim_to_ignore, not FLAGS.omit_one_hot, to_euler=False)
-        srnn_gts_euler = get_srnn_gts(actions, model, test_set, data_mean,
-                                      data_std, dim_to_ignore, not FLAGS.omit_one_hot)
+        srnn_gts_expmap = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
+                                       not FLAGS.omit_one_hot, to_euler=False)
+        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
+                                      not FLAGS.omit_one_hot)
 
         # Clean and create a new h5 file of samples
-        SAMPLES_FNAME = 'samples.h5'
+        SAMPLES_FNAME = os.path.join(experiment_dir, 'samples.h5')
         try:
             os.remove(SAMPLES_FNAME)
         except OSError:
@@ -604,11 +636,8 @@ def sample():
         for action in actions:
 
             # Make prediction with srnn' seeds
-            encoder_inputs, decoder_inputs, decoder_outputs = model.get_batch_srnn(test_set, action)
-            forward_only = True
-            srnn_seeds = True
-            srnn_loss, srnn_poses, _ = model.step(sess, encoder_inputs, decoder_inputs, decoder_outputs, forward_only,
-                                                  srnn_seeds)
+            encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch_srnn(test_set, action)
+            srnn_loss, _, srnn_poses = eval_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
 
             # denormalizes too
             srnn_pred_expmap = data_utils.revert_output_format(srnn_poses, data_mean, data_std, dim_to_ignore, actions,
