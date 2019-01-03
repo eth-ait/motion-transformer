@@ -11,6 +11,10 @@ import time
 import copy
 import data_utils
 
+import argparse
+import glob
+import os
+
 
 def fkl(angles, parent, offset, rotInd, expmapInd):
     """
@@ -169,12 +173,12 @@ def _some_variables():
     return parent, offset, rotInd, expmapInd
 
 
-def main():
+def main(sample_path):
     # Load all the data
     parent, offset, rotInd, expmapInd = _some_variables()
 
     # numpy implementation
-    with h5py.File('samples.h5', 'r') as h5f:
+    with h5py.File(sample_path, 'r') as h5f:
         expmap_gt = h5f['expmap/gt/walking_0'][:]
         expmap_pred = h5f['expmap/preds/walking_0'][:]
 
@@ -213,4 +217,17 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--sample_path', required=False, default=None, type=str, help='Path to motion samples file.')
+    parser.add_argument('--experiment_id', required=False, default=None, type=str, help='Experiment folder id to read samples.h5 file from.')
+    args = parser.parse_args()
+
+    if args.sample_path is not None:
+        sample_path = args.sample_path
+    elif args.experiment_id is not None:
+        experiment_dir = glob.glob(os.path.join("../experiments", args.experiment_id + "-*"), recursive=False)[0]
+        sample_path = os.path.join(experiment_dir, "samples.h5")
+    else:
+        raise Exception("Sample file is required.")
+
+    main(sample_path)
