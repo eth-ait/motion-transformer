@@ -21,6 +21,7 @@ import seq2seq_model
 # ETH imports
 from constants import Constants as C
 import glob
+import json
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
@@ -48,87 +49,31 @@ tf.app.flags.DEFINE_string("action", "all",
                            "eating and smoking")
 tf.app.flags.DEFINE_string("loss_to_use", "sampling_based", "The type of loss to use, supervised or sampling_based")
 
-tf.app.flags.DEFINE_integer("test_every", 500, "How often to compute error on the test set.")
-tf.app.flags.DEFINE_integer("save_every", 1000, "How often to compute error on the test set.")
+tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
+tf.app.flags.DEFINE_integer("save_every", 2000, "How often to compute error on the test set.")
 tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq or stcn.")
 
 FLAGS = tf.app.flags.FLAGS
 
-experiment_name_format = "{}-{}-out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
 # Unique timestamp to distinguish experiments with the same configuration.
 experiment_timestamp = str(int(time.time()))
-experiment_name = experiment_name_format.format(experiment_timestamp,
-                                                FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
-                                                FLAGS.seq_length_out,
-                                                FLAGS.iterations,
-                                                FLAGS.architecture,
-                                                FLAGS.loss_to_use,
-                                                'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
-                                                FLAGS.num_layers,
-                                                FLAGS.size,
-                                                FLAGS.learning_rate,
-                                                'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel')
-if FLAGS.experiment_id is None:
-    experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
-else:
-    experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
-
-summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))  # Directory for TB summaries
 
 
-def create_eth_model():
-    pass
+def create_model(session, actions, sampling=False):
+    # Global step variable.
+    global_step = tf.Variable(1, trainable=False, name='global_step')
 
-
-def create_martinez_model(session, actions, sampling=False):
-    """Create translation model and initialize or load parameters in session."""
-    # with tf.name_scope(C.TRAIN):
-    train_model = seq2seq_model.Seq2SeqModel(
-        session=session,
-        mode=C.TRAIN,
-        reuse=False,
-        architecture=FLAGS.architecture,
-        source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-        target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-        rnn_size=FLAGS.size,  # hidden layer size
-        num_layers=FLAGS.num_layers,
-        max_gradient_norm=FLAGS.max_gradient_norm,
-        batch_size=FLAGS.batch_size,
-        learning_rate=FLAGS.learning_rate,
-        learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-        summaries_dir=summaries_dir,
-        loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
-        number_of_actions=len(actions),
-        one_hot=not FLAGS.omit_one_hot,
-        residual_velocities=FLAGS.residual_velocities,
-        dtype=tf.float32)
-    train_model.build_graph()
-
-    # with tf.name_scope(C.SAMPLE):
-    eval_model = seq2seq_model.Seq2SeqModel(
-        session=session,
-        mode=C.SAMPLE,
-        reuse=True,
-        architecture=FLAGS.architecture,
-        source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-        target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-        rnn_size=FLAGS.size,  # hidden layer size
-        num_layers=FLAGS.num_layers,
-        max_gradient_norm=FLAGS.max_gradient_norm,
-        batch_size=FLAGS.batch_size,
-        learning_rate=FLAGS.learning_rate,
-        learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-        summaries_dir=summaries_dir,
-        loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
-        number_of_actions=len(actions),
-        one_hot=not FLAGS.omit_one_hot,
-        residual_velocities=FLAGS.residual_velocities,
-        dtype=tf.float32)
-    eval_model.build_graph()
+    if FLAGS.model_type == "seq2seq":
+        train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
+    elif FLAGS.model_type == "stcn":
+        train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
+    else:
+        raise Exception("Unknown model type.")
 
     train_model.optimization_routines()
     train_model.summary_routines()
@@ -136,13 +81,11 @@ def create_martinez_model(session, actions, sampling=False):
 
     # Create saver.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
-    # Global step variable.
-    global_step = tf.Variable(1, trainable=False, name='global_step')
 
     if FLAGS.experiment_id is None:
         print("Creating model with fresh parameters.")
         session.run(tf.global_variables_initializer())
-        return train_model, eval_model, saver, global_step
+        return train_model, eval_model, saver, global_step, experiment_dir
 
     # Load a pre-trained model.
     ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
@@ -152,7 +95,8 @@ def create_martinez_model(session, actions, sampling=False):
         # Check if the specific checkpoint exists
         if FLAGS.load > 0:
             if os.path.isfile(os.path.join(experiment_dir, "checkpoint-{0}.index".format(FLAGS.load))):
-                ckpt_name = os.path.normpath(os.path.join(os.path.join(experiment_dir, "checkpoint-{0}".format(FLAGS.load))))
+                ckpt_name = os.path.normpath(
+                    os.path.join(os.path.join(experiment_dir, "checkpoint-{0}".format(FLAGS.load))))
             else:
                 raise ValueError("Asked to load checkpoint {0}, but it does not seem to exist".format(FLAGS.load))
         else:
@@ -160,10 +104,188 @@ def create_martinez_model(session, actions, sampling=False):
 
         print("Loading model {0}".format(ckpt_name))
         saver.restore(session, ckpt.model_checkpoint_path)
-        return train_model, eval_model, saver, global_step
+        return train_model, eval_model, saver, global_step, experiment_dir
     else:
         print("Could not find checkpoint. Aborting.")
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
+
+
+def create_stcn_model(session, actions, sampling=False):
+    """Create translation model and initialize or load parameters in session."""
+    config = dict()
+    config['learning_rate'] = 1e-3
+    config['learning_rate_decay_rate'] = 0.98
+    config['learning_rate_type'] = 'exponential'
+    config['learning_rate_decay_steps'] = 1000
+    config['latent_layer'] = dict()
+    config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    config['latent_layer']['latent_size'] = [128, 64, 32, 16]
+    config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
+    config['latent_layer']['layer_structure'] = C.LAYER_CONV1
+    config['latent_layer']["hidden_activation_fn"] = C.RELU
+    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_layers"] = 1
+    config['latent_layer']['vertical_dilation'] = 4
+    config['latent_layer']['use_z0'] = False
+    config['latent_layer']['kld_q0_z0'] = False
+    config['latent_layer']['kld_p0_z0'] = False
+    config['latent_layer']['use_pwu_z0'] = True
+    config['latent_layer']['use_fixed_pz1'] = False
+    config['latent_layer']['use_same_q_sample'] = False
+    config['latent_layer']['dynamic_prior'] = True
+    config['latent_layer']['precision_weighted_update'] = True
+    config['latent_layer']['recursive_q'] = True
+    config['latent_layer']['share_latent_params'] = False
+    config['latent_layer']['share_vertical_latent_params'] = False
+    config['latent_layer']['use_p_input_in_q'] = False
+    config['latent_layer']["top_down_latents"] = True
+    config['latent_layer']['use_all_z'] = True
+    config['latent_layer']['use_skip_latent'] = False
+    config['latent_layer']['p_q_replacement_ratio'] = 0
+    config['latent_layer']['latent_sigma_threshold'] = 2.0
+    config['input_layer'] = dict()
+    config['input_layer']['dropout_rate'] = 0
+    config['output_layer'] = dict()
+    config['output_layer']['num_layers'] = 1
+    config['output_layer']['size'] = 128
+    config['output_layer']['type'] = C.LAYER_TCN
+    config['output_layer']['filter_size'] = 5
+    config['cnn_layer'] = dict()
+    config['cnn_layer']['num_layers'] = 16
+    config['cnn_layer']['num_encoder_layers'] = 16
+    config['cnn_layer']['num_decoder_layers'] = 0
+    config['cnn_layer']['num_filters'] = 128
+    config['cnn_layer']['filter_size'] = 2
+    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*4
+    config['cnn_layer']['activation_fn'] = C.RELU
+    config['cnn_layer']['use_residual'] = True
+    config['cnn_layer']['use_skip'] = False
+    config['cnn_layer']['zero_padding'] = True
+    config['decoder_use_enc_prev'] = False
+    config['decoder_use_raw_inputs'] = False
+    config['grad_clip_by_norm'] = 1
+    config['loss_encoder_inputs'] = False
+    config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
+    config['residual_velocities'] = FLAGS.residual_velocities
+
+    with tf.name_scope(C.TRAIN):
+        train_model = seq2seq_model.STCN(
+            config=config,
+            session=session,
+            mode=C.TRAIN,
+            reuse=False,
+            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+            batch_size=FLAGS.batch_size,
+            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            number_of_actions=len(actions),
+            one_hot=not FLAGS.omit_one_hot,
+            dtype=tf.float32)
+        train_model.build_graph()
+
+    with tf.name_scope(C.SAMPLE):
+        eval_model = seq2seq_model.STCN(
+            config=config,
+            session=session,
+            mode=C.SAMPLE,
+            reuse=True,
+            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+            batch_size=FLAGS.batch_size,
+            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            number_of_actions=len(actions),
+            one_hot=not FLAGS.omit_one_hot,
+            dtype=tf.float32)
+        eval_model.build_graph()
+
+    experiment_name_format = "{}-{}{}-{}x{}@{}{}-{}-{}-{}"
+    experiment_name = experiment_name_format.format(experiment_timestamp,
+                                                    FLAGS.model_type,
+                                                    "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
+                                                    config['cnn_layer']['num_layers'],
+                                                    config['cnn_layer']['num_filters'],
+                                                    config['cnn_layer']['filter_size'],
+                                                    '-residual_vel' if FLAGS.residual_velocities else '',
+                                                    FLAGS.seq_length_out,
+                                                    config['angle_loss_type'],
+                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot')
+    if FLAGS.experiment_id is None:
+        experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
+    else:
+        experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
+    if not os.path.exists(experiment_dir):
+        os.mkdir(experiment_dir)
+    json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
+
+    return train_model, eval_model, experiment_dir
+
+
+def create_seq2seq_model(session, actions, sampling=False):
+    """Create translation model and initialize or load parameters in session."""
+    # with tf.name_scope(C.TRAIN):
+    with tf.name_scope(C.TRAIN):
+        train_model = seq2seq_model.Seq2SeqModel(
+            session=session,
+            mode=C.TRAIN,
+            reuse=False,
+            architecture=FLAGS.architecture,
+            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+            rnn_size=FLAGS.size,  # hidden layer size
+            num_layers=FLAGS.num_layers,
+            max_gradient_norm=FLAGS.max_gradient_norm,
+            batch_size=FLAGS.batch_size,
+            learning_rate=FLAGS.learning_rate,
+            learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
+            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            number_of_actions=len(actions),
+            one_hot=not FLAGS.omit_one_hot,
+            residual_velocities=FLAGS.residual_velocities,
+            dtype=tf.float32)
+        train_model.build_graph()
+
+    with tf.name_scope(C.SAMPLE):
+        eval_model = seq2seq_model.Seq2SeqModel(
+            session=session,
+            mode=C.SAMPLE,
+            reuse=True,
+            architecture=FLAGS.architecture,
+            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
+            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
+            rnn_size=FLAGS.size,  # hidden layer size
+            num_layers=FLAGS.num_layers,
+            max_gradient_norm=FLAGS.max_gradient_norm,
+            batch_size=FLAGS.batch_size,
+            learning_rate=FLAGS.learning_rate,
+            learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
+            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            number_of_actions=len(actions),
+            one_hot=not FLAGS.omit_one_hot,
+            residual_velocities=FLAGS.residual_velocities,
+            dtype=tf.float32)
+        eval_model.build_graph()
+
+    experiment_name_format = "{}-{}-{}-out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
+    experiment_name = experiment_name_format.format(experiment_timestamp,
+                                                    FLAGS.model_type,
+                                                    FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
+                                                    FLAGS.seq_length_out,
+                                                    FLAGS.iterations,
+                                                    FLAGS.architecture,
+                                                    FLAGS.loss_to_use,
+                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                    FLAGS.num_layers,
+                                                    FLAGS.size,
+                                                    FLAGS.learning_rate,
+                                                    'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel')
+    if FLAGS.experiment_id is None:
+        experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
+    else:
+        experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
+    if not os.path.exists(experiment_dir):
+        os.mkdir(experiment_dir)
+
+    return train_model, eval_model, experiment_dir
 
 
 def train():
@@ -182,16 +304,12 @@ def train():
     device_count = {"GPU": 0} if FLAGS.use_cpu else {"GPU": 1}
 
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
-
-        # Summary writers for train and test runs
-        train_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'train')))
-        test_writer = tf.summary.FileWriter(os.path.normpath(os.path.join(summaries_dir, 'test')))
-
         # === Create the model ===
-        print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
-
-        train_model, eval_model, saver, global_step = create_martinez_model(sess, actions)
-        train_writer.add_graph(sess.graph)
+        train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions)
+        # Summary writers for train and test runs
+        summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
+        train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
+        test_writer = train_writer
         print("Model created")
 
         num_param = 0
@@ -216,10 +334,10 @@ def train():
 
             # === Training step ===
             encoder_inputs, decoder_inputs, decoder_outputs = train_model.get_batch(train_set, not FLAGS.omit_one_hot)
-            step_loss, loss_summary, lr_summary, grad_summary = train_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
-            train_writer.add_summary(loss_summary, current_step)
-            train_writer.add_summary(lr_summary, current_step)
-            train_writer.add_summary(grad_summary, current_step)
+            step_loss, summary, _ = train_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
+            train_writer.add_summary(summary, current_step)
+            # train_writer.add_summary(lr_summary, current_step)
+            # train_writer.add_summary(grad_summary, current_step)
 
             if current_step % 100 == 0:
                 print("step {0:04d}; step_loss: {1:.4f}".format(current_step, step_loss))
@@ -229,7 +347,7 @@ def train():
             current_step += 1
 
             # === step decay ===
-            if current_step % FLAGS.learning_rate_step == 0:
+            if current_step % FLAGS.learning_rate_step == 0 and train_model.learning_rate_scheduler is not None:
                 sess.run(train_model.learning_rate_scheduler)
 
             # Once in a while, we save checkpoint, print statistics, and run evals.
@@ -611,7 +729,7 @@ def sample():
         # === Create the model ===
         print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
         sampling = True
-        train_model, eval_model, saver, global_step = create_martinez_model(sess, actions, sampling)
+        train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions, sampling)
         print("Model created")
 
         # Load all the data
@@ -678,8 +796,8 @@ def sample():
                 mean_errors[i, :] = euc_error
 
             mean_mean_errors = np.mean(mean_errors, 0)
-            print(action)
-            print(','.join(map(str, mean_mean_errors.tolist())))
+            # print(action)
+            # print(','.join(map(str, mean_mean_errors.tolist())))
 
             with h5py.File(SAMPLES_FNAME, 'a') as hf:
                 node_name = 'mean_{0}_error'.format(action)
@@ -741,6 +859,7 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot):
         seq_length_in, seq_length_out))
 
     train_subject_ids = [1, 6, 7, 8, 9, 11]
+    # train_subject_ids = [1]
     test_subject_ids = [5]
 
     train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot)
