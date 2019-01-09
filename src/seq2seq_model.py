@@ -574,6 +574,13 @@ class Seq2SeqModel(BaseModel):
             outputs = self.session.run(output_feed, input_feed)
             return outputs[0], outputs[1], outputs[2]
 
+    def sampled_step(self, encoder_inputs, decoder_inputs, decoder_outputs):
+        """
+        Generates a synthetic sequence by feeding the prediction at t+1.
+        """
+        assert self.is_eval, "Only works in sampling mode."
+        return self.step(encoder_inputs, decoder_inputs, decoder_outputs)[2]
+
 
 class STCN(BaseModel):
     def __init__(self,
@@ -662,10 +669,14 @@ class STCN(BaseModel):
             # [0,1,2,3,4,5,6,7,8]
             self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
             # [9,10,11,12,13]
-            self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
+            if self.is_training:
+                self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
+                self.sequence_length = self.source_seq_len + self.target_seq_len - 1
+            else:
+                self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, None, self.input_size], name="dec_in")
+                self.sequence_length = tf.shape(self.decoder_inputs)[1]
             # [10,11,12,13,14]
             self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
-            self.sequence_length = self.source_seq_len + self.target_seq_len - 1
 
         # Get the last frame of decoder_outputs in order to use in approximate inference.
         last_frame = self.decoder_outputs[:, -1:, :]
@@ -814,26 +825,28 @@ class STCN(BaseModel):
                 if self.residual_velocities:
                     self.outputs_tensor += self.pl_inputs[:, 0:-1]
                 # This code repository expects the outputs to be a list of time-steps.
-                outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+                # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
                 # Select only the "decoder" predictions.
-                self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in outputs_list[-self.target_seq_len:]]
+                self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
 
     def build_loss(self):
         if self.is_eval or not self.loss_encoder_inputs:
             predictions = self.outputs_tensor[:, -self.target_seq_len:, :]
             targets = self.pl_targets[:, -self.target_seq_len:, :]
+            seq_len = self.target_seq_len
         else:
             predictions = self.outputs_tensor
             targets = self.pl_targets
+            seq_len = self.sequence_length
 
         with tf.name_scope("loss_angles"):
             if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
                 self.loss = tf.reduce_mean(tf.square(targets - predictions))
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, self.target_seq_len, 23, 3)), axis=-1))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
                 self.loss = tf.reduce_mean(per_joint_loss)
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, self.target_seq_len, 23, 3)), axis=-1))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
                 per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 self.loss = tf.reduce_mean(per_pose_loss)
             else:
@@ -898,18 +911,25 @@ class STCN(BaseModel):
             outputs = self.session.run(output_feed, input_feed)
             return outputs[0], outputs[1], outputs[2]
 
-    def sample_function(self, encoder_inputs, decoder_inputs, decoder_outputs):
+    def sampled_step(self, encoder_inputs, decoder_inputs, decoder_outputs):
         """
         Generates a synthetic sequence by feeding the prediction at t+1.
         """
-        predictions = np.concatenate([encoder_inputs, decoder_inputs[:, 0, :]], axis=1)
-        dummy_frame = np.zeros([predictions.shape[0], 1, predictions.shape[2]])
+        assert self.is_eval, "Only works in sampling mode."
+
+        input_sequence = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1, :]], axis=1)
+        dummy_frame = np.zeros([input_sequence.shape[0], 1, input_sequence.shape[2]])
+        predictions = []
         for step in range(self.target_seq_len):
-            model_inputs = np.concatenate([predictions, dummy_frame], axis=1)
-            end_idx = min(self.receptive_field_width, model_inputs.shape[1])
-            model_inputs = model_inputs[:, -end_idx:]
+            end_idx = min(self.receptive_field_width, input_sequence.shape[1])
+            model_inputs = input_sequence[:, -end_idx:]
+            # Insert a dummy frame since the sampling model ignores the last step.
+            model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
             model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.pl_inputs: model_inputs})
-            predictions = np.concatenate([predictions, model_outputs], axis=1)
+            predictions.append(model_outputs[:, -1, :])
+            input_sequence = np.concatenate([input_sequence, np.expand_dims(predictions[-1], axis=1)], axis=1)
+
+        return predictions
 
     @staticmethod
     def receptive_field_size(filter_size, dilation_size_list):

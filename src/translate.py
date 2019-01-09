@@ -25,8 +25,7 @@ import json
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95,
-                          "Learning rate is multiplied by this much. 1 means no decay.")
+tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate is multiplied by this much. 1 means no decay.")
 tf.app.flags.DEFINE_integer("learning_rate_step", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
@@ -38,15 +37,12 @@ tf.app.flags.DEFINE_integer("num_layers", 1, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder. 25 fps")
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("omit_one_hot", False, "Whether to remove one-hot encoding from the data")
-tf.app.flags.DEFINE_boolean("residual_velocities", False,
-                            "Add a residual connection that effectively models velocities")
+tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 # Directories
 tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset"), "Data directory")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments/"), "Training directory.")
 
-tf.app.flags.DEFINE_string("action", "all",
-                           "The action to train on. all means all the actions, all_periodic means walking, "
-                           "eating and smoking")
+tf.app.flags.DEFINE_string("action", "all", "The action to train on. all means all the actions, all_periodic means walking, eating and smoking")
 tf.app.flags.DEFINE_string("loss_to_use", "sampling_based", "The type of loss to use, supervised or sampling_based")
 
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
@@ -142,14 +138,14 @@ def create_stcn_model(session, actions, sampling=False):
     config['latent_layer']['use_all_z'] = True
     config['latent_layer']['use_skip_latent'] = False
     config['latent_layer']['p_q_replacement_ratio'] = 0
-    config['latent_layer']['latent_sigma_threshold'] = 2.0
+    config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
     config['input_layer']['dropout_rate'] = 0
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
+    config['output_layer']['num_layers'] = 5
     config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
-    config['output_layer']['filter_size'] = 5
+    config['output_layer']['filter_size'] = 2
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_layers'] = 16
     config['cnn_layer']['num_encoder_layers'] = 16
@@ -164,7 +160,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['decoder_use_enc_prev'] = False
     config['decoder_use_raw_inputs'] = False
     config['grad_clip_by_norm'] = 1
-    config['loss_encoder_inputs'] = False
+    config['loss_encoder_inputs'] = True
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
 
@@ -198,7 +194,7 @@ def create_stcn_model(session, actions, sampling=False):
             dtype=tf.float32)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}{}-{}x{}@{}{}-{}-{}-{}"
+    experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
@@ -206,6 +202,7 @@ def create_stcn_model(session, actions, sampling=False):
                                                     config['cnn_layer']['num_filters'],
                                                     config['cnn_layer']['filter_size'],
                                                     '-residual_vel' if FLAGS.residual_velocities else '',
+                                                    FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     config['angle_loss_type'],
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot')
@@ -265,10 +262,11 @@ def create_seq2seq_model(session, actions, sampling=False):
             dtype=tf.float32)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}-{}-out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
+    experiment_name_format = "{}-{}-{}-in{}_out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
+                                                    FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     FLAGS.iterations,
                                                     FLAGS.architecture,
@@ -367,12 +365,11 @@ def train():
                 print()
 
                 # === Validation with srnn's seeds ===
-                srnn_loss = 0
                 for action in actions:
 
                     # Evaluate the model on the test batches
                     encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch_srnn(test_set, action)
-                    srnn_loss, _, srnn_poses = eval_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
+                    srnn_poses = eval_model.sampled_step(encoder_inputs, decoder_inputs, decoder_outputs)
 
                     # Denormalize the output
                     srnn_pred_expmap = data_utils.revert_output_format(srnn_poses,
@@ -650,9 +647,8 @@ def train():
                       "Train loss avg:      %.4f\n"
                       "--------------------------\n"
                       "Val loss:            %.4f\n"
-                      "srnn loss:           %.4f\n"
                       "============================" % (current_step, train_model.learning_rate.eval(), step_time*1000,
-                                                        loss, val_loss, srnn_loss))
+                                                        loss, val_loss))
                 print()
 
                 previous_losses.append(loss)
@@ -755,7 +751,7 @@ def sample():
 
             # Make prediction with srnn' seeds
             encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch_srnn(test_set, action)
-            srnn_loss, _, srnn_poses = eval_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
+            srnn_poses = eval_model.sampled_step(encoder_inputs, decoder_inputs, decoder_outputs)
 
             # denormalizes too
             srnn_pred_expmap = data_utils.revert_output_format(srnn_poses, data_mean, data_std, dim_to_ignore, actions,
