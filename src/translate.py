@@ -68,6 +68,8 @@ def create_model(session, actions, sampling=False):
         train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
     elif FLAGS.model_type == "stcn":
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
+    elif FLAGS.model_type == "wavenet":
+        train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     else:
         raise Exception("Unknown model type.")
 
@@ -115,13 +117,13 @@ def create_stcn_model(session, actions, sampling=False):
     config['learning_rate_decay_steps'] = 1000
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [128, 64, 32, 16]
+    config['latent_layer']['latent_size'] = [256, 128, 64, 32, 16, 8, 4]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
     config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 1
-    config['latent_layer']['vertical_dilation'] = 4
+    config['latent_layer']['vertical_dilation'] = 3
     config['latent_layer']['use_z0'] = False
     config['latent_layer']['kld_q0_z0'] = False
     config['latent_layer']['kld_p0_z0'] = False
@@ -147,25 +149,32 @@ def create_stcn_model(session, actions, sampling=False):
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['cnn_layer'] = dict()
-    config['cnn_layer']['num_layers'] = 16
-    config['cnn_layer']['num_encoder_layers'] = 16
+    config['cnn_layer']['num_encoder_layers'] = 21
     config['cnn_layer']['num_decoder_layers'] = 0
     config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
-    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*4
+    config['cnn_layer']['dilation_size'] = [1, 2, 4]*7
     config['cnn_layer']['activation_fn'] = C.RELU
     config['cnn_layer']['use_residual'] = True
-    config['cnn_layer']['use_skip'] = False
     config['cnn_layer']['zero_padding'] = True
-    config['decoder_use_enc_prev'] = False
+    config['decoder_use_enc_skip'] = False
+    config['decoder_use_enc_last'] = False
     config['decoder_use_raw_inputs'] = False
     config['grad_clip_by_norm'] = 1
     config['loss_encoder_inputs'] = True
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
 
+    if FLAGS.model_type == "stcn":
+        model_cls = seq2seq_model.STCN
+    elif FLAGS.model_type == "wavenet":
+        model_cls = seq2seq_model.Wavenet
+        del config["latent_layer"]
+    else:
+        raise Exception()
+
     with tf.name_scope(C.TRAIN):
-        train_model = seq2seq_model.STCN(
+        train_model = model_cls(
             config=config,
             session=session,
             mode=C.TRAIN,
@@ -180,7 +189,7 @@ def create_stcn_model(session, actions, sampling=False):
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
-        eval_model = seq2seq_model.STCN(
+        eval_model = model_cls(
             config=config,
             session=session,
             mode=C.SAMPLE,
@@ -198,7 +207,7 @@ def create_stcn_model(session, actions, sampling=False):
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
-                                                    config['cnn_layer']['num_layers'],
+                                                    config['cnn_layer']['num_encoder_layers'],
                                                     config['cnn_layer']['num_filters'],
                                                     config['cnn_layer']['filter_size'],
                                                     '-residual_vel' if FLAGS.residual_velocities else '',
@@ -298,9 +307,8 @@ def train():
                                                                                         not FLAGS.omit_one_hot)
 
     # Limit TF to take a fraction of the GPU memory
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=1)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.8)
     device_count = {"GPU": 0} if FLAGS.use_cpu else {"GPU": 1}
-
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
         # === Create the model ===
         train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions)

@@ -532,10 +532,12 @@ class Seq2SeqModel(BaseModel):
 
         # Update all the trainable parameters
         gradients = tf.gradients(self.loss, params)
-
         # Apply gradient clipping.
-        clipped_gradients, norm = tf.clip_by_global_norm(gradients, self.max_gradient_norm)
-        self.gradient_norms = norm
+        if self.max_gradient_norm > 0:
+            clipped_gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.max_gradient_norm)
+        else:
+            self.gradient_norms = tf.linalg.global_norm(gradients)
+            clipped_gradients = gradients
         self.parameter_update = opt.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
     def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
@@ -582,7 +584,7 @@ class Seq2SeqModel(BaseModel):
         return self.step(encoder_inputs, decoder_inputs, decoder_outputs)[2]
 
 
-class STCN(BaseModel):
+class Wavenet(BaseModel):
     def __init__(self,
                  config,
                  session,
@@ -596,9 +598,10 @@ class STCN(BaseModel):
                  one_hot=True,
                  dtype=tf.float32,
                  **kwargs):
-        super(STCN, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
-                                   target_seq_len=target_seq_len, batch_size=batch_size, one_hot=one_hot,
-                                   number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+        super(Wavenet, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
+                                      target_seq_len=target_seq_len, batch_size=batch_size, one_hot=one_hot,
+                                      number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype,
+                                      **kwargs)
         self.config = config
 
         self.input_layer_config = config.get('input_layer', None)
@@ -613,19 +616,13 @@ class STCN(BaseModel):
         self.zero_padding = self.cnn_layer_config.get('zero_padding', False)
         self.activation_fn = get_activation_fn(self.cnn_layer_config['activation_fn'])
 
-        self.decoder_use_enc_prev = self.config.get('decoder_use_enc_prev', False)
+        # Inputs to the decoder or output layer.
+        self.decoder_use_enc_skip = self.config.get('decoder_use_enc_skip', False)
+        self.decoder_use_enc_last = self.config.get('decoder_use_enc_last', False)
         self.decoder_use_raw_inputs = self.config.get('decoder_use_raw_inputs', False)
 
-        self.num_encoder_blocks = self.cnn_layer_config.get('num_encoder_layers', self.cnn_layer_config['num_layers'])
-        self.num_decoder_blocks = self.cnn_layer_config.get('num_decoder_layers', self.cnn_layer_config['num_layers'])
-
-        # Add latent layer related fields.
-        self.latent_layer_config = self.config.get("latent_layer")
-        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
-                                            layer_type=self.latent_layer_config["type"],
-                                            mode=mode,
-                                            reuse=reuse,
-                                            global_step=self.global_step)
+        self.num_encoder_blocks = self.cnn_layer_config.get('num_encoder_layers')
+        self.num_decoder_blocks = self.cnn_layer_config.get('num_decoder_layers')
 
         # List of temporal convolution layers that are used in encoder.
         self.encoder_blocks = []
@@ -633,10 +630,6 @@ class STCN(BaseModel):
         # List of temporal convolution layers that are used in decoder.
         self.decoder_blocks = []
         self.decoder_blocks_no_res = []
-
-        self.use_future_steps_in_q = self.config.get('use_future_steps_in_q', False)
-        self.bw_encoder_blocks = []
-        self.bw_encoder_blocks_no_res = []
 
         # Specific to this code:
         self.angle_loss_type = self.config.get("angle_loss_type", C.LOSS_POSE_ALL_MEAN)
@@ -686,13 +679,7 @@ class STCN(BaseModel):
 
     def build_network(self):
         # We always pad the input sequences such that the output sequence has the same length with input sequence.
-        self.receptive_field_width = STCN.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
-        """
-        # Shift the input sequence by one step so that the task is prediction of the next step.
-        with tf.name_scope("input_padding"):
-            shifted_inputs = tf.pad(self.pl_inputs, tf.constant([(0, 0,), (1, 0), (0, 0)]), mode='CONSTANT')
-        self.inputs_hidden = shifted_inputs
-        """
+        self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
         self.inputs_hidden = self.pl_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
@@ -701,68 +688,27 @@ class STCN(BaseModel):
         with tf.variable_scope("encoder", reuse=self.reuse):
             self.encoder_blocks, self.encoder_blocks_no_res = self.build_temporal_block(self.inputs_hidden, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
 
-        if self.use_future_steps_in_q:
-            reuse_params_in_bw = True
-            reversed_inputs = tf.manip.reverse(self.pl_inputs, axis=[1])
-            if reuse_params_in_bw:
-                with tf.variable_scope("encoder", reuse=True):
-                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
-            else:
-                with tf.variable_scope("bw_encoder", reuse=self.reuse):
-                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
-
-            self.bw_encoder_blocks = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks]
-            self.bw_encoder_blocks_no_res = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks_no_res]
-
-        with tf.variable_scope("latent", reuse=self.reuse):
-            prev_enc_output = self.encoder_blocks[-1][:, 0:-1]  # Top-most convolutional layer (prior inputs).
-            p_input = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks]
-            if self.latent_layer_config.get('dynamic_prior', False):
-                if self.use_future_steps_in_q:
-                    q_input = [tf.concat([fw_enc[:, 1:], bw_enc], axis=-1) for fw_enc, bw_enc in zip(self.encoder_blocks, self.bw_encoder_blocks)]
-                else:
-                    q_input = [enc_layer[:, 1:] for enc_layer in self.encoder_blocks]
-            else:
-                q_input = p_input
-            latent_sample = self.latent_layer.build_latent_layer(q_input=q_input, p_input=p_input)
+        decoder_inputs = []
+        if self.decoder_use_enc_skip:
+            skip_connections = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks_no_res]
+            decoder_inputs.append(self.activation_fn(sum(skip_connections)))
+        if self.decoder_use_enc_last:
+            decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
+        if self.decoder_use_raw_inputs:
+            decoder_inputs.append(self.pl_inputs[:, 0:-1])
 
         # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
         # build_output_layer. Note that there are several input options.
         if self.num_decoder_blocks > 0:
             with tf.variable_scope("decoder", reuse=self.reuse):
-                decoder_inputs = [latent_sample]
-                if self.use_skip is True:
-                    skip_connections = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks_no_res]
-                    decoder_inputs.append(self.activation_fn(sum(skip_connections)))
-                elif self.decoder_use_enc_prev:
-                    decoder_inputs.append(prev_enc_output)
-
-                if self.decoder_use_raw_inputs:
-                    decoder_inputs.append(self.pl_inputs[:, 0:-1])
-
                 decoder_input_layer = tf.concat(decoder_inputs, axis=-1)
                 decoder_filter_size = self.cnn_layer_config.get("decoder_filter_size", self.cnn_layer_config['filter_size'])
                 self.decoder_blocks, self.decoder_blocks_no_res = self.build_temporal_block(decoder_input_layer, self.num_decoder_blocks, self.reuse, kernel_size=decoder_filter_size)
-
-                # if self.use_skip is True and len(self.decoder_blocks) > 0:
-                #     decoder = self.activation_fn(sum(self.decoder_blocks))
-                #     self.temporal_block_outputs = tf.concat([latent_sample, decoder], axis=-1)
-                # else:
-                #     self.temporal_block_outputs = self.decoder_blocks[-1]
                 self.temporal_block_outputs = self.decoder_blocks[-1]
         else:
-            output_layer_inps = [latent_sample]
-            if self.use_skip is True:
-                skip_connections = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks_no_res]
-                output_layer_inps.append(self.activation_fn(sum(skip_connections)))
-            elif self.decoder_use_enc_prev:
-                output_layer_inps.append(prev_enc_output)
-            if self.decoder_use_raw_inputs:
-                output_layer_inps.append(self.pl_inputs[:, 0:-1])
+            self.temporal_block_outputs = tf.concat(decoder_inputs, axis=-1)
 
-            self.temporal_block_outputs = tf.concat(output_layer_inps, axis=-1)
-
-        self.output_width = tf.shape(latent_sample)[1]
+        self.output_width = tf.shape(self.temporal_block_outputs)[1]
         self.build_output_layer()
         self.build_loss()
 
@@ -772,7 +718,7 @@ class STCN(BaseModel):
         temporal_blocks_no_res = []
         for idx in range(num_layers):
             with tf.variable_scope('temporal_block_' + str(idx + 1), reuse=reuse):
-                temp_block, temp_wo_res = STCN.temporal_block_ccn(input_layer=current_layer,
+                temp_block, temp_wo_res = Wavenet.temporal_block_ccn(input_layer=current_layer,
                                                                   num_filters=self.cnn_layer_config['num_filters'],
                                                                   kernel_size=kernel_size,
                                                                   dilation=self.cnn_layer_config['dilation_size'][idx],
@@ -806,28 +752,43 @@ class STCN(BaseModel):
                 kernel_size = self.cnn_layer_config['filter_size'] if self.output_layer_config.get('filter_size', 0) < 1 else self.output_layer_config.get('filter_size', 0)
                 for idx in range(self.output_layer_config.get('num_layers', 1)):
                     with tf.variable_scope('out_convCCN_' + str(idx + 1), reuse=self.reuse):
-                        current_layer, _ = STCN.temporal_block_ccn(input_layer=current_layer,
-                                                                   num_filters=num_filters,
-                                                                   kernel_size=kernel_size,
-                                                                   dilation=1,
-                                                                   activation_fn=self.activation_fn,
-                                                                   num_extra_conv=0,
-                                                                   use_gate=self.use_gate,
-                                                                   use_residual=self.use_residual,
-                                                                   zero_padding=True)
+                        current_layer, _ = Wavenet.temporal_block_ccn(input_layer=current_layer,
+                                                                      num_filters=num_filters,
+                                                                      kernel_size=kernel_size,
+                                                                      dilation=1,
+                                                                      activation_fn=self.activation_fn,
+                                                                      num_extra_conv=0,
+                                                                      use_gate=self.use_gate,
+                                                                      use_residual=self.use_residual,
+                                                                      zero_padding=True)
             with tf.variable_scope('out_mu', reuse=self.reuse):
-                self.outputs_tensor = tf.layers.conv1d(inputs=current_layer,
-                                                       filters=self.input_size,
-                                                       kernel_size=1,
-                                                       padding='valid',
-                                                       activation=None)
+                self.outputs_mu = tf.layers.conv1d(inputs=current_layer,
+                                                   filters=self.input_size,
+                                                   kernel_size=1,
+                                                   padding='valid',
+                                                   activation=None)
+            if self.residual_velocities:
+                self.outputs_mu += self.pl_inputs[:, 0:-1]
+            self.outputs_tensor = self.outputs_mu
 
-                if self.residual_velocities:
-                    self.outputs_tensor += self.pl_inputs[:, 0:-1]
-                # This code repository expects the outputs to be a list of time-steps.
-                # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
-                # Select only the "decoder" predictions.
-                self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
+            if self.angle_loss_type == C.NLL_NORMAL:
+                with tf.variable_scope('out_sigma', reuse=self.reuse):
+                    self.outputs_sigma = tf.layers.conv1d(inputs=current_layer,
+                                                          filters=self.input_size,
+                                                          kernel_size=1,
+                                                          padding='valid',
+                                                          activation=tf.nn.softplus)
+            if self.angle_loss_type == C.NLL_NORMAL:
+                with tf.variable_scope('out_sigma', reuse=self.reuse):
+                    self.outputs_coefficients = tf.layers.conv1d(inputs=current_layer,
+                                                                 filters=20,        # Assuming 20 components.
+                                                                 kernel_size=1,
+                                                                 padding='valid',
+                                                                 activation=tf.nn.softmax)
+            # This code repository expects the outputs to be a list of time-steps.
+            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+            # Select only the "decoder" predictions.
+            self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
 
     def build_loss(self):
         if self.is_eval or not self.loss_encoder_inputs:
@@ -849,16 +810,12 @@ class STCN(BaseModel):
                 per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
                 per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 self.loss = tf.reduce_mean(per_pose_loss)
+            elif self.angle_loss_type == C.NLL_NORMAL:
+                pass
+            elif self.angle_loss_type == C.NLL_GMM:
+                pass
             else:
                 raise Exception("Unknown angle loss.")
-
-        # KLD Loss.
-        if self.is_training:
-            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.pl_sequence_length, dtype=tf.float32), -1)
-            latent_loss_dict = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
-            for loss_key, loss_op in latent_loss_dict.items():
-                self.loss += loss_op
-                self.summary_ops[loss_key] = tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode+"/model_summary"])
 
     def optimization_routines(self):
         # Gradients and update operation for training the model.
@@ -868,11 +825,11 @@ class STCN(BaseModel):
             optimizer = tf.train.AdamOptimizer(self.learning_rate)
             # Gradient clipping.
             gradients = tf.gradients(self.loss, params)
-            norm = None
             if self.config.get('grad_clip_by_norm', 0) > 0:
-                gradients, norm = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
+                gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
+            else:
+                self.gradient_norms = tf.global_norm(gradients)
 
-            self.gradient_norms = norm
             self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params), global_step=self.global_step)
 
     def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
@@ -960,19 +917,19 @@ class STCN(BaseModel):
     @staticmethod
     def causal_gated_layer(input_layer, kernel_size, num_filters, dilation, zero_padding):
         with tf.name_scope('filter_conv'):
-            filter_op = STCN.causal_conv_layer(input_layer=input_layer,
-                                               num_filters=num_filters,
-                                               kernel_size=kernel_size,
-                                               dilation=dilation,
-                                               zero_padding=zero_padding,
-                                               activation_fn=tf.nn.tanh)
+            filter_op = Wavenet.causal_conv_layer(input_layer=input_layer,
+                                                  num_filters=num_filters,
+                                                  kernel_size=kernel_size,
+                                                  dilation=dilation,
+                                                  zero_padding=zero_padding,
+                                                  activation_fn=tf.nn.tanh)
         with tf.name_scope('gate_conv'):
-            gate_op = STCN.causal_conv_layer(input_layer=input_layer,
-                                             num_filters=num_filters,
-                                             kernel_size=kernel_size,
-                                             dilation=dilation,
-                                             zero_padding=zero_padding,
-                                             activation_fn=tf.nn.sigmoid)
+            gate_op = Wavenet.causal_conv_layer(input_layer=input_layer,
+                                                num_filters=num_filters,
+                                                kernel_size=kernel_size,
+                                                dilation=dilation,
+                                                zero_padding=zero_padding,
+                                                activation_fn=tf.nn.sigmoid)
         with tf.name_scope('gating'):
             gated_dilation = gate_op*filter_op
 
@@ -983,19 +940,19 @@ class STCN(BaseModel):
                            use_gate=True, use_residual=True, zero_padding=False):
         if use_gate:
             with tf.name_scope('gated_causal_layer'):
-                temp_out = STCN.causal_gated_layer(input_layer=input_layer,
-                                                   kernel_size=kernel_size,
-                                                   num_filters=num_filters,
-                                                   dilation=dilation,
-                                                   zero_padding=zero_padding)
+                temp_out = Wavenet.causal_gated_layer(input_layer=input_layer,
+                                                      kernel_size=kernel_size,
+                                                      num_filters=num_filters,
+                                                      dilation=dilation,
+                                                      zero_padding=zero_padding)
         else:
             with tf.name_scope('causal_layer'):
-                temp_out = STCN.causal_conv_layer(input_layer=input_layer,
-                                                  kernel_size=kernel_size,
-                                                  num_filters=num_filters,
-                                                  dilation=dilation,
-                                                  zero_padding=zero_padding,
-                                                  activation_fn=activation_fn)
+                temp_out = Wavenet.causal_conv_layer(input_layer=input_layer,
+                                                     kernel_size=kernel_size,
+                                                     num_filters=num_filters,
+                                                     dilation=dilation,
+                                                     zero_padding=zero_padding,
+                                                     activation_fn=activation_fn)
         with tf.name_scope('block_output'):
             temp_out = tf.layers.conv1d(inputs=temp_out,
                                         filters=num_filters,
@@ -1022,3 +979,105 @@ class STCN(BaseModel):
                 temp_out = temp_out + res_layer
 
         return temp_out, skip_out
+
+
+class STCN(Wavenet):
+    def __init__(self,
+                 config,
+                 session,
+                 mode,
+                 reuse,
+                 source_seq_len,
+                 target_seq_len,
+                 batch_size,
+                 loss_to_use,
+                 number_of_actions,
+                 one_hot=True,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(STCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse, batch_size=batch_size,
+                                   target_seq_len=target_seq_len, source_seq_len=source_seq_len, one_hot=one_hot,
+                                   number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+        # Add latent layer related fields.
+        self.latent_layer_config = self.config.get("latent_layer")
+        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
+                                            layer_type=self.latent_layer_config["type"],
+                                            mode=mode,
+                                            reuse=reuse,
+                                            global_step=self.global_step)
+
+        self.use_future_steps_in_q = self.config.get('use_future_steps_in_q', False)
+        self.bw_encoder_blocks = []
+        self.bw_encoder_blocks_no_res = []
+
+    def build_network(self):
+        self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
+        self.inputs_hidden = self.pl_inputs
+        if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
+            with tf.variable_scope('input_dropout', reuse=self.reuse):
+                self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config.seed, training=self.is_training)
+
+        with tf.variable_scope("encoder", reuse=self.reuse):
+            self.encoder_blocks, self.encoder_blocks_no_res = self.build_temporal_block(self.inputs_hidden, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+        if self.use_future_steps_in_q:
+            reuse_params_in_bw = True
+            reversed_inputs = tf.manip.reverse(self.pl_inputs, axis=[1])
+            if reuse_params_in_bw:
+                with tf.variable_scope("encoder", reuse=True):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
+            else:
+                with tf.variable_scope("bw_encoder", reuse=self.reuse):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+            self.bw_encoder_blocks = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks]
+            self.bw_encoder_blocks_no_res = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks_no_res]
+
+        with tf.variable_scope("latent", reuse=self.reuse):
+            p_input = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks]
+            if self.latent_layer_config.get('dynamic_prior', False):
+                if self.use_future_steps_in_q:
+                    q_input = [tf.concat([fw_enc[:, 1:], bw_enc], axis=-1) for fw_enc, bw_enc in zip(self.encoder_blocks, self.bw_encoder_blocks)]
+                else:
+                    q_input = [enc_layer[:, 1:] for enc_layer in self.encoder_blocks]
+            else:
+                q_input = p_input
+            latent_sample = self.latent_layer.build_latent_layer(q_input=q_input, p_input=p_input)
+
+        decoder_inputs = [latent_sample]
+        if self.decoder_use_enc_skip:
+            skip_connections = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks_no_res]
+            decoder_inputs.append(self.activation_fn(sum(skip_connections)))
+        if self.decoder_use_enc_last:
+            decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
+        if self.decoder_use_raw_inputs:
+            decoder_inputs.append(self.pl_inputs[:, 0:-1])
+
+        # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
+        # build_output_layer. Note that there are several input options.
+        if self.num_decoder_blocks > 0:
+            with tf.variable_scope("decoder", reuse=self.reuse):
+                decoder_input_layer = tf.concat(decoder_inputs, axis=-1)
+                decoder_filter_size = self.cnn_layer_config.get("decoder_filter_size", self.cnn_layer_config['filter_size'])
+                self.decoder_blocks, self.decoder_blocks_no_res = self.build_temporal_block(decoder_input_layer,
+                                                                                            self.num_decoder_blocks,
+                                                                                            self.reuse,
+                                                                                            kernel_size=decoder_filter_size)
+                self.temporal_block_outputs = self.decoder_blocks[-1]
+        else:
+            self.temporal_block_outputs = tf.concat(decoder_inputs, axis=-1)
+
+        self.output_width = tf.shape(self.temporal_block_outputs)[1]
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_loss(self):
+        super(STCN, self).build_loss()
+
+        # KLD Loss.
+        if self.is_training:
+            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.pl_sequence_length, dtype=tf.float32), -1)
+            latent_loss_dict = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
+            for loss_key, loss_op in latent_loss_dict.items():
+                self.loss += loss_op
+                self.summary_ops[loss_key] = tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode+"/model_summary"])

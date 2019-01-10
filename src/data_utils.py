@@ -188,7 +188,7 @@ def revert_output_format(poses, data_mean, data_std, dim_to_ignore, actions, one
     poses_out = np.transpose(poses_out, [1, 0, 2])
 
     poses_out_list = []
-    for i in xrange(poses_out.shape[0]):
+    for i in range(poses_out.shape[0]):
         poses_out_list.append(
             unNormalizeData(poses_out[i, :, :], data_mean, data_std, dim_to_ignore, actions, one_hot))
 
