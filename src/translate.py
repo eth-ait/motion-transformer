@@ -164,6 +164,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['loss_encoder_inputs'] = True
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
+    config['use_future_steps_in_q'] = True
 
     if FLAGS.model_type == "stcn":
         model_cls = seq2seq_model.STCN
@@ -372,6 +373,7 @@ def train():
                     print(" {0:5d} |".format(ms), end="")
                 print()
 
+                all_actions_mean_error = []
                 # === Validation with srnn's seeds ===
                 for action in actions:
 
@@ -420,7 +422,7 @@ def train():
 
                     # This is simply the mean error over the N_SEQUENCE_TEST examples
                     mean_mean_errors = np.mean(mean_errors, 0)
-
+                    all_actions_mean_error.append(mean_errors)
                     # Pretty print of the results for 80, 160, 320, 400, 560 and 1000 ms
                     print("{0: <16} |".format(action), end="")
                     for ms in [1, 3, 7, 9, 13, 24]:
@@ -647,6 +649,27 @@ def train():
                     for i in np.arange(len(summaries)):
                         test_writer.add_summary(summaries[i], current_step)
 
+                all_actions_mean_error = np.mean(np.concatenate(all_actions_mean_error, axis=0), axis=0)
+                summaries = sess.run(
+                    [eval_model.all_mean_err80_summary,
+                     eval_model.all_mean_err160_summary,
+                     eval_model.all_mean_err320_summary,
+                     eval_model.all_mean_err400_summary,
+                     eval_model.all_mean_err560_summary,
+                     eval_model.all_mean_err1000_summary],
+                    {eval_model.all_mean_err80  : all_actions_mean_error[1] if FLAGS.seq_length_out >= 2 else None,
+                     eval_model.all_mean_err160 : all_actions_mean_error[3] if FLAGS.seq_length_out >= 4 else None,
+                     eval_model.all_mean_err320 : all_actions_mean_error[7] if FLAGS.seq_length_out >= 8 else None,
+                     eval_model.all_mean_err400 : all_actions_mean_error[9] if FLAGS.seq_length_out >= 10 else None,
+                     eval_model.all_mean_err560 : all_actions_mean_error[13] if FLAGS.seq_length_out >= 14 else None,
+                     eval_model.all_mean_err1000: all_actions_mean_error[24] if FLAGS.seq_length_out >= 25 else None})
+                for i in np.arange(len(summaries)):
+                    test_writer.add_summary(summaries[i], current_step)
+
+                summaries = sess.run([eval_model.all_mean_err_summary], {eval_model.all_mean_err: np.mean(all_actions_mean_error)})
+                for i in np.arange(len(summaries)):
+                    test_writer.add_summary(summaries[i], current_step)
+
                 print()
                 print("============================\n"
                       "Global step:         %d\n"
@@ -655,8 +678,9 @@ def train():
                       "Train loss avg:      %.4f\n"
                       "--------------------------\n"
                       "Val loss:            %.4f\n"
+                      "All avg loss:            %.4f\n"
                       "============================" % (current_step, train_model.learning_rate.eval(), step_time*1000,
-                                                        loss, val_loss))
+                                                        loss, val_loss, np.mean(all_actions_mean_error)))
                 print()
 
                 previous_losses.append(loss)

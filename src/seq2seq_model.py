@@ -79,6 +79,23 @@ class BaseModel(object):
 
         # === variables for loss in Euler Angles -- for each action
         if self.is_eval:
+            with tf.name_scope("euler_error_all_mean"):
+                self.all_mean_err = tf.placeholder(tf.float32, name="all_mean_err")
+                self.all_mean_err_summary = tf.summary.scalar('euler_error_all_mean_err', self.all_mean_err)
+
+                self.all_mean_err80 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_0080")
+                self.all_mean_err160 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_0160")
+                self.all_mean_err320 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_0320")
+                self.all_mean_err400 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_0400")
+                self.all_mean_err560 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_0560")
+                self.all_mean_err1000 = tf.placeholder(tf.float32, name="all_mean_srnn_seeds_1000")
+                self.all_mean_err80_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_0080', self.all_mean_err80)
+                self.all_mean_err160_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_0160', self.all_mean_err160)
+                self.all_mean_err320_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_0320', self.all_mean_err320)
+                self.all_mean_err400_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_0400', self.all_mean_err400)
+                self.all_mean_err560_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_0560', self.all_mean_err560)
+                self.all_mean_err1000_summary = tf.summary.scalar('euler_error_all_mean/srnn_seeds_1000', self.all_mean_err1000)
+
             with tf.name_scope("euler_error_walking"):
                 self.walking_err80 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0080")
                 self.walking_err160 = tf.placeholder(tf.float32, name="walking_srnn_seeds_0160")
@@ -677,6 +694,10 @@ class Wavenet(BaseModel):
         self.pl_targets = self.pl_inputs[:, 1:, :]
         self.pl_sequence_length = tf.ones((tf.shape(self.pl_targets)[0]), dtype=tf.int32) * self.sequence_length
 
+        # Ignoring the action labels.
+        # self.pl_targets = self.pl_inputs[:, 1:, :-self.number_of_actions]
+        # self.action_label = self.pl_inputs[0:1, 0:1, -self.number_of_actions:]
+
     def build_network(self):
         # We always pad the input sequences such that the output sequence has the same length with input sequence.
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
@@ -764,12 +785,15 @@ class Wavenet(BaseModel):
             with tf.variable_scope('out_mu', reuse=self.reuse):
                 self.outputs_mu = tf.layers.conv1d(inputs=current_layer,
                                                    filters=self.input_size,
+                                                   # filters=self.HUMAN_SIZE,  # Ignoring the action labels.
                                                    kernel_size=1,
                                                    padding='valid',
                                                    activation=None)
             if self.residual_velocities:
                 self.outputs_mu += self.pl_inputs[:, 0:-1]
+                # self.outputs_mu += self.pl_inputs[:, 0:-1, :-self.number_of_actions]  # Ignoring the action labels.
             self.outputs_tensor = self.outputs_mu
+            # self.outputs_tensor = tf.concat([self.outputs_mu, tf.tile(self.action_label, (tf.shape(self.outputs_mu)[0], tf.shape(self.outputs_mu)[1], 1))], axis=-1)  # Ignoring the action labels.
 
             if self.angle_loss_type == C.NLL_NORMAL:
                 with tf.variable_scope('out_sigma', reuse=self.reuse):
@@ -792,11 +816,11 @@ class Wavenet(BaseModel):
 
     def build_loss(self):
         if self.is_eval or not self.loss_encoder_inputs:
-            predictions = self.outputs_tensor[:, -self.target_seq_len:, :]
+            predictions = self.outputs_mu[:, -self.target_seq_len:, :]
             targets = self.pl_targets[:, -self.target_seq_len:, :]
             seq_len = self.target_seq_len
         else:
-            predictions = self.outputs_tensor
+            predictions = self.outputs_mu
             targets = self.pl_targets
             seq_len = self.sequence_length
 
@@ -805,9 +829,11 @@ class Wavenet(BaseModel):
                 self.loss = tf.reduce_mean(tf.square(targets - predictions))
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
                 per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
+                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1)) # Ignoring the action labels.
                 self.loss = tf.reduce_mean(per_joint_loss)
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
                 per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
+                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))  # Ignoring the action labels.
                 per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 self.loss = tf.reduce_mean(per_pose_loss)
             elif self.angle_loss_type == C.NLL_NORMAL:
@@ -1015,7 +1041,7 @@ class STCN(Wavenet):
         self.inputs_hidden = self.pl_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
-                self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config.seed, training=self.is_training)
+                self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=12345, training=self.is_training)
 
         with tf.variable_scope("encoder", reuse=self.reuse):
             self.encoder_blocks, self.encoder_blocks_no_res = self.build_temporal_block(self.inputs_hidden, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
