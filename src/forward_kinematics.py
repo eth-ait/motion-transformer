@@ -173,14 +173,15 @@ def _some_variables():
     return parent, offset, rotInd, expmapInd
 
 
-def main(sample_path):
+def main(sample_path, sample_name=None):
     # Load all the data
+    sample_name = sample_name or "walking_0"
     parent, offset, rotInd, expmapInd = _some_variables()
 
     # numpy implementation
     with h5py.File(sample_path, 'r') as h5f:
-        expmap_gt = h5f['expmap/gt/walking_0'][:]
-        expmap_pred = h5f['expmap/preds/walking_0'][:]
+        expmap_gt = h5f['expmap/gt/'+sample_name][:]
+        expmap_pred = h5f['expmap/preds/'+sample_name][:]
 
     nframes_gt, nframes_pred = expmap_gt.shape[0], expmap_pred.shape[0]
 
@@ -220,6 +221,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--sample_path', required=False, default=None, type=str, help='Path to motion samples file.')
     parser.add_argument('--experiment_id', required=False, default=None, type=str, help='Experiment folder id to read samples.h5 file from.')
+    parser.add_argument('--sample_name', required=False, default=None, type=str, help='Sample name to visualize.')
     args = parser.parse_args()
 
     if args.sample_path is not None:
@@ -230,4 +232,4 @@ if __name__ == '__main__':
     else:
         raise Exception("Sample file is required.")
 
-    main(sample_path)
+    main(sample_path, args.sample_name)
