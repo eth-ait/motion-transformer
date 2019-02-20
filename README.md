@@ -1,8 +1,8 @@
+## motion-modeling
+Experiments for ICCV. Built on Martinez et al. repository explained below.
 
-## human-motion-prediction
 
-This is the code for the paper
-
+### Martinez et al.
 Julieta Martinez, Michael J. Black, Javier Romero.
 _On human motion prediction using recurrent neural networks_. In CVPR 17.
 
