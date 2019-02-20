@@ -51,7 +51,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet or stcn.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn or seq2seq_feedback.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -69,6 +69,8 @@ def create_model(session, actions, sampling=False):
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     elif FLAGS.model_type == "wavenet":
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
+    elif FLAGS.model_type == "seq2seq_feedback":
+        train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
     else:
         raise Exception("Unknown model type.")
 
@@ -231,6 +233,8 @@ def create_seq2seq_model(session, actions, sampling=False):
 
     if FLAGS.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
+    elif FLAGS.model_type == "seq2seq_feedback":
+        model_cls = models.Seq2SeqFeedbackModel
     else:
         raise Exception()
 

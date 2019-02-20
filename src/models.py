@@ -468,7 +468,7 @@ class Seq2SeqModel(BaseModel):
         """
         super(Seq2SeqModel, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
                                            target_seq_len=target_seq_len, batch_size=batch_size,
-                                           number_of_actions=number_of_actions,
+                                           number_of_actions=number_of_actions, residual_velocities=residual_velocities,
                                            one_hot=one_hot, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
         self.residual_velocities = residual_velocities
         self.num_layers = num_layers
@@ -600,6 +600,135 @@ class Seq2SeqModel(BaseModel):
         """
         assert self.is_eval, "Only works in sampling mode."
         return self.step(encoder_inputs, decoder_inputs, decoder_outputs)[2]
+
+
+class Seq2SeqFeedbackModel(Seq2SeqModel):
+    """Sequence-to-sequence model with error feedback,"""
+    def __init__(self,
+                 session,
+                 mode,
+                 reuse,
+                 architecture,
+                 source_seq_len,
+                 target_seq_len,
+                 rnn_size,  # hidden recurrent layer size
+                 num_layers,
+                 max_gradient_norm,
+                 batch_size,
+                 learning_rate,
+                 learning_rate_decay_factor,
+                 loss_to_use,
+                 number_of_actions,
+                 one_hot=True,
+                 residual_velocities=False,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(Seq2SeqFeedbackModel, self).__init__(session=session, mode=mode, reuse=reuse, architecture=architecture,
+                                                   source_seq_len=source_seq_len, target_seq_len=target_seq_len,
+                                                   rnn_size=rnn_size, num_layers=num_layers, batch_size=batch_size,
+                                                   max_gradient_norm=max_gradient_norm,  learning_rate=learning_rate,
+                                                   learning_rate_decay_factor=learning_rate_decay_factor,
+                                                   number_of_actions=number_of_actions, one_hot=one_hot,
+                                                   loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+
+    def create_cell(self, scope, reuse):
+        with tf.variable_scope(scope, reuse=reuse):
+            cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+            if self.num_layers > 1:
+                cell = tf.contrib.rnn.MultiRNNCell(
+                    [tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
+            # === Add space decoder ===
+            cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
+            # Finally, wrap everything in a residual layer if we want to model velocities
+            if self.residual_velocities:
+                cell = rnn_cell_extensions.ResidualWrapper(cell)
+
+            return cell
+
+    def build_network(self):
+        # === Create the RNN that will keep the state ===
+        if self.architecture == "basic":
+            encoder_cell = self.create_cell("encoder_cell", self.reuse)
+            decoder_cell = self.create_cell("decoder_cell", self.reuse)
+        elif self.architecture == "tied":
+            encoder_cell = self.create_cell("tied_cell", self.reuse)
+            decoder_cell = encoder_cell
+        else:
+            raise Exception()
+
+        with tf.variable_scope("seq2seq", reuse=self.reuse):
+            def loop_fn_error_feedback_sampling(pred, current):
+                """
+                :param pred: model prediction.
+                :param current: ground-truth
+                """
+                error = tf.sqrt(tf.square(current - pred))
+                return tf.stop_gradient(tf.concat([pred, error], axis=-1))
+
+            def loop_fn_error_feedback_gt(pred, current):
+                """
+                :param pred: model prediction.
+                :param current: ground-truth
+                """
+                error = tf.sqrt(tf.square(current - pred))
+                return tf.stop_gradient(tf.concat([current, error], axis=-1))
+
+            def loop_fn_sampling(pred, current):
+                """
+                :param pred: model prediction.
+                :param current: ground-truth
+                """
+                return pred
+
+            def loop_fn_gt(pred, current):
+                """
+                :param pred: model prediction.
+                :param current: ground-truth
+                """
+                return current
+
+            encoder_loop_fn = loop_fn_gt  # Use ground-truth in the encoder.
+            if self.loss_to_use == "sampling_based":
+                decoder_loop_fn = loop_fn_sampling  # Use model predictions in the decoder.
+            elif self.loss_to_use == "supervised":
+                decoder_loop_fn = loop_fn_gt  # Use model predictions in the decoder.
+            else:
+                raise Exception()
+
+            # Encoder with error feedback.
+            with tf.variable_scope("rnn_encoder"):
+                outputs = []
+                prev = self.enc_in[0]
+                state = encoder_cell.zero_state(batch_size=tf.shape(prev)[0], dtype=prev.dtype)
+                for i, inp in enumerate(self.enc_in):
+                    with tf.variable_scope("encoder_loop_fn", reuse=True):
+                        inp = encoder_loop_fn(prev, inp)
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    output, state = encoder_cell(inp, state)
+                    outputs.append(output)
+                    prev = output
+            enc_state = state
+
+            # Decoder with error feedback.
+            # loop is from https://github.com/tensorflow/tensorflow/blob/r1.12/tensorflow/contrib/legacy_seq2seq/python/ops/seq2seq.py#L142
+            with tf.variable_scope("rnn_decoder"):
+                state = enc_state
+                outputs = []
+                prev = self.dec_in[0]
+                for i, inp in enumerate(self.dec_in):
+                    with tf.variable_scope("decoder_loop_fn", reuse=True):
+                        inp = decoder_loop_fn(prev, inp)
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    output, state = decoder_cell(inp, state)
+                    outputs.append(output)
+                    prev = output
+
+            self.outputs, self.states = outputs, state
+
+        with tf.name_scope("loss_angles"):
+            self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
 
 
 class Wavenet(BaseModel):
