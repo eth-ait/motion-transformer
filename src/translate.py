@@ -12,11 +12,10 @@ import time
 import h5py
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 import data_utils
-import seq2seq_model
+import models
 
 # ETH imports
 from constants import Constants as C
@@ -52,7 +51,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq or stcn.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet or stcn.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -164,12 +163,12 @@ def create_stcn_model(session, actions, sampling=False):
     config['loss_encoder_inputs'] = True
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
-    config['use_future_steps_in_q'] = True
+    config['use_future_steps_in_q'] = False
 
     if FLAGS.model_type == "stcn":
-        model_cls = seq2seq_model.STCN
+        model_cls = models.STCN
     elif FLAGS.model_type == "wavenet":
-        model_cls = seq2seq_model.Wavenet
+        model_cls = models.Wavenet
         del config["latent_layer"]
     else:
         raise Exception()
@@ -229,9 +228,14 @@ def create_stcn_model(session, actions, sampling=False):
 
 def create_seq2seq_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
-    # with tf.name_scope(C.TRAIN):
+
+    if FLAGS.model_type == "seq2seq":
+        model_cls = models.Seq2SeqModel
+    else:
+        raise Exception()
+
     with tf.name_scope(C.TRAIN):
-        train_model = seq2seq_model.Seq2SeqModel(
+        train_model = model_cls(
             session=session,
             mode=C.TRAIN,
             reuse=False,
@@ -252,7 +256,7 @@ def create_seq2seq_model(session, actions, sampling=False):
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
-        eval_model = seq2seq_model.Seq2SeqModel(
+        eval_model = model_cls(
             session=session,
             mode=C.SAMPLE,
             reuse=True,
@@ -272,13 +276,12 @@ def create_seq2seq_model(session, actions, sampling=False):
             dtype=tf.float32)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}-{}-in{}_out{}-iter{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
+    experiment_name_format = "{}-{}-{}-in{}_out{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
-                                                    FLAGS.iterations,
                                                     FLAGS.architecture,
                                                     FLAGS.loss_to_use,
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',

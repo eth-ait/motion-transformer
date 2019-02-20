@@ -9,10 +9,8 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import variable_scope as vs
 
 import random
-
-import numpy as np
 import os
-from six.moves import xrange  # pylint: disable=redefined-builtin
+import numpy as np
 import tensorflow as tf
 import rnn_cell_extensions  # my extensions of the tf repos
 import data_utils
@@ -42,6 +40,7 @@ class BaseModel(object):
 
         # Set by the child model class.
         self.outputs = None
+        self.states = None
         self.loss = None
         self.learning_rate = None
         self.learning_rate_scheduler = None
@@ -449,8 +448,8 @@ class Seq2SeqModel(BaseModel):
 
         Args:
           architecture: [basic, tied] whether to tie the decoder and decoder.
-          source_seq_len: lenght of the input sequence.
-          target_seq_len: lenght of the target sequence.
+          source_seq_len: length of the input sequence.
+          target_seq_len: length of the target sequence.
           rnn_size: number of units in the rnn.
           num_layers: number of rnns to stack.
           max_gradient_norm: gradients will be clipped to maximally this norm.
@@ -485,12 +484,6 @@ class Seq2SeqModel(BaseModel):
             print("Input size is %d" % self.input_size)
             print('rnn_size = {0}'.format(self.rnn_size))
 
-        # === Create the RNN that will keep the state ===
-        cell = tf.contrib.rnn.GRUCell(self.rnn_size)
-
-        if self.num_layers > 1:
-            cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
-
         # === Transform the inputs ===
         # with tf.name_scope(self.mode):
         with tf.name_scope("inputs"):
@@ -506,9 +499,16 @@ class Seq2SeqModel(BaseModel):
             dec_in = tf.reshape(dec_in, [-1, self.input_size])
             dec_out = tf.reshape(dec_out, [-1, self.input_size])
 
-            enc_in = tf.split(enc_in, self.source_seq_len - 1, axis=0)
-            dec_in = tf.split(dec_in, self.target_seq_len, axis=0)
-            dec_out = tf.split(dec_out, self.target_seq_len, axis=0)
+            self.enc_in = tf.split(enc_in, self.source_seq_len - 1, axis=0)
+            self.dec_in = tf.split(dec_in, self.target_seq_len, axis=0)
+            self.dec_out = tf.split(dec_out, self.target_seq_len, axis=0)
+
+    def build_network(self):
+        # === Create the RNN that will keep the state ===
+        cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+
+        if self.num_layers > 1:
+            cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
 
         with tf.variable_scope("seq2seq", reuse=self.reuse):
             # === Add space decoder ===
@@ -519,9 +519,9 @@ class Seq2SeqModel(BaseModel):
                 cell = rnn_cell_extensions.ResidualWrapper(cell)
 
             # Define the loss function
-            lf = None
+            loop_function = None
             if self.loss_to_use == "sampling_based":
-                def lf(prev, i):  # function for sampling_based loss
+                def loop_function(prev, i):  # function for sampling_based loss
                     return prev
             elif self.loss_to_use == "supervised":
                 pass
@@ -532,15 +532,16 @@ class Seq2SeqModel(BaseModel):
             if self.architecture == "basic":
                 # Basic RNN does not have a loop function in its API, so copying here.
                 with vs.variable_scope("basic_rnn_seq2seq"):
-                    _, enc_state = tf.contrib.rnn.static_rnn(cell, enc_in, dtype=tf.float32)  # Encoder
-                    self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(dec_in, enc_state, cell, loop_function=lf)  # Decoder
+                    _, enc_state = tf.contrib.rnn.static_rnn(cell, self.enc_in, dtype=tf.float32)  # Encoder
+                    self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, cell, loop_function=loop_function)  # Decoder
+
             elif self.architecture == "tied":
-                self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(enc_in, dec_in, cell, loop_function=lf)
+                self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(self.enc_in, self.dec_in, cell, loop_function=loop_function)
             else:
                 raise (ValueError, "Unknown architecture: %s"%self.architecture)
 
         with tf.name_scope("loss_angles"):
-            self.loss = tf.reduce_mean(tf.square(tf.subtract(dec_out, self.outputs)))
+            self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -717,6 +718,7 @@ class Wavenet(BaseModel):
             decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
         if self.decoder_use_raw_inputs:
             decoder_inputs.append(self.pl_inputs[:, 0:-1])
+        assert len(decoder_inputs) != 0, "Decoder input is not defined."
 
         # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
         # build_output_layer. Note that there are several input options.
@@ -793,7 +795,8 @@ class Wavenet(BaseModel):
                 self.outputs_mu += self.pl_inputs[:, 0:-1]
                 # self.outputs_mu += self.pl_inputs[:, 0:-1, :-self.number_of_actions]  # Ignoring the action labels.
             self.outputs_tensor = self.outputs_mu
-            # self.outputs_tensor = tf.concat([self.outputs_mu, tf.tile(self.action_label, (tf.shape(self.outputs_mu)[0], tf.shape(self.outputs_mu)[1], 1))], axis=-1)  # Ignoring the action labels.
+            # Ignoring the action labels.
+            # self.outputs_tensor = tf.concat([self.outputs_mu, tf.tile(self.action_label, (tf.shape(self.outputs_mu)[0], tf.shape(self.outputs_mu)[1], 1))], axis=-1)
 
             if self.angle_loss_type == C.NLL_NORMAL:
                 with tf.variable_scope('out_sigma', reuse=self.reuse):
@@ -829,11 +832,13 @@ class Wavenet(BaseModel):
                 self.loss = tf.reduce_mean(tf.square(targets - predictions))
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
                 per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
-                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1)) # Ignoring the action labels.
+                # Ignoring the action labels.
+                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))
                 self.loss = tf.reduce_mean(per_joint_loss)
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
                 per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
-                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))  # Ignoring the action labels.
+                # Ignoring the action labels.
+                # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))
                 per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 self.loss = tf.reduce_mean(per_pose_loss)
             elif self.angle_loss_type == C.NLL_NORMAL:
