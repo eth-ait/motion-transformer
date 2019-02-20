@@ -59,7 +59,7 @@ class LatentLayer(object):
         """
         raise NotImplementedError('subclasses must override sample method')
 
-    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict, **kwargs):
+    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict=None, **kwargs):
         """
         Builds loss terms related with latent space.
         Args:
@@ -196,10 +196,11 @@ class VariationalCodebook(LatentLayer):
 
         self.batch_size = None
 
-    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict, **kwargs):
+    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict=None, **kwargs):
         """
         Creates KL-divergence loss between prior and approximate posterior distributions.
         """
+        loss_ops_dict = loss_ops_dict or dict()
         self.batch_size = tf.shape(self.p_pi)[0]
         loss_key = "loss_kld"
         with tf.name_scope("kld_loss"):
@@ -548,7 +549,7 @@ class GaussianLatentLayer(LatentLayer):
         self.p_sigma = None
         self.q_sigma = None
 
-    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict, **kwargs):
+    def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict=None, **kwargs):
         """
         Creates KL-divergence loss between prior and approximate posterior distributions. If use_temporal_kld is True,
         then creates another KL-divergence term between consecutive approximate posteriors in time.
@@ -583,6 +584,7 @@ class GaussianLatentLayer(LatentLayer):
                                                                tf.stop_gradient(temp_p_sigma),
                                                                reduce_sum=False))
                 loss_ops_dict[loss_key] = self.ops_loss[loss_key]
+
         return self.ops_loss
 
     def build_latent_layer(self, q_input, p_input, output_ops_dict=None, eval_ops_dict=None, summary_ops_dict=None):
@@ -706,72 +708,37 @@ class LadderLatentLayer(LatentLayer):
     def __init__(self, config, mode, reuse, **kwargs):
         super(LadderLatentLayer, self).__init__(config, mode, reuse, **kwargs)
 
-        # TODO: Hacky
-        self.blocked_latent_indices = []
-
+        # STCN-dense configuration. Concatenates the samples drawn from all latent variables.
+        self.dense_z = self.config.get('dense_z', False)
+        # Determines the number of deterministic layers per latent variable.
         self.vertical_dilation = self.config.get('vertical_dilation', 1)
         # Draw a new sample from the approximated posterior whenever needed. Otherwise, draw once and use it every time.
         self.use_same_q_sample = self.config.get('use_same_q_sample', False)
-        # Feed the top-most latent layers with samples from a Normal(0, I) distribution.
-        self.use_z0 = self.config.get('use_z0', True)
-        # Apply KLD between the top-most q and N(0, 1)
-        self.kld_q0_z0 = self.config.get('kld_q0_z0', False)
-        # Apply KLD between the top-most p and N(0, 1)
-        self.kld_p0_z0 = self.config.get('kld_p0_z0', False)
-        # Apply pwu update at the top-most layer. If False, the approximate posterior q = approximate likelihood q_hat
-        self.use_pwu_z0 = self.config.get('use_pwu_z0', False)
-        # The top-most prior is dynamic or not. LadderVAE paper uses a fixed prior.
-        # "fixed_z0" is deprecated. Keeping for backwards-compatibility. Use use_fixed_pz1 instead.
-        self.use_fixed_pz1 = self.config.get('use_fixed_pz1', False) or self.config.get('fixed_z0', False)
+        # Whether the top-most prior is dynamic or not. LadderVAE paper uses standard N(0,I) prior.
+        self.use_fixed_pz1 = self.config.get('use_fixed_pz1', False)
         # Prior is calculated by using the deterministic representations at previous step.
         self.dynamic_prior = self.config.get('dynamic_prior', False)
         # Approximate posterior is estimated as a precision weighted update of the prior and initial model predictions.
         self.precision_weighted_update = self.config.get('precision_weighted_update', True)
-        # Use the same parameters for q and p of the same stochastic layer.
-        self.share_latent_params = self.config.get('share_latent_params', True)
-        # Use the same parameters across hierarchical latent layers. Note that the latent sample and deterministic model
-        # dimensionality of every layer must be the same.
-        self.share_vertical_latent_params = self.config.get('share_vertical_latent_params', False)
-        self.use_p_input_in_q = self.config.get('use_p_input_in_q', False)
-        # In order to increase robustness of the learned prior use samples from the prior instead of the posterior.
-        self.p_q_replacement_ratio = self.config.get('p_q_replacement_ratio', 0)
-        if self.is_sampling or self.is_validation or self.is_eval:
-            self.p_q_replacement_ratio = 0
         # Whether the q distribution is hierarchically updated as in the case of prior or not. In other words, lower
         # q layer uses samples of the upper q layer.
         self.recursive_q = self.config.get('recursive_q', True)
+        # Whether we follow top-down or bottom-up hierarchy.
         self.top_down_latents = self.config.get('top_down_latents', True)
-        self.latent_layer_structure = self.config.get('layer_structure', C.LAYER_FC)
-        self.use_all_z = self.config.get('use_all_z', False)
-        self.use_skip_latent = self.config.get('use_skip_latent', False)
-        self.collect_latent_samples = self.use_all_z or self.use_skip_latent
+        # Network type (i.e., dense, convolutional, etc.) we use to parametrize the latent distributions.
+        self.latent_layer_structure = self.config.get('layer_structure', C.LAYER_CONV1)
 
+        # Annealing KL-divergence weight or using fixed weight.
         kld_weight = self.config.get('kld_weight', 1)
         if isinstance(kld_weight, dict) and self.global_step is not None:
             self.kld_weight = get_decay_variable(global_step=self.global_step, config=kld_weight, name="kld_weight")
-            if self.is_training:
-                self.summary_ops["kld_weight"] = tf.summary.scalar("kld_weight", self.kld_weight, collections=[self.mode+"/model_summary"])
         else:
             self.kld_weight = kld_weight
+
+        # It is always 1 when we report the loss.
         if not self.is_training:
             self.kld_weight = 1.0
 
-        self.latent_cell_p, self.latent_cell_state_p = None, None
-        self.latent_cell_q, self.latent_cell_state_q = None, None
-        if self.latent_layer_structure == C.LAYER_RNN:
-            p_scope = "latent_cell_" + C.LATENT_P
-            q_scope = "latent_cell_" + C.LATENT_Q
-            with tf.variable_scope(p_scope, reuse=self.reuse):
-                self.latent_cell_p = get_rnn_cell(cell_type=config["cell_type"],
-                                                  size=config["cell_size"],
-                                                  num_layers=config["cell_num_layers"])
-                self.latent_cell_state_p = None
-
-            with tf.variable_scope(q_scope, reuse=self.reuse):
-                self.latent_cell_q = get_rnn_cell(cell_type=config["cell_type"],
-                                                  size=config["cell_size"],
-                                                  num_layers=config["cell_num_layers"])
-                self.latent_cell_state_q = None
         # Latent space components.
         self.p_mu = []
         self.q_mu = []
@@ -861,55 +828,6 @@ class LadderLatentLayer(LatentLayer):
 
         return (mu, sigma),  (flat_mu, flat_sigma)
 
-    def build_latent_dist_rnn(self, input_, idx, scope, reuse):
-        """
-        Given the input parametrizes a Normal distribution.
-        Args:
-            input_:
-            idx:
-            scope: "approximate_posterior" or "prior".
-            reuse:
-        Returns:
-            mu and sigma tensors.
-        """
-        is_prior = scope.startswith(C.LATENT_P)
-        # Flatten the (horizontally) sequence input to feed into an rnn cell (vertically).
-        flat_input = tf.reshape(input_, [-1, input_.shape.as_list()[-1]])
-        if is_prior and self.latent_cell_state_p is None:
-            self.latent_cell_state_p = self.latent_cell_p.zero_state(batch_size=tf.shape(flat_input)[0], dtype=tf.float32)
-        elif not is_prior and self.latent_cell_state_q is None:
-            self.latent_cell_state_q = self.latent_cell_q.zero_state(batch_size=tf.shape(flat_input)[0], dtype=tf.float32)
-
-        num_latent_units = self.config['latent_size'][idx]
-        p_scope = "latent_cell_" + C.LATENT_P
-        q_scope = "latent_cell_" + C.LATENT_Q
-        with tf.name_scope(scope):
-            if is_prior:
-                with tf.variable_scope(p_scope):
-                    flat_cell_output, self.latent_cell_state_p = self.latent_cell_p(inputs=flat_input, state=self.latent_cell_state_p)
-            else:
-                with tf.variable_scope(q_scope):
-                    flat_cell_output, self.latent_cell_state_q = self.latent_cell_q(inputs=flat_input, state=self.latent_cell_state_q)
-            with tf.variable_scope(scope + '_mu', reuse=reuse):
-                flat_mu = linear(input_layer=flat_cell_output,
-                                 output_size=num_latent_units,
-                                 activation_fn=None,
-                                 is_training=self.is_training)
-                mu = tf.reshape(flat_mu, [tf.shape(input_)[0], -1, num_latent_units])
-
-            with tf.variable_scope(scope + '_sigma', reuse=reuse):
-                flat_sigma = linear(input_layer=flat_cell_output,
-                                    output_size=num_latent_units,
-                                    activation_fn=tf.exp,
-                                    is_training=self.is_training)
-                sigma = tf.reshape(flat_sigma, [tf.shape(input_)[0], -1, num_latent_units])
-
-                if self.config.get('latent_sigma_threshold', 0) > 0:
-                    sigma = tf.clip_by_value(sigma, 1e-3, self.config.get('latent_sigma_threshold'))
-                    flat_sigma = tf.clip_by_value(flat_sigma, 1e-3, self.config.get('latent_sigma_threshold'))
-
-        return (mu, sigma),  (flat_mu, flat_sigma)
-
     def build_latent_dist(self, input_, idx, scope, reuse):
         """
         Given the input parametrizes a Normal distribution.
@@ -923,8 +841,6 @@ class LadderLatentLayer(LatentLayer):
         """
         if self.latent_layer_structure == C.LAYER_FC:
             return self.build_latent_dist_fc(input_, idx, scope, reuse)
-        elif self.latent_layer_structure == C.LAYER_RNN:
-            return self.build_latent_dist_rnn(input_, idx, scope, reuse)
         elif self.latent_layer_structure == C.LAYER_TCN:
             return self.build_latent_dist_tcn(input_, idx, scope, reuse)
         elif self.latent_layer_structure == C.LAYER_CONV1:
@@ -933,8 +849,22 @@ class LadderLatentLayer(LatentLayer):
             raise Exception("Unknown latent layer type.")
 
     def build_latent_layer(self, q_input, p_input, output_ops_dict=None, eval_ops_dict=None, summary_ops_dict=None):
-        p_scope = C.LATENT_P if not self.share_latent_params else "latent"
-        q_scope = C.LATENT_Q if not self.share_latent_params else "latent"
+        """
+        Builds stochastic latent variables hierarchically. q_input and p_input consist of outputs of stacked
+        deterministic layers. self.vertical_dilation hyper-parameter denotes the size of the deterministic block. For
+        example, if it is 5, then every fifth deterministic layer is used to estimate a random variable.
+
+        Args:
+            q_input (list): deterministic units to estimate the approximate posterior.
+            p_input (list): deterministic units to estimate the prior.
+            output_ops_dict (dict):
+            eval_ops_dict (dict):
+            summary_ops_dict (dict):
+
+        Returns:
+            A latent sample.
+        """
+        p_scope, q_scope = C.LATENT_P, C.LATENT_Q
 
         self.num_d_layers = len(q_input)
         assert self.num_d_layers % self.vertical_dilation == 0, "# of deterministic layers must be divisible by vertical dilation."
@@ -947,6 +877,7 @@ class LadderLatentLayer(LatentLayer):
         self.q_dists = [0]*self.num_s_layers
         self.p_dists = [0]*self.num_s_layers
 
+        # Indexing latent variables.
         if self.top_down_latents:
             # Build the top most latent layer.
             sl = self.num_s_layers-1  # stochastic layer index.
@@ -955,9 +886,8 @@ class LadderLatentLayer(LatentLayer):
         dl = (sl + 1)*self.vertical_dilation - 1  # deterministic layer index.
 
         # Estimate the prior of the first stochastic layer.
-        scope = p_scope if self.share_vertical_latent_params else p_scope + "_" + str(sl + 1)
+        scope = p_scope + "_" + str(sl + 1)
         reuse = self.reuse
-        p_dense_created = False
         if self.dynamic_prior:
             if self.use_fixed_pz1:
                 with tf.name_scope(scope):
@@ -965,13 +895,8 @@ class LadderLatentLayer(LatentLayer):
                     prior_shape = (tf.shape(p_input[0])[0], tf.shape(p_input[0])[1], latent_size)
                     p_dist = (tf.zeros(prior_shape, dtype=tf.float32), tf.ones(prior_shape, dtype=tf.float32))
             else:
-                if self.use_z0:
-                    z0_sample = tf.random_normal((tf.shape(p_input[0])[0], tf.shape(p_input[0])[1], self.config['latent_size'][sl]), 0.0, 1.0, dtype=tf.float32)
-                    p_layer_inputs = [p_input[dl], z0_sample]
-                else:
-                    p_layer_inputs = [p_input[dl]]
+                p_layer_inputs = [p_input[dl]]
                 p_dist, _ = self.build_latent_dist(tf.concat(p_layer_inputs, axis=-1), idx=sl, scope=scope, reuse=reuse)
-                p_dense_created = True
         else:
             # Insert N(0,1) as prior.
             with tf.name_scope(scope):
@@ -980,59 +905,44 @@ class LadderLatentLayer(LatentLayer):
                 p_dist = (tf.zeros(prior_shape, dtype=tf.float32), tf.ones(prior_shape, dtype=tf.float32))
 
         self.p_dists[sl] = p_dist
+        # If it is not training, then we draw latent samples from the prior distribution.
         if self.is_sampling and self.dynamic_prior:
             posterior = p_dist
         else:
-            scope = q_scope if self.share_vertical_latent_params else q_scope + "_" + str(sl + 1)
-            reuse = True if (self.share_latent_params and p_dense_created) else self.reuse
+            scope = q_scope + "_" + str(sl + 1)
+            reuse = self.reuse
 
             q_layer_inputs = [q_input[dl]]
-            if self.recursive_q and self.use_z0 and not self.use_fixed_pz1:
-                with tf.name_scope(scope + "_z"):
-                    z0_sample = tf.random_normal((tf.shape(q_input[dl])[0], tf.shape(q_input[dl])[1], self.config['latent_size'][sl]), 0.0, 1.0, dtype=tf.float32)
-                q_layer_inputs.append(z0_sample)
-
-            if self.use_p_input_in_q and not self.share_latent_params:
-                # If we are sharing the parameters between q and p, then this is not possible.
-                q_layer_inputs.append(p_input[dl])
-
             q_dist_approx, q_dist_approx_flat = self.build_latent_dist(tf.concat(q_layer_inputs, axis=-1), idx=sl, scope=scope, reuse=reuse)
             self.q_approximate[sl] = q_dist_approx
 
-            if self.use_pwu_z0:
-                # Estimate the approximate posterior distribution as a precision-weighted combination.
-                # For the first latent layer, apply PWU only if z0 is used.
-                if self.precision_weighted_update:
-                    scope = q_scope + "_pwu_" + str(sl + 1)
-                    q_dist = self.combine_normal_dist(q_dist_approx, p_dist, scope=scope)
-                else:
-                    q_dist = q_dist_approx
-                self.q_dists[sl] = q_dist
+            # Estimate the approximate posterior distribution as a precision-weighted combination.
+            if self.precision_weighted_update:
+                scope = q_scope + "_pwu_" + str(sl + 1)
+                q_dist = self.combine_normal_dist(q_dist_approx, p_dist, scope=scope)
             else:
-                # For the initial layer, posterior is equal to its approximation.
                 q_dist = q_dist_approx
-                self.q_dists[sl] = q_dist
-
+            self.q_dists[sl] = q_dist
             # Set the posterior.
             posterior = q_dist
 
         posterior_sample_scope = "app_posterior_" + str(sl+1)
         posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], scope=posterior_sample_scope, idx=sl)
-        if self.collect_latent_samples:
+        if self.dense_z:
             self.latent_samples.append(posterior_sample)
 
+        # Build hierarchy.
         if self.top_down_latents:
             loop_indices = range(self.num_s_layers-2, -1, -1)
         else:
             loop_indices = range(1, self.num_s_layers, 1)
-
         for sl in loop_indices:
             dl = (sl + 1)*self.vertical_dilation - 1
 
             p_dist_preceding = p_dist
             # Estimate the prior distribution.
-            scope = p_scope if self.share_vertical_latent_params else p_scope + "_" + str(sl + 1)
-            reuse = True if (self.share_vertical_latent_params and p_dense_created) else self.reuse
+            scope = p_scope + "_" + str(sl + 1)
+            reuse = self.reuse
 
             # Draw a latent sample from the preceding posterior.
             if not self.use_same_q_sample:
@@ -1045,15 +955,14 @@ class LadderLatentLayer(LatentLayer):
 
             p_dist, p_dist_flat = self.build_latent_dist(tf.concat(p_layer_inputs, axis=-1), idx=sl, scope=scope, reuse=reuse)
             self.p_dists[sl] = p_dist
-            p_dense_created = True
 
             if self.is_sampling and self.dynamic_prior:
                 # Set the posterior.
                 posterior = p_dist
             else:
                 # Estimate the uncorrected approximate posterior distribution.
-                scope = q_scope if self.share_vertical_latent_params else q_scope + "_" + str(sl + 1)
-                reuse = True if (self.share_latent_params or self.share_vertical_latent_params and p_dense_created) else self.reuse
+                scope = q_scope + "_" + str(sl + 1)
+                reuse = self.reuse
 
                 q_layer_inputs = [q_input[dl]]
                 if self.recursive_q:
@@ -1061,9 +970,6 @@ class LadderLatentLayer(LatentLayer):
                     if not self.use_same_q_sample:
                         posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist_preceding[0], p_dist_preceding[1], posterior_sample_scope, sl)
                     q_layer_inputs.append(posterior_sample)
-                if self.use_p_input_in_q and not self.share_latent_params:
-                    # If we are sharing the parameters between q and p, then this is not possible.
-                    q_layer_inputs.append(p_input[dl])
 
                 q_dist_approx, q_dist_approx_flat = self.build_latent_dist(tf.concat(q_layer_inputs, axis=-1), idx=sl, scope=scope, reuse=reuse)
                 self.q_approximate[sl] = q_dist_approx
@@ -1081,18 +987,13 @@ class LadderLatentLayer(LatentLayer):
             # Draw a new sample from the approximated posterior distribution of this layer.
             posterior_sample_scope = "app_posterior_" + str(sl+1)
             posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], posterior_sample_scope, sl)
-            if self.collect_latent_samples:
+            if self.dense_z:
                 self.latent_samples.append(posterior_sample)
 
         # TODO Missing an activation function. Do we need one here?
-        if self.use_all_z:
-            # Concatenate the latent samples of all stochastic layers.
+        if self.dense_z:  # Concatenate the latent samples of all stochastic layers.
             return tf.concat(self.latent_samples, axis=-1)
-        elif self.use_skip_latent:
-            # Get the summation of all latent samples.
-            return sum(self.latent_samples)
-        else:
-            # Use a latent sample from the final stochastic layer.
+        else:  # Use a latent sample from the final stochastic layer.
             return self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], posterior_sample_scope, sl)
 
     def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict=None, **kwargs):
@@ -1100,7 +1001,7 @@ class LadderLatentLayer(LatentLayer):
         Creates KL-divergence loss between prior and approximate posterior distributions. If use_temporal_kld is True,
         then creates another KL-divergence term between consecutive approximate posteriors in time.
         """
-        loss_ops_dict = loss_ops_dict or {}
+        loss_ops_dict = loss_ops_dict or dict()
         # eval_dict contains each KLD term and latent q, p distributions for further analysis.
         eval_dict = kwargs.get("eval_dict", None)
         if eval_dict is not None:
@@ -1119,7 +1020,7 @@ class LadderLatentLayer(LatentLayer):
                                                                                   reduce_sum=False)
                         kld_term = self.kld_weight*reduce_loss_fn(seq_kld_loss)
 
-                        # This is just for reporting. Only the entries in loss_ops_dict starting with "loss"
+                        # This is just for monitoring. Only the entries in loss_ops_dict starting with "loss"
                         # contribute to the gradients.
                         if not self.is_training:
                             loss_ops_dict["KL"+str(sl)] = tf.stop_gradient(kld_term)
@@ -1130,44 +1031,14 @@ class LadderLatentLayer(LatentLayer):
                             eval_dict["summary_kld_" + str(sl)] = kld_term
                             eval_dict["sequence_kld_" + str(sl)] = seq_kld_loss
 
-                # TODO Assuming top-down hierarchy.
-                z0_shape = tf.shape(self.q_dists[-1][0])
-                if self.kld_q0_z0:
-                    with tf.name_scope("kld_q0_z0"):
-                        seq_kld_loss = sequence_mask*tf_loss.kld_normal_isotropic(self.q_dists[-1][0],
-                                                                                  self.q_dists[-1][1],
-                                                                                  tf.zeros(z0_shape, dtype=tf.float32),
-                                                                                  tf.ones(z0_shape, dtype=tf.float32),
-                                                                                  reduce_sum=False)
-                        kld_term = self.kld_weight*reduce_loss_fn(seq_kld_loss)
-
-                    self.kld_loss_terms.append(kld_term)
-                    kld_loss += kld_term
-                    if eval_dict is not None:
-                        eval_dict["summary_kld_" + "q0_z0"] = kld_term
-                        eval_dict["sequence_kld_" + "q0_z0"] = seq_kld_loss
-
-                if self.kld_p0_z0:
-                    with tf.name_scope("kld_p0_z0"):
-                        seq_kld_loss = sequence_mask*tf_loss.kld_normal_isotropic(self.p_dists[-1][0],
-                                                                                  self.p_dists[-1][1],
-                                                                                  tf.zeros(z0_shape, dtype=tf.float32),
-                                                                                  tf.ones(z0_shape, dtype=tf.float32),
-                                                                                  reduce_sum=False)
-                        kld_term = self.kld_weight*reduce_loss_fn(seq_kld_loss)
-
-                    self.kld_loss_terms.append(kld_term)
-                    kld_loss += kld_term
-                    if eval_dict is not None:
-                        eval_dict["summary_kld_" + "p0_z0"] = kld_term
-                        eval_dict["sequence_kld_" + "p0_z0"] = seq_kld_loss
-
                 # Optimization is done through the accumulated term (i.e., loss_ops_dict[loss_key]).
                 self.ops_loss[loss_key] = kld_loss
                 loss_ops_dict[loss_key] = kld_loss
-        return loss_ops_dict
 
-    def draw_latent_sample(self, posterior_mu, posterior_sigma, prior_mu, prior_sigma, scope, idx):
+        return self.ops_loss
+
+    @classmethod
+    def draw_latent_sample(cls, posterior_mu, posterior_sigma, prior_mu, prior_sigma, scope, idx):
         """
         Draws a latent sample by using the reparameterization trick.
         Args:
@@ -1175,29 +1046,20 @@ class LadderLatentLayer(LatentLayer):
             prior_sigma:
             posterior_mu:
             posterior_sigma:
-            scope
+            scope:
+            idx:
         Returns:
         """
         def normal_sample(mu, sigma):
             eps = tf.random_normal(tf.shape(sigma), 0.0, 1.0, dtype=tf.float32)
             return tf.add(mu, tf.multiply(sigma, eps))
 
-        if idx in self.blocked_latent_indices:
-            z = tf.zeros(tf.shape(posterior_mu))
-            # eps = tf.random_normal(tf.shape(posterior_sigma), 0.0, 1.0, dtype=tf.float32)
-            # z = tf.add(posterior_mu, tf.multiply(posterior_sigma*0.1, eps))
-        else:
-            if self.p_q_replacement_ratio > 0 and prior_mu is not None:
-                with tf.name_scope(scope+"_z"):
-                    z = tf.cond(pred=tf.random_uniform([1])[0] < self.p_q_replacement_ratio,
-                                true_fn=lambda: normal_sample(prior_mu, prior_sigma),
-                                false_fn=lambda: normal_sample(posterior_mu, posterior_sigma))
-            else:
-                with tf.name_scope(scope+"_z"):
-                    z = normal_sample(posterior_mu, posterior_sigma)
+        with tf.name_scope(scope+"_z"):
+            z = normal_sample(posterior_mu, posterior_sigma)
         return z
 
-    def combine_normal_dist(self, dist1, dist2, scope):
+    @classmethod
+    def combine_normal_dist(cls, dist1, dist2, scope):
         """
         Calculates precision-weighted combination of two Normal distributions.
         Args:
