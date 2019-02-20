@@ -64,21 +64,6 @@ class Constants(object):
     B_MEAN_STEP = 'batch_mean_step_loss'  # Keep the loss per sample. Uses sequence length.
     R_IDENTITY = 'identity'
 
-    # Models
-    MODEL_RNN = 'rnn'
-    MODEL_BIRNN = 'birnn'  # Bidirectional RNN
-    MODEL_CCN = 'ccn'  # Causal Convolutional Network (i.e. Wavenet Model)
-    MODEL_TCN = 'tcn'  # Temporal Convolutional Network
-    MODEL_STCN = 'stcn'  # Stochastic Temporal Convolutional Network
-    MODEL_BISTCN = 'bistcn'  # Bidirectional stochastic Temporal Convolutional Network
-    MODEL_VRNN = 'vrnn'  # Variational Recurrent Neural Network.
-    MODEL_ZFORCE = 'zforce'
-    MODEL_BITCN = 'bitcn'
-    MODEL_RNN_LATENT_AE = 'rnnlatentae'
-    MODEL_RNN_LATENT_CELL = 'rnnlatentcell'
-    MODEL_EMBEDDED_LSTCN = 'elstcn'  # Stochastic TCN with ladder latent layer embedded into layers.
-    MODEL_RNN_LADDER = 'rnnladder'
-
     # Motion Datasets
     HOLDEN = 'holden'
     SMPL = 'smpl'
@@ -122,18 +107,9 @@ class Constants(object):
     LATENT_P = 'p'  # prior
 
     # Preprocessing operations.
-    PP_SHIFT = "pp_shift"
     PP_ZERO_MEAN_NORM = "pp_zero_mean_normalization"
     PP_ZERO_MEAN_NORM_SEQ = "pp_zero_mean_norm_seq_stats"
     PP_ZERO_MEAN_NORM_ALL = "pp_zero_mean_norm_all_stats"
-    PP_EXPLICIT_ANGLE_AXIS = "pp_explicit_angle_axis"
-    PP_NORM_IGNORE_ZEROS = "pp_norm_ignore_zeros"
-    PP_IGNORE_ZEROS = "pp_ignore_zeros"
-    PP_RELATIVE_STEP = "pp_relative_step"
-    PP_RANDOM_WINDOWS = "pp_random_windows"
-    PP_QUANTIZE = "pp_quantize"
-    PP_SCALE_ZERO_ONE = "pp_scale_zero_one"
-    PP_SCALE_MINUS_ONE_ONE = "pp_scale_minus_one_one"
 
     # Preprocessing operations: IMU
     PP_IMU_ORI_NORM = "norm_ori"
