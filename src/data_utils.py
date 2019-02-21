@@ -317,19 +317,25 @@ def normalization_stats(completeData):
     data_mean = np.mean(completeData, axis=0)
     data_std = np.std(completeData, axis=0)
 
-    # Manuel way.
+    # Manuel way ignores the joints with zero triplets, preserving the joint integrity.
+    # We also ignore the root translation.
+    # In total we have 21 joints.
     joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
+    joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # Ignoring the root translation.
     dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
                                            joints_to_ignore*3+1,
                                            joints_to_ignore*3+2])
     dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
 
-    # Martinez way.
-    # dimensions_to_ignore = []
-    # dimensions_to_use = []
-    # dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
-    # dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
-
+    """
+    # Martinez way ignores arbitrary dimensions with zeros, violating the joint triplets.
+    # dimensions_to_ignore = [0, 1, 2]
+    dimensions_to_ignore = []
+    dimensions_to_use = []
+    dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
+    dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
+    # dimensions_to_use = dimensions_to_use[3:]
+    """
     data_std[np.where(data_std < 1e-4)] = 1.0
 
     return data_mean, data_std, dimensions_to_ignore, dimensions_to_use

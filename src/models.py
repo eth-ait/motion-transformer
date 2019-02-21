@@ -49,7 +49,8 @@ class BaseModel(object):
         self.summary_update = None
 
         # Hard-coded parameters.
-        self.HUMAN_SIZE = 54
+        self.NUM_JOINTS = 21
+        self.HUMAN_SIZE = self.NUM_JOINTS*3
         self.input_size = self.HUMAN_SIZE + self.number_of_actions if self.one_hot else self.HUMAN_SIZE
 
     def build_graph(self):
@@ -831,12 +832,14 @@ class Wavenet(BaseModel):
             if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
                 self.loss = tf.reduce_mean(tf.square(targets - predictions))
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
+                assert self.input_size % 3 == 0, "Prediction size is not divisible of 3."
+                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, self.input_size//3, 3)), axis=-1))
                 # Ignoring the action labels.
                 # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))
                 self.loss = tf.reduce_mean(per_joint_loss)
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 23, 3)), axis=-1))
+                assert self.input_size%3 == 0, "Prediction size is not divisible of 3."
+                per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, self.input_size//3, 3)), axis=-1))
                 # Ignoring the action labels.
                 # per_joint_loss = tf.sqrt(tf.reduce_sum(tf.reshape(tf.square(targets - predictions), (-1, seq_len, 18, 3)), axis=-1))
                 per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)

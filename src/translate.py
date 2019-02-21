@@ -401,7 +401,8 @@ def train():
                         # are set to zero.
                         # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-249404882
                         gt_i = np.copy(srnn_gts_euler[action][i])
-                        gt_i[:, 0:6] = 0
+                        gt_i[:, 0:3] = 0  # the first 3 entries are already removed.
+                        # gt_i[:, 0:6] = 0
 
                         # Now compute the l2 error. The following is numpy port of the error
                         # function provided by Ashesh Jain (in matlab), available at
@@ -749,7 +750,6 @@ def sample():
     with tf.Session(config=tf.ConfigProto(device_count=device_count)) as sess:
 
         # === Create the model ===
-        print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
         sampling = True
         train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions, sampling)
         print("Model created")
