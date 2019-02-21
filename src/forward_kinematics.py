@@ -33,6 +33,7 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
       xyz: 32x3 3d points that represent a person in 3d space
     """
 
+    # TODO should account for root position here
     assert len(angles) == 99
 
     # Structure that indicates parents for each joint
@@ -51,6 +52,7 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
         r = angles[expmapInd[i]]
 
         thisRotation = data_utils.expmap2rotmat(r)
+        # TODO this is wrong
         thisPosition = np.array([xangle, yangle, zangle])
 
         if parent[i] == -1:  # Root node
@@ -65,7 +67,6 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
     xyz = np.array(xyz).squeeze()
     xyz = xyz[:, [0, 2, 1]]
     # xyz = xyz[:,[2,0,1]]
-
 
     return np.reshape(xyz, [-1])
 

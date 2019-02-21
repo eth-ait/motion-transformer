@@ -629,56 +629,65 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
                                                    max_gradient_norm=max_gradient_norm,  learning_rate=learning_rate,
                                                    learning_rate_decay_factor=learning_rate_decay_factor,
                                                    number_of_actions=number_of_actions, one_hot=one_hot,
+                                                   residual_velocities=residual_velocities,
                                                    loss_to_use=loss_to_use, dtype=dtype, **kwargs)
 
-    def create_cell(self, scope, reuse):
+    def create_cell(self, scope, reuse, error_signal_size=0):
         with tf.variable_scope(scope, reuse=reuse):
-            cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+            rnn_cell = tf.nn.rnn_cell.GRUCell
+            cell = rnn_cell(self.rnn_size)
             if self.num_layers > 1:
-                cell = tf.contrib.rnn.MultiRNNCell(
-                    [tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
+                cells = [rnn_cell(self.rnn_size) for _ in range(self.num_layers)]
+                cell = tf.contrib.rnn.MultiRNNCell(cells)
             # === Add space decoder ===
             cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
-                cell = rnn_cell_extensions.ResidualWrapper(cell)
+                cell = rnn_cell_extensions.ResidualWrapper(cell, error_signal_size)
 
             return cell
 
     def build_network(self):
         # === Create the RNN that will keep the state ===
+        # for now error signal is the same size as the input pose dimension (without one-hot)
+        error_signal_size = self.HUMAN_SIZE
         if self.architecture == "basic":
-            encoder_cell = self.create_cell("encoder_cell", self.reuse)
-            decoder_cell = self.create_cell("decoder_cell", self.reuse)
+            encoder_cell = self.create_cell("encoder_cell", self.reuse, error_signal_size)
+            decoder_cell = self.create_cell("decoder_cell", self.reuse, error_signal_size)
         elif self.architecture == "tied":
-            encoder_cell = self.create_cell("tied_cell", self.reuse)
+            encoder_cell = self.create_cell("tied_cell", self.reuse, error_signal_size)
             decoder_cell = encoder_cell
         else:
             raise Exception()
 
         with tf.variable_scope("seq2seq", reuse=self.reuse):
-            def loop_fn_error_feedback_sampling(pred, current):
-                """
-                :param pred: model prediction.
-                :param current: ground-truth
-                """
-                error = tf.sqrt(tf.square(current - pred))
-                return tf.stop_gradient(tf.concat([pred, error], axis=-1))
-
-            def loop_fn_error_feedback_gt(pred, current):
-                """
-                :param pred: model prediction.
-                :param current: ground-truth
-                """
-                error = tf.sqrt(tf.square(current - pred))
-                return tf.stop_gradient(tf.concat([current, error], axis=-1))
-
             def loop_fn_sampling(pred, current):
                 """
                 :param pred: model prediction.
                 :param current: ground-truth
                 """
-                return pred
+                # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
+                c = current[:, :self.HUMAN_SIZE]
+                p = pred[:, :self.HUMAN_SIZE]
+                error = tf.sqrt(tf.square(c - p))
+                # treat error as a constant
+                error = tf.stop_gradient(error)
+                # feed back the models own prediction
+                return tf.concat([pred, error], axis=-1)
+
+            def loop_fn_supervised(pred, current):
+                """
+                :param pred: model prediction.
+                :param current: ground-truth
+                """
+                # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
+                c = current[:, :self.HUMAN_SIZE]
+                p = pred[:, :self.HUMAN_SIZE]
+                error = tf.sqrt(tf.square(c - p))
+                # treat error as a constant
+                error = tf.stop_gradient(error)
+                # feed back the ground truth sample (this doesn't make much sense, but here for completeness
+                return tf.concat([current, error], axis=-1)
 
             def loop_fn_gt(pred, current):
                 """
@@ -687,15 +696,18 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
                 """
                 return current
 
-            encoder_loop_fn = loop_fn_gt  # Use ground-truth in the encoder.
-            if self.loss_to_use == "sampling_based":
-                decoder_loop_fn = loop_fn_sampling  # Use model predictions in the decoder.
-            elif self.loss_to_use == "supervised":
-                decoder_loop_fn = loop_fn_gt  # Use model predictions in the decoder.
-            else:
-                raise Exception()
+            # encoder always uses ground truth and also computes error
+            encoder_loop_fn = loop_fn_supervised
 
-            # Encoder with error feedback.
+            # decoder depends on configuration
+            if self.loss_to_use == "sampling_based":
+                decoder_loop_fn = loop_fn_sampling
+            elif self.loss_to_use == "supervised":
+                print("WARNING: using ground-truth poses in decoder might be nonsense")
+                decoder_loop_fn = loop_fn_supervised
+            else:
+                raise ValueError("'{}' loss unknown".format(self.loss_to_use))
+
             with tf.variable_scope("rnn_encoder"):
                 outputs = []
                 prev = self.enc_in[0]
@@ -715,7 +727,7 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
             with tf.variable_scope("rnn_decoder"):
                 state = enc_state
                 outputs = []
-                prev = self.dec_in[0]
+                prev = self.dec_in[0]  # self.dec_in contains ground truth
                 for i, inp in enumerate(self.dec_in):
                     with tf.variable_scope("decoder_loop_fn", reuse=True):
                         inp = decoder_loop_fn(prev, inp)

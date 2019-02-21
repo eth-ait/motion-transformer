@@ -227,7 +227,12 @@ def create_seq2seq_model(session, actions, sampling=False):
     elif FLAGS.model_type == "seq2seq_feedback":
         model_cls = models.Seq2SeqFeedbackModel
     else:
-        raise Exception()
+        raise ValueError("'{}' model unknown".format(FLAGS.model_type))
+
+    if not sampling:
+        loss_to_use = FLAGS.loss_to_use
+    else:
+        loss_to_use = "sampling_based"
 
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
@@ -243,7 +248,7 @@ def create_seq2seq_model(session, actions, sampling=False):
             batch_size=FLAGS.batch_size,
             learning_rate=FLAGS.learning_rate,
             learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            loss_to_use=loss_to_use,
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
@@ -264,7 +269,7 @@ def create_seq2seq_model(session, actions, sampling=False):
             batch_size=FLAGS.batch_size,
             learning_rate=FLAGS.learning_rate,
             learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            loss_to_use=loss_to_use,
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
@@ -278,7 +283,7 @@ def create_seq2seq_model(session, actions, sampling=False):
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     FLAGS.architecture,
-                                                    FLAGS.loss_to_use,
+                                                    loss_to_use,
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
                                                     FLAGS.num_layers,
                                                     FLAGS.size,

@@ -318,17 +318,18 @@ def normalization_stats(completeData):
     data_std = np.std(completeData, axis=0)
 
     # Manuel way.
-    joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
-    dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
-                                           joints_to_ignore*3+1,
-                                           joints_to_ignore*3+2])
-    dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
+    # TODO must integrate properly => this changes HUMAN_SIZE
+    # joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
+    # dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
+    #                                        joints_to_ignore*3+1,
+    #                                        joints_to_ignore*3+2])
+    # dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
 
     # Martinez way.
-    # dimensions_to_ignore = []
-    # dimensions_to_use = []
-    # dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
-    # dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
+    dimensions_to_ignore = []
+    dimensions_to_use = []
+    dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
+    dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
 
     data_std[np.where(data_std < 1e-4)] = 1.0
 
