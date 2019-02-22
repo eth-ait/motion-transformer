@@ -49,6 +49,7 @@ class BaseModel(object):
         self.summary_update = None
 
         # Hard-coded parameters.
+        # self.HUMAN_SIZE = 21*3  # TODO this is only valid when using new preprocessing
         self.HUMAN_SIZE = 54
         self.input_size = self.HUMAN_SIZE + self.number_of_actions if self.one_hot else self.HUMAN_SIZE
 
@@ -475,6 +476,8 @@ class Seq2SeqModel(BaseModel):
         self.architecture = architecture
         self.rnn_size = rnn_size
         self.max_gradient_norm = max_gradient_norm
+        self.feed_error_to_encoder = kwargs['feed_error_to_decoder']
+
         if self.is_training:
             self.learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=dtype, name="learning_rate_op")
             self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*learning_rate_decay_factor)
@@ -649,13 +652,14 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
 
     def build_network(self):
         # === Create the RNN that will keep the state ===
-        # for now error signal is the same size as the input pose dimension (without one-hot)
-        error_signal_size = self.HUMAN_SIZE
         if self.architecture == "basic":
+            # may be we don't feed the error in the encoder
+            error_signal_size = self.HUMAN_SIZE if self.feed_error_to_encoder else 0
             encoder_cell = self.create_cell("encoder_cell", self.reuse, error_signal_size)
-            decoder_cell = self.create_cell("decoder_cell", self.reuse, error_signal_size)
+            decoder_cell = self.create_cell("decoder_cell", self.reuse, self.HUMAN_SIZE)
         elif self.architecture == "tied":
-            encoder_cell = self.create_cell("tied_cell", self.reuse, error_signal_size)
+            # in tied architecture we always feed the error (not possible to not feed it)
+            encoder_cell = self.create_cell("tied_cell", self.reuse, self.HUMAN_SIZE)
             decoder_cell = encoder_cell
         else:
             raise Exception()
@@ -696,8 +700,12 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
                 """
                 return current
 
-            # encoder always uses ground truth and also computes error
-            encoder_loop_fn = loop_fn_supervised
+            if self.architecture == "tied":
+                # encoder always uses ground truth and also computes error
+                encoder_loop_fn = loop_fn_supervised
+            else:
+                # in untied mode we can choose
+                encoder_loop_fn = loop_fn_supervised if self.feed_error_to_encoder else loop_fn_gt
 
             # decoder depends on configuration
             if self.loss_to_use == "sampling_based":

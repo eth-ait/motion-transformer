@@ -301,13 +301,14 @@ def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot):
     return data_out
 
 
-def normalization_stats(completeData):
+def normalization_stats(completeData, ignore_entire_joints=True):
     """"
     Also borrowed for SRNN code. Computes mean, stdev and dimensions to ignore.
     https://github.com/asheshjain399/RNNexp/blob/srnn/structural_rnn/CRFProblems/H3.6m/processdata.py#L33
 
     Args
       completeData: nx99 matrix with data to normalize
+      ignore_entire_joints: If True only discards entire joints, not single DOFs
     Returns
       data_mean: vector of mean used to normalize the data
       data_std: vector of standard deviation used to normalize the data
@@ -318,18 +319,19 @@ def normalization_stats(completeData):
     data_std = np.std(completeData, axis=0)
 
     # Manuel way.
-    # TODO must integrate properly => this changes HUMAN_SIZE
-    # joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
-    # dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
-    #                                        joints_to_ignore*3+1,
-    #                                        joints_to_ignore*3+2])
-    # dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
-
-    # Martinez way.
-    dimensions_to_ignore = []
-    dimensions_to_use = []
-    dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
-    dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
+    if ignore_entire_joints:
+        joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
+        joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # always ignore first entry (root translation)
+        dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
+                                               joints_to_ignore*3+1,
+                                               joints_to_ignore*3+2])
+        dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
+    else:
+        # Martinez way.
+        dimensions_to_ignore = []
+        dimensions_to_use = []
+        dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
+        dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
 
     data_std[np.where(data_std < 1e-4)] = 1.0
 

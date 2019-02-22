@@ -163,7 +163,8 @@ def main():
 
         # Load the data
         _, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = translate.read_all_data(
-            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot)
+            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
+            FLAGS.new_preprocessing)
 
         # Get all the data, denormalize and convert it to euler angles
         poses_data = {}
