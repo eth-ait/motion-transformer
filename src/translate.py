@@ -24,7 +24,7 @@ import json
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate is multiplied by this much. 1 means no decay.")
+tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate mutiplier. 1 means no decay.")
 tf.app.flags.DEFINE_integer("learning_rate_step", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
@@ -41,7 +41,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset"), "Data directory")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments/"), "Training directory.")
 
-tf.app.flags.DEFINE_string("action", "all", "The action to train on. all means all the actions, all_periodic means walking, eating and smoking")
+tf.app.flags.DEFINE_string("action", "all", "The action to train on. all actions")
 tf.app.flags.DEFINE_string("loss_to_use", "sampling_based", "The type of loss to use, supervised or sampling_based")
 
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
@@ -54,6 +54,7 @@ tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp t
 tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn or seq2seq_feedback.")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
+tf.app.flags.DEFINE_boolean("ignore_action_loss", True, "Whether to apply loss on the action labels or not.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -114,6 +115,7 @@ def create_model(session, actions, sampling=False):
 def create_stcn_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
+    config['seed'] = 1234
     config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_type'] = 'exponential'
@@ -159,6 +161,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
     config['use_future_steps_in_q'] = False
+    config['joint_prediction'] = "plain"  # "plain", "separate_joints", "fk_joints"
 
     if FLAGS.model_type == "stcn":
         model_cls = models.STCN
@@ -180,7 +183,8 @@ def create_stcn_model(session, actions, sampling=False):
             loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -195,7 +199,8 @@ def create_stcn_model(session, actions, sampling=False):
             loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}"
@@ -255,7 +260,8 @@ def create_seq2seq_model(session, actions, sampling=False):
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
-            feed_error_to_decoder=FLAGS.feed_error_to_encoder)
+            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -277,7 +283,8 @@ def create_seq2seq_model(session, actions, sampling=False):
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
-            feed_error_to_decoder=FLAGS.feed_error_to_encoder)
+            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}-{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-lr{}-{}-{}"
@@ -765,7 +772,6 @@ def sample():
     with tf.Session(config=tf.ConfigProto(device_count=device_count)) as sess:
 
         # === Create the model ===
-        print("Creating %d layers of %d units."%(FLAGS.num_layers, FLAGS.size))
         sampling = True
         train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions, sampling)
         print("Model created")

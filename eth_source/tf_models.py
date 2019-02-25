@@ -740,11 +740,6 @@ class LadderLatentLayer(LatentLayer):
             self.kld_weight = 1.0
 
         # Latent space components.
-        self.p_mu = []
-        self.q_mu = []
-        self.p_sigma = []
-        self.q_sigma = []
-
         self.num_d_layers = None  # Total number of deterministic layers.
         self.num_s_layers = None  # Total number of stochastic layers can be different due to the vertical_dilation.
         self.q_approximate = None  # List of approximate q distributions from the recognition network.
@@ -927,7 +922,7 @@ class LadderLatentLayer(LatentLayer):
             posterior = q_dist
 
         posterior_sample_scope = "app_posterior_" + str(sl+1)
-        posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], scope=posterior_sample_scope, idx=sl)
+        posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], scope=posterior_sample_scope)
         if self.dense_z:
             self.latent_samples.append(posterior_sample)
 
@@ -946,7 +941,7 @@ class LadderLatentLayer(LatentLayer):
 
             # Draw a latent sample from the preceding posterior.
             if not self.use_same_q_sample:
-                posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], posterior_sample_scope, sl)
+                posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], posterior_sample_scope)
 
             if self.dynamic_prior:  # Concatenate TCN representation with a sample from the approximated posterior.
                 p_layer_inputs = [p_input[dl], posterior_sample]
@@ -968,7 +963,7 @@ class LadderLatentLayer(LatentLayer):
                 if self.recursive_q:
                     # Draw a latent sample from the preceding posterior.
                     if not self.use_same_q_sample:
-                        posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist_preceding[0], p_dist_preceding[1], posterior_sample_scope, sl)
+                        posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], posterior_sample_scope)
                     q_layer_inputs.append(posterior_sample)
 
                 q_dist_approx, q_dist_approx_flat = self.build_latent_dist(tf.concat(q_layer_inputs, axis=-1), idx=sl, scope=scope, reuse=reuse)
@@ -986,15 +981,14 @@ class LadderLatentLayer(LatentLayer):
 
             # Draw a new sample from the approximated posterior distribution of this layer.
             posterior_sample_scope = "app_posterior_" + str(sl+1)
-            posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], posterior_sample_scope, sl)
+            posterior_sample = self.draw_latent_sample(posterior[0], posterior[1], posterior_sample_scope)
             if self.dense_z:
                 self.latent_samples.append(posterior_sample)
 
-        # TODO Missing an activation function. Do we need one here?
-        if self.dense_z:  # Concatenate the latent samples of all stochastic layers.
-            return tf.concat(self.latent_samples, axis=-1)
+        if self.dense_z:  # Return samples of all stochastic layers.
+            return self.latent_samples
         else:  # Use a latent sample from the final stochastic layer.
-            return self.draw_latent_sample(posterior[0], posterior[1], p_dist[0], p_dist[1], posterior_sample_scope, sl)
+            return [self.draw_latent_sample(posterior[0], posterior[1], posterior_sample_scope)]
 
     def build_loss(self, sequence_mask, reduce_loss_fn, loss_ops_dict=None, **kwargs):
         """
@@ -1011,7 +1005,7 @@ class LadderLatentLayer(LatentLayer):
             loss_key = "loss_kld"
             kld_loss = 0.0
             with tf.name_scope("kld_loss"):
-                for sl in range(self.num_s_layers-1, -1, -1):
+                for sl in range(len(self.q_dists)):
                     with tf.name_scope("kld_" + str(sl)):
                         seq_kld_loss = sequence_mask*tf_loss.kld_normal_isotropic(self.q_dists[sl][0],
                                                                                   self.q_dists[sl][1],
@@ -1038,16 +1032,13 @@ class LadderLatentLayer(LatentLayer):
         return self.ops_loss
 
     @classmethod
-    def draw_latent_sample(cls, posterior_mu, posterior_sigma, prior_mu, prior_sigma, scope, idx):
+    def draw_latent_sample(cls, posterior_mu, posterior_sigma, scope):
         """
         Draws a latent sample by using the reparameterization trick.
         Args:
-            prior_mu:
-            prior_sigma:
             posterior_mu:
             posterior_sigma:
             scope:
-            idx:
         Returns:
         """
         def normal_sample(mu, sigma):
