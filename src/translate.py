@@ -24,7 +24,7 @@ import json
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate is multiplied by this much. 1 means no decay.")
+tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate mutiplier. 1 means no decay.")
 tf.app.flags.DEFINE_integer("learning_rate_step", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
@@ -41,7 +41,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset"), "Data directory")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments/"), "Training directory.")
 
-tf.app.flags.DEFINE_string("action", "all", "The action to train on. all means all the actions, all_periodic means walking, eating and smoking")
+tf.app.flags.DEFINE_string("action", "all", "The action to train on. all actions")
 tf.app.flags.DEFINE_string("loss_to_use", "sampling_based", "The type of loss to use, supervised or sampling_based")
 
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
@@ -52,6 +52,7 @@ tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
 tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet or stcn.")
+tf.app.flags.DEFINE_boolean("ignore_action_loss", True, "Whether to apply loss on the action labels or not.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -110,6 +111,7 @@ def create_model(session, actions, sampling=False):
 def create_stcn_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
+    config['seed'] = 1234
     config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_type'] = 'exponential'
@@ -155,6 +157,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
     config['residual_velocities'] = FLAGS.residual_velocities
     config['use_future_steps_in_q'] = False
+    config['joint_prediction'] = "plain"  # "plain", "separate_joints", "fk_joints"
 
     if FLAGS.model_type == "stcn":
         model_cls = models.STCN
@@ -176,7 +179,8 @@ def create_stcn_model(session, actions, sampling=False):
             loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -191,7 +195,8 @@ def create_stcn_model(session, actions, sampling=False):
             loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}"
@@ -243,7 +248,8 @@ def create_seq2seq_model(session, actions, sampling=False):
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -264,7 +270,8 @@ def create_seq2seq_model(session, actions, sampling=False):
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}-{}-in{}_out{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
@@ -401,8 +408,7 @@ def train():
                         # are set to zero.
                         # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-249404882
                         gt_i = np.copy(srnn_gts_euler[action][i])
-                        gt_i[:, 0:3] = 0  # the first 3 entries are already removed.
-                        # gt_i[:, 0:6] = 0
+                        gt_i[:, 0:6] = 0
 
                         # Now compute the l2 error. The following is numpy port of the error
                         # function provided by Ashesh Jain (in matlab), available at
