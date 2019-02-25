@@ -223,6 +223,7 @@ if __name__ == '__main__':
     parser.add_argument('--sample_path', required=False, default=None, type=str, help='Path to motion samples file.')
     parser.add_argument('--experiment_id', required=False, default=None, type=str, help='Experiment folder id to read samples.h5 file from.')
     parser.add_argument('--sample_name', required=False, default=None, type=str, help='Sample name to visualize.')
+    parser.add_argument('-n', '--num_samples', required=False, default=1, type=int, help='How many random samples to visualize')
     args = parser.parse_args()
 
     if args.sample_path is not None:

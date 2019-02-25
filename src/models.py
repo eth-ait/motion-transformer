@@ -49,8 +49,8 @@ class BaseModel(object):
         self.summary_update = None
 
         # Hard-coded parameters.
-        # self.HUMAN_SIZE = 21*3  # TODO this is only valid when using new preprocessing
-        self.HUMAN_SIZE = 54
+        self.HUMAN_SIZE = 21*3  # TODO this is only valid when using new preprocessing
+        # self.HUMAN_SIZE = 54
         self.input_size = self.HUMAN_SIZE + self.number_of_actions if self.one_hot else self.HUMAN_SIZE
 
     def build_graph(self):
@@ -667,8 +667,13 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
         with tf.variable_scope("seq2seq", reuse=self.reuse):
             def loop_fn_sampling(pred, current):
                 """
-                :param pred: model prediction.
-                :param current: ground-truth
+                Computes error between prediction and ground-trugh and appends it to the prediction.
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the predicted pose with the error appended
                 """
                 # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
                 c = current[:, :self.HUMAN_SIZE]
@@ -681,8 +686,13 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
 
             def loop_fn_supervised(pred, current):
                 """
-                :param pred: model prediction.
-                :param current: ground-truth
+                Computes error between prediction and ground-truth and appends it the ground-truth.
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the ground-truth with the error appended
                 """
                 # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
                 c = current[:, :self.HUMAN_SIZE]
@@ -695,8 +705,12 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
 
             def loop_fn_gt(pred, current):
                 """
-                :param pred: model prediction.
-                :param current: ground-truth
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the ground-truth
                 """
                 return current
 
