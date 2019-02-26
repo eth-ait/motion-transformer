@@ -51,7 +51,9 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet or stcn.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn or seq2seq_feedback.")
+tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
+tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_boolean("ignore_action_loss", True, "Whether to apply loss on the action labels or not.")
 
 FLAGS = tf.app.flags.FLAGS
@@ -70,6 +72,8 @@ def create_model(session, actions, sampling=False):
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     elif FLAGS.model_type == "wavenet":
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
+    elif FLAGS.model_type == "seq2seq_feedback":
+        train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
     else:
         raise Exception("Unknown model type.")
 
@@ -150,7 +154,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['cnn_layer']['use_residual'] = True
     config['cnn_layer']['zero_padding'] = True
     config['decoder_use_enc_skip'] = False
-    config['decoder_use_enc_last'] = False
+    config['decoder_use_enc_last'] = True
     config['decoder_use_raw_inputs'] = False
     config['grad_clip_by_norm'] = 1
     config['loss_encoder_inputs'] = True
@@ -199,7 +203,7 @@ def create_stcn_model(session, actions, sampling=False):
             ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}"
+    experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
@@ -210,7 +214,8 @@ def create_stcn_model(session, actions, sampling=False):
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     config['angle_loss_type'],
-                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot')
+                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                    'no_action' if FLAGS.ignore_action_loss else 'action_loss')
     if FLAGS.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
     else:
@@ -227,8 +232,15 @@ def create_seq2seq_model(session, actions, sampling=False):
 
     if FLAGS.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
+    elif FLAGS.model_type == "seq2seq_feedback":
+        model_cls = models.Seq2SeqFeedbackModel
     else:
-        raise Exception()
+        raise ValueError("'{}' model unknown".format(FLAGS.model_type))
+
+    if not sampling:
+        loss_to_use = FLAGS.loss_to_use
+    else:
+        loss_to_use = "sampling_based"
 
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
@@ -244,11 +256,13 @@ def create_seq2seq_model(session, actions, sampling=False):
             batch_size=FLAGS.batch_size,
             learning_rate=FLAGS.learning_rate,
             learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            loss_to_use=loss_to_use,
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
+            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            joint_prediction="plain",  # currently ignored by seq2seq models
             ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
@@ -266,27 +280,31 @@ def create_seq2seq_model(session, actions, sampling=False):
             batch_size=FLAGS.batch_size,
             learning_rate=FLAGS.learning_rate,
             learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
+            loss_to_use=loss_to_use,
             number_of_actions=len(actions),
             one_hot=not FLAGS.omit_one_hot,
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
+            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            joint_prediction="plain",  # currently ignored by seq2seq models
             ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}-{}-in{}_out{}-{}-{}-{}-depth{}-size{}-lr{}-{}"
+    experiment_name_format = "{}-{}-{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-lr{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     FLAGS.architecture,
-                                                    FLAGS.loss_to_use,
+                                                    '' if FLAGS.feed_error_to_encoder else 'no',
+                                                    loss_to_use,
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
                                                     FLAGS.num_layers,
                                                     FLAGS.size,
                                                     FLAGS.learning_rate,
-                                                    'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel')
+                                                    'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel',
+                                                    'new_pp' if FLAGS.new_preprocessing else '')
     if FLAGS.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
     else:
@@ -306,7 +324,8 @@ def train():
                                                                                         FLAGS.seq_length_in,
                                                                                         FLAGS.seq_length_out,
                                                                                         FLAGS.data_dir,
-                                                                                        not FLAGS.omit_one_hot)
+                                                                                        not FLAGS.omit_one_hot,
+                                                                                        FLAGS.new_preprocessing)
 
     # Limit TF to take a fraction of the GPU memory
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.8)
@@ -735,7 +754,7 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
                     for k in np.arange(3, 97, 3):
                         denormed[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
 
-            srnn_gt_euler.append(denormed);
+            srnn_gt_euler.append(denormed)
 
         # Put back in the dictionary
         srnn_gts_euler[action] = srnn_gt_euler
@@ -762,7 +781,8 @@ def sample():
 
         # Load all the data
         train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(
-            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot)
+            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
+            FLAGS.new_preprocessing)
 
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
@@ -863,7 +883,7 @@ def define_actions(action):
     raise (ValueError, "Unrecognized action: %d"%action)
 
 
-def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot):
+def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot, new_pp=True):
     """
     Loads data for training/testing and normalizes it.
 
@@ -873,6 +893,7 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot):
       seq_length_out: number of frames to use in the output sequence
       data_dir: directory to load the data from
       one_hot: whether to use one-hot encoding per action
+      new_pp: ignores entire joints instead of single DOFs
     Returns
       train_set: dictionary with normalized training data
       test_set: dictionary with test data
@@ -894,7 +915,7 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot):
     test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot)
 
     # Compute normalization stats
-    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train)
+    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, new_pp)
 
     # Normalize -- subtract mean, divide by stdev
     train_set = data_utils.normalize_data(train_set, data_mean, data_std, dim_to_use, actions, one_hot)
