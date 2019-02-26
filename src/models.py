@@ -791,7 +791,27 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
             self.outputs, self.states = outputs, state
 
         with tf.name_scope("loss_angles"):
-            self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
+            if not self.ignore_action_loss:
+                # compute pose loss normally
+                assert self.one_hot
+
+                targets = tf.stack(self.dec_out)
+                predictions = tf.stack(self.outputs)
+
+                pose_diff = targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]
+                pose_loss = tf.reduce_mean(tf.square(pose_diff))
+                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+
+                # compute loss on one-hot encoded actions via cross entropy
+                action_loss = tf.nn.softmax_cross_entropy_with_logits(logits=predictions[:, :, self.HUMAN_SIZE:],
+                                                                      labels=targets[:, :, self.HUMAN_SIZE:])
+                action_loss = tf.reduce_mean(action_loss)
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+
+                self.loss = pose_loss + action_loss
+            else:
+                # do it the old way (this might include actions as well)
+                self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
 
 
 class Wavenet(BaseModel):
@@ -989,7 +1009,8 @@ class Wavenet(BaseModel):
             else:
                 # we want to predict the action vector on the output
                 assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
-                action_logits = tf.layers.dense(self.temporal_block_outputs, self.ACTION_SIZE)
+                action_logits = tf.layers.dense(self.temporal_block_outputs, self.ACTION_SIZE,
+                                                name="action_prediction", reuse=self.reuse)
                 prediction.append(action_logits)
                 self.outputs_mu = tf.concat(prediction, axis=-1)
 
@@ -1073,7 +1094,9 @@ class Wavenet(BaseModel):
         with tf.name_scope("loss_angles"):
             diff = targets_pose - predictions_pose
             if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                self.loss = tf.reduce_mean(tf.square(diff))
+                pose_loss = tf.reduce_mean(tf.square(diff))
+                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+                self.loss = pose_loss
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
                 per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                 per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss), axis=-1)

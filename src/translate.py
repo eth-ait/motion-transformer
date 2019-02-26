@@ -203,7 +203,7 @@ def create_stcn_model(session, actions, sampling=False):
             ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
-    experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}"
+    experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
@@ -214,7 +214,8 @@ def create_stcn_model(session, actions, sampling=False):
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
                                                     config['angle_loss_type'],
-                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot')
+                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                    'no_action' if FLAGS.ignore_action_loss else 'action_loss')
     if FLAGS.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
     else:
@@ -261,6 +262,7 @@ def create_seq2seq_model(session, actions, sampling=False):
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
             feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            joint_prediction="plain",  # currently ignored by seq2seq models
             ignore_action_loss=FLAGS.ignore_action_loss)
         train_model.build_graph()
 
@@ -284,6 +286,7 @@ def create_seq2seq_model(session, actions, sampling=False):
             residual_velocities=FLAGS.residual_velocities,
             dtype=tf.float32,
             feed_error_to_decoder=FLAGS.feed_error_to_encoder,
+            joint_prediction="plain",  # currently ignored by seq2seq models
             ignore_action_loss=FLAGS.ignore_action_loss)
         eval_model.build_graph()
 
@@ -751,7 +754,7 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
                     for k in np.arange(3, 97, 3):
                         denormed[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
 
-            srnn_gt_euler.append(denormed);
+            srnn_gt_euler.append(denormed)
 
         # Put back in the dictionary
         srnn_gts_euler[action] = srnn_gt_euler
