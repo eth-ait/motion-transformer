@@ -977,9 +977,21 @@ class Wavenet(BaseModel):
             else:
                 raise Exception("Prediction model not recognized.")
 
-            # TODO action labels for skip connection.
-            prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
-            self.outputs_mu = tf.concat(prediction, axis=-1)
+            if self.ignore_action_loss:
+                # we don't want any loss on the output
+                if self.residual_velocities and self.one_hot:
+                    # must append some dummy values to predictions otherwise the residual connection mismatches
+                    prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
+                    self.outputs_mu = tf.concat(prediction, axis=-1)
+                else:
+                    # no action encoded in the input or not residual velocity, so no need to add dummy values
+                    self.outputs_mu = prediction
+            else:
+                # we want to predict the action vector on the output
+                assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
+                action_logits = tf.layers.dense(self.temporal_block_outputs, self.ACTION_SIZE)
+                prediction.append(action_logits)
+                self.outputs_mu = tf.concat(prediction, axis=-1)
 
             if self.residual_velocities:
                 self.outputs_mu += self.pl_inputs[:, 0:-1]
@@ -1055,28 +1067,39 @@ class Wavenet(BaseModel):
             targets = self.pl_targets
             seq_len = self.sequence_length
 
-        if self.ignore_action_loss:
-            targets = targets[:, :, :-self.ACTION_SIZE]
-            predictions = predictions[:, :, :-self.ACTION_SIZE]
-            num_joints = self.NUM_JOINTS
-        else:
-            num_joints = self.input_size // 3
-            assert self.input_size % 3 == 0, "Prediction size is not divisible of 3."
+        targets_pose = targets[:, :, :self.HUMAN_SIZE]
+        predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
 
         with tf.name_scope("loss_angles"):
+            diff = targets_pose - predictions_pose
             if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                self.loss = tf.reduce_mean(tf.square(targets - predictions))
+                self.loss = tf.reduce_mean(tf.square(diff))
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                 per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss), axis=-1)
-                self.loss = tf.reduce_mean(per_joint_loss)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                 per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-                self.loss = tf.reduce_mean(per_pose_loss)
+                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
             else:
                 raise Exception("Unknown angle loss.")
+
+        if not self.ignore_action_loss:
+            assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
+            with tf.name_scope("action_label_loss"):
+                targets_action = targets[:, :, self.HUMAN_SIZE:]
+                predictions_action = predictions[:, :, self.HUMAN_SIZE:]
+                action_loss = tf.nn.softmax_cross_entropy_with_logits(labels=targets_action,
+                                                                      logits=predictions_action)
+                action_loss = tf.reduce_mean(action_loss)
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+                self.loss = self.loss + action_loss
 
     def optimization_routines(self):
         # Gradients and update operation for training the model.
