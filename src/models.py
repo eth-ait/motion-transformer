@@ -45,7 +45,7 @@ class BaseModel(object):
         # (1) "plain": latent samples correspond to joint predictions. dimensions must meet.
         # (2) "separate_joints": each latent variable is transformed into a joint prediction by using separate networks.
         # (3) "fk_joints": latent samples on the forward kinematic chain are concatenated and used as in (2).
-        self.joint_prediction = kwargs['joint_prediction']
+        self.joint_prediction = kwargs.get('joint_prediction', None)
 
         # Set by the child model class.
         self.outputs_mu = None
@@ -574,7 +574,15 @@ class Seq2SeqModel(BaseModel):
                 raise (ValueError, "Unknown architecture: %s"%self.architecture)
 
         with tf.name_scope("loss_angles"):
-            self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
+            # self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
+
+            # if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
+            # self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
+            # elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
+            per_joint_loss = tf.reshape(tf.square(tf.subtract(self.dec_out, self.outputs)), (-1, len(self.outputs), self.input_size // self.JOINT_SIZE, self.JOINT_SIZE))
+            per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+            per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+            self.loss = tf.reduce_mean(per_pose_loss)
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -1101,8 +1109,8 @@ class Wavenet(BaseModel):
                 tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
                 self.loss = pose_loss
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss), axis=-1)
+                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
                 per_joint_loss = tf.reduce_mean(per_joint_loss)
                 tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
                 self.loss = per_joint_loss
@@ -1324,18 +1332,20 @@ class STCN(Wavenet):
                                    number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
         # Add latent layer related fields.
         self.latent_layer_config = self.config.get("latent_layer")
-        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
-                                            layer_type=self.latent_layer_config["type"],
-                                            mode=mode,
-                                            reuse=reuse,
-                                            global_step=self.global_step)
 
         self.use_future_steps_in_q = self.config.get('use_future_steps_in_q', False)
         self.bw_encoder_blocks = []
         self.bw_encoder_blocks_no_res = []
+        self.latent_layer = None
         self.latent_samples = None
 
     def build_network(self):
+        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
+                                            layer_type=self.latent_layer_config["type"],
+                                            mode=self.mode,
+                                            reuse=self.reuse,
+                                            global_step=self.global_step)
+
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
         self.inputs_hidden = self.pl_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
@@ -1412,3 +1422,119 @@ class STCN(Wavenet):
         self.kld_weight_summary = tf.summary.scalar(self.mode + "/kld_weight", self.latent_layer.kld_weight,
                                                     collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
+
+
+class StructuredSTCN(STCN):
+    def __init__(self,
+                 config,
+                 session,
+                 mode,
+                 reuse,
+                 source_seq_len,
+                 target_seq_len,
+                 batch_size,
+                 loss_to_use,
+                 number_of_actions,
+                 one_hot=True,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(StructuredSTCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse,
+                                             batch_size=batch_size, target_seq_len=target_seq_len,
+                                             source_seq_len=source_seq_len, one_hot=one_hot,
+                                             number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype,
+                                             **kwargs)
+
+    def build_network(self):
+        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
+                                            layer_type=C.LATENT_STRUCTURED_HUMAN,
+                                            mode=self.mode,
+                                            reuse=self.reuse,
+                                            global_step=self.global_step,
+                                            structure=self.structure)
+
+        self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
+        self.inputs_hidden = self.pl_inputs
+        if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
+            with tf.variable_scope('input_dropout', reuse=self.reuse):
+                self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config["seed"], training=self.is_training)
+
+        with tf.variable_scope("encoder", reuse=self.reuse):
+            self.encoder_blocks, self.encoder_blocks_no_res = self.build_temporal_block(self.inputs_hidden, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+        if self.use_future_steps_in_q:
+            reuse_params_in_bw = True
+            reversed_inputs = tf.manip.reverse(self.pl_inputs, axis=[1])
+            if reuse_params_in_bw:
+                with tf.variable_scope("encoder", reuse=True):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
+            else:
+                with tf.variable_scope("bw_encoder", reuse=self.reuse):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+            self.bw_encoder_blocks = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks]
+            self.bw_encoder_blocks_no_res = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks_no_res]
+
+        with tf.variable_scope("latent", reuse=self.reuse):
+            p_input = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks]
+            if self.latent_layer_config.get('dynamic_prior', False):
+                if self.use_future_steps_in_q:
+                    q_input = [tf.concat([fw_enc[:, 1:], bw_enc], axis=-1) for fw_enc, bw_enc in zip(self.encoder_blocks, self.bw_encoder_blocks)]
+                else:
+                    q_input = [enc_layer[:, 1:] for enc_layer in self.encoder_blocks]
+            else:
+                q_input = p_input
+
+            self.latent_samples = self.latent_layer.build_latent_layer(q_input=q_input, p_input=p_input)
+
+        self.output_width = tf.shape(self.latent_samples[0])[1]
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_output_layer(self):
+        """
+        Builds layers to make predictions. The structured latent space has a random variable per joint.
+        """
+
+        def traverse_parents(tree, source_list, output_list, parent_id):
+            """
+            Traverses parent joints up to the root and appends the parent value in source_list into the output_list.
+            """
+            if parent_id >= 0:
+                output_list.append(source_list[parent_id])
+                traverse_parents(tree, source_list, output_list, tree[parent_id][0])
+
+        with tf.variable_scope('output_layer', reuse=self.reuse):
+            prediction = []
+            for joint_key in sorted(self.structure_indexed.keys()):
+                parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                joint_sample = self.latent_samples[joint_key]
+                if self.joint_prediction == "plain":
+                    prediction.append(joint_sample)
+
+                elif self.joint_prediction == "separate_joints":
+                    joint_prediction = self.build_predictions(joint_sample, self.JOINT_SIZE, joint_name)
+                    prediction.append(joint_prediction)
+
+                elif self.joint_prediction == "fk_joints":
+                    joint_inputs = []
+                    traverse_parents(self.structure_indexed, self.latent_layer.latent_samples_indexed, joint_inputs, parent_joint_idx)
+                    joint_inputs.append(joint_sample)
+                    prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
+                else:
+                    raise Exception("Prediction model not recognized.")
+
+            # TODO action labels for skip connection.
+            prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
+            self.outputs_mu = tf.concat(prediction, axis=-1)
+
+            if self.residual_velocities:
+                self.outputs_mu += self.pl_inputs[:, 0:-1]
+            self.outputs_tensor = self.outputs_mu
+
+            # This code repository expects the outputs to be a list of time-steps.
+            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+            # Select only the "decoder" predictions.
+            self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
+
+    def build_loss(self):
+        super(StructuredSTCN, self).build_loss()

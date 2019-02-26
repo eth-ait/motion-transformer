@@ -132,6 +132,7 @@ class Constants(object):
     LATENT_VARIATIONAL_CODEBOOK = "latent_variational_codebook"
     LATENT_CATEGORICAL = "latent_categorical"
     LATENT_LADDER_GAUSSIAN = "latent_ladder_gaussian"
+    LATENT_STRUCTURED_HUMAN = "latent_structured_human"
 
     DETERMINISTIC = "deterministic"
     PROBABILISTIC = "probabilistic"

@@ -51,7 +51,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn or seq2seq_feedback.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn or structured_stcn.")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_boolean("ignore_action_loss", True, "Whether to apply loss on the action labels or not.")
@@ -74,6 +74,8 @@ def create_model(session, actions, sampling=False):
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     elif FLAGS.model_type == "seq2seq_feedback":
         train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
+    elif FLAGS.model_type == "structured_stcn":
+        train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     else:
         raise Exception("Unknown model type.")
 
@@ -124,6 +126,9 @@ def create_stcn_model(session, actions, sampling=False):
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
     config['latent_layer']['latent_size'] = [256, 128, 64, 32, 16, 8, 4]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
+    # config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    # config['latent_layer']['latent_size'] = 16
+    # config['latent_layer']['type'] = C.LATENT_STRUCTURED_HUMAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
     config['latent_layer']["num_hidden_units"] = 128
@@ -168,6 +173,8 @@ def create_stcn_model(session, actions, sampling=False):
     elif FLAGS.model_type == "wavenet":
         model_cls = models.Wavenet
         del config["latent_layer"]
+    elif FLAGS.model_type == "structured_stcn":
+        model_cls = models.StructuredSTCN
     else:
         raise Exception()
 
