@@ -336,3 +336,9 @@ def normalization_stats(completeData, ignore_entire_joints=True):
     data_std[np.where(data_std < 1e-4)] = 1.0
 
     return data_mean, data_std, dimensions_to_ignore, dimensions_to_use
+
+
+def softmax(x, axis=-1):
+    """Softmax in numpy."""
+    e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return e_x / np.sum(e_x, axis=axis, keepdims=True)

@@ -19,6 +19,7 @@ import data_utils
 from constants import Constants as C
 from tf_model_utils import get_activation_fn
 from tf_models import LatentLayer
+from data_utils import softmax
 
 
 class BaseModel(object):
@@ -810,8 +811,10 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
 
                 self.loss = pose_loss + action_loss
             else:
-                # do it the old way (this might include actions as well)
-                self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
+                # completely ignore the output action vector
+                targets = tf.stack(self.dec_out)
+                predictions = tf.stack(self.outputs)
+                self.loss = tf.reduce_mean(tf.square(targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]))
 
 
 class Wavenet(BaseModel):
@@ -1187,10 +1190,24 @@ class Wavenet(BaseModel):
         for step in range(self.target_seq_len):
             end_idx = min(self.receptive_field_width, input_sequence.shape[1])
             model_inputs = input_sequence[:, -end_idx:]
+
             # Insert a dummy frame since the sampling model ignores the last step.
             model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
+
+            # get the prediction
             model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.pl_inputs: model_inputs})
-            predictions.append(model_outputs[:, -1, :])
+            prediction = model_outputs[:, -1, :]
+
+            # if action vector is predicted, must convert the logits to one-hot vectors
+            # TODO if we don't have the action loss, is there nothing to do?
+            if not self.ignore_action_loss:
+                action_logits = prediction[:, self.HUMAN_SIZE:]
+                action_probs = softmax(action_logits)
+                max_idx = np.argmax(action_probs, axis=-1)
+                one_hot = np.eye(self.ACTION_SIZE)[max_idx]
+                prediction[:, self.HUMAN_SIZE:] = one_hot
+
+            predictions.append(prediction)
             input_sequence = np.concatenate([input_sequence, np.expand_dims(predictions[-1], axis=1)], axis=1)
 
         return predictions
