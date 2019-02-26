@@ -33,6 +33,7 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
       xyz: 32x3 3d points that represent a person in 3d space
     """
 
+    # TODO should account for root position here
     assert len(angles) == 99
 
     # Structure that indicates parents for each joint
@@ -51,6 +52,7 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
         r = angles[expmapInd[i]]
 
         thisRotation = data_utils.expmap2rotmat(r)
+        # TODO this is wrong
         thisPosition = np.array([xangle, yangle, zangle])
 
         if parent[i] == -1:  # Root node
@@ -65,7 +67,6 @@ def fkl(angles, parent, offset, rotInd, expmapInd):
     xyz = np.array(xyz).squeeze()
     xyz = xyz[:, [0, 2, 1]]
     # xyz = xyz[:,[2,0,1]]
-
 
     return np.reshape(xyz, [-1])
 
@@ -222,6 +223,7 @@ if __name__ == '__main__':
     parser.add_argument('--sample_path', required=False, default=None, type=str, help='Path to motion samples file.')
     parser.add_argument('--experiment_id', required=False, default=None, type=str, help='Experiment folder id to read samples.h5 file from.')
     parser.add_argument('--sample_name', required=False, default=None, type=str, help='Sample name to visualize.')
+    parser.add_argument('-n', '--num_samples', required=False, default=1, type=int, help='How many random samples to visualize')
     args = parser.parse_args()
 
     if args.sample_path is not None:

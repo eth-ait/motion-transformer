@@ -19,6 +19,7 @@ import data_utils
 from constants import Constants as C
 from tf_model_utils import get_activation_fn
 from tf_models import LatentLayer
+from data_utils import softmax
 
 
 class BaseModel(object):
@@ -63,6 +64,7 @@ class BaseModel(object):
         self.NUM_JOINTS = 21
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE + self.ACTION_SIZE if self.one_hot else self.HUMAN_SIZE
+        # self.HUMAN_SIZE = 54
 
         # [(Parent ID, Joint ID, Joint Name), (...)] where each entry in a list corresponds to the joints at the same
         # level in the joint tree.
@@ -497,13 +499,15 @@ class Seq2SeqModel(BaseModel):
         """
         super(Seq2SeqModel, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
                                            target_seq_len=target_seq_len, batch_size=batch_size,
-                                           number_of_actions=number_of_actions,
+                                           number_of_actions=number_of_actions, residual_velocities=residual_velocities,
                                            one_hot=one_hot, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
         self.residual_velocities = residual_velocities
         self.num_layers = num_layers
         self.architecture = architecture
         self.rnn_size = rnn_size
         self.max_gradient_norm = max_gradient_norm
+        self.feed_error_to_encoder = kwargs['feed_error_to_decoder']
+
         if self.is_training:
             self.learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=dtype, name="learning_rate_op")
             self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*learning_rate_decay_factor)
@@ -629,6 +633,188 @@ class Seq2SeqModel(BaseModel):
         """
         assert self.is_eval, "Only works in sampling mode."
         return self.step(encoder_inputs, decoder_inputs, decoder_outputs)[2]
+
+
+class Seq2SeqFeedbackModel(Seq2SeqModel):
+    """Sequence-to-sequence model with error feedback,"""
+    def __init__(self,
+                 session,
+                 mode,
+                 reuse,
+                 architecture,
+                 source_seq_len,
+                 target_seq_len,
+                 rnn_size,  # hidden recurrent layer size
+                 num_layers,
+                 max_gradient_norm,
+                 batch_size,
+                 learning_rate,
+                 learning_rate_decay_factor,
+                 loss_to_use,
+                 number_of_actions,
+                 one_hot=True,
+                 residual_velocities=False,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(Seq2SeqFeedbackModel, self).__init__(session=session, mode=mode, reuse=reuse, architecture=architecture,
+                                                   source_seq_len=source_seq_len, target_seq_len=target_seq_len,
+                                                   rnn_size=rnn_size, num_layers=num_layers, batch_size=batch_size,
+                                                   max_gradient_norm=max_gradient_norm,  learning_rate=learning_rate,
+                                                   learning_rate_decay_factor=learning_rate_decay_factor,
+                                                   number_of_actions=number_of_actions, one_hot=one_hot,
+                                                   residual_velocities=residual_velocities,
+                                                   loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+
+    def create_cell(self, scope, reuse, error_signal_size=0):
+        with tf.variable_scope(scope, reuse=reuse):
+            rnn_cell = tf.nn.rnn_cell.GRUCell
+            cell = rnn_cell(self.rnn_size)
+            if self.num_layers > 1:
+                cells = [rnn_cell(self.rnn_size) for _ in range(self.num_layers)]
+                cell = tf.contrib.rnn.MultiRNNCell(cells)
+            # === Add space decoder ===
+            cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
+            # Finally, wrap everything in a residual layer if we want to model velocities
+            if self.residual_velocities:
+                cell = rnn_cell_extensions.ResidualWrapper(cell, error_signal_size)
+
+            return cell
+
+    def build_network(self):
+        # === Create the RNN that will keep the state ===
+        if self.architecture == "basic":
+            # may be we don't feed the error in the encoder
+            error_signal_size = self.HUMAN_SIZE if self.feed_error_to_encoder else 0
+            encoder_cell = self.create_cell("encoder_cell", self.reuse, error_signal_size)
+            decoder_cell = self.create_cell("decoder_cell", self.reuse, self.HUMAN_SIZE)
+        elif self.architecture == "tied":
+            # in tied architecture we always feed the error (not possible to not feed it)
+            encoder_cell = self.create_cell("tied_cell", self.reuse, self.HUMAN_SIZE)
+            decoder_cell = encoder_cell
+        else:
+            raise Exception()
+
+        with tf.variable_scope("seq2seq", reuse=self.reuse):
+            def loop_fn_sampling(pred, current):
+                """
+                Computes error between prediction and ground-trugh and appends it to the prediction.
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the predicted pose with the error appended
+                """
+                # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
+                c = current[:, :self.HUMAN_SIZE]
+                p = pred[:, :self.HUMAN_SIZE]
+                error = tf.sqrt(tf.square(c - p))
+                # treat error as a constant
+                error = tf.stop_gradient(error)
+                # feed back the models own prediction
+                return tf.concat([pred, error], axis=-1)
+
+            def loop_fn_supervised(pred, current):
+                """
+                Computes error between prediction and ground-truth and appends it the ground-truth.
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the ground-truth with the error appended
+                """
+                # compute error w.r.t. ground-truth, but we don't want to include one-hot encoded actions
+                c = current[:, :self.HUMAN_SIZE]
+                p = pred[:, :self.HUMAN_SIZE]
+                error = tf.sqrt(tf.square(c - p))
+                # treat error as a constant
+                error = tf.stop_gradient(error)
+                # feed back the ground truth sample (this doesn't make much sense, but here for completeness
+                return tf.concat([current, error], axis=-1)
+
+            def loop_fn_gt(pred, current):
+                """
+                Args:
+                    pred: model prediction
+                    current: ground-truth
+
+                Returns:
+                    the ground-truth
+                """
+                return current
+
+            if self.architecture == "tied":
+                # encoder always uses ground truth and also computes error
+                encoder_loop_fn = loop_fn_supervised
+            else:
+                # in untied mode we can choose
+                encoder_loop_fn = loop_fn_supervised if self.feed_error_to_encoder else loop_fn_gt
+
+            # decoder depends on configuration
+            if self.loss_to_use == "sampling_based":
+                decoder_loop_fn = loop_fn_sampling
+            elif self.loss_to_use == "supervised":
+                print("WARNING: using ground-truth poses in decoder might be nonsense")
+                decoder_loop_fn = loop_fn_supervised
+            else:
+                raise ValueError("'{}' loss unknown".format(self.loss_to_use))
+
+            with tf.variable_scope("rnn_encoder"):
+                outputs = []
+                prev = self.enc_in[0]
+                state = encoder_cell.zero_state(batch_size=tf.shape(prev)[0], dtype=prev.dtype)
+                for i, inp in enumerate(self.enc_in):
+                    with tf.variable_scope("encoder_loop_fn", reuse=True):
+                        inp = encoder_loop_fn(prev, inp)
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    output, state = encoder_cell(inp, state)
+                    outputs.append(output)
+                    prev = output
+            enc_state = state
+
+            # Decoder with error feedback.
+            # loop is from https://github.com/tensorflow/tensorflow/blob/r1.12/tensorflow/contrib/legacy_seq2seq/python/ops/seq2seq.py#L142
+            with tf.variable_scope("rnn_decoder"):
+                state = enc_state
+                outputs = []
+                prev = self.dec_in[0]  # self.dec_in contains ground truth
+                for i, inp in enumerate(self.dec_in):
+                    with tf.variable_scope("decoder_loop_fn", reuse=True):
+                        inp = decoder_loop_fn(prev, inp)
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    output, state = decoder_cell(inp, state)
+                    outputs.append(output)
+                    prev = output
+
+            self.outputs, self.states = outputs, state
+
+        with tf.name_scope("loss_angles"):
+            if not self.ignore_action_loss:
+                # compute pose loss normally
+                assert self.one_hot
+
+                targets = tf.stack(self.dec_out)
+                predictions = tf.stack(self.outputs)
+
+                pose_diff = targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]
+                pose_loss = tf.reduce_mean(tf.square(pose_diff))
+                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+
+                # compute loss on one-hot encoded actions via cross entropy
+                action_loss = tf.nn.softmax_cross_entropy_with_logits(logits=predictions[:, :, self.HUMAN_SIZE:],
+                                                                      labels=targets[:, :, self.HUMAN_SIZE:])
+                action_loss = tf.reduce_mean(action_loss)
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+
+                self.loss = pose_loss + action_loss
+            else:
+                # completely ignore the output action vector
+                targets = tf.stack(self.dec_out)
+                predictions = tf.stack(self.outputs)
+                self.loss = tf.reduce_mean(tf.square(targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]))
 
 
 class Wavenet(BaseModel):
@@ -814,9 +1000,22 @@ class Wavenet(BaseModel):
             else:
                 raise Exception("Prediction model not recognized.")
 
-            # TODO action labels for skip connection.
-            prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
-            self.outputs_mu = tf.concat(prediction, axis=-1)
+            if self.ignore_action_loss:
+                # we don't want any loss on the output
+                if self.residual_velocities and self.one_hot:
+                    # must append some dummy values to predictions otherwise the residual connection mismatches
+                    prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
+                    self.outputs_mu = tf.concat(prediction, axis=-1)
+                else:
+                    # no action encoded in the input or not residual velocity, so no need to add dummy values
+                    self.outputs_mu = prediction
+            else:
+                # we want to predict the action vector on the output
+                assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
+                action_logits = tf.layers.dense(self.temporal_block_outputs, self.ACTION_SIZE,
+                                                name="action_prediction", reuse=self.reuse)
+                prediction.append(action_logits)
+                self.outputs_mu = tf.concat(prediction, axis=-1)
 
             if self.residual_velocities:
                 self.outputs_mu += self.pl_inputs[:, 0:-1]
@@ -892,28 +1091,41 @@ class Wavenet(BaseModel):
             targets = self.pl_targets
             seq_len = self.sequence_length
 
-        if self.ignore_action_loss:
-            targets = targets[:, :, :-self.ACTION_SIZE]
-            predictions = predictions[:, :, :-self.ACTION_SIZE]
-            num_joints = self.NUM_JOINTS
-        else:
-            num_joints = self.input_size // 3
-            assert self.input_size % 3 == 0, "Prediction size is not divisible of 3."
+        targets_pose = targets[:, :, :self.HUMAN_SIZE]
+        predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
 
         with tf.name_scope("loss_angles"):
+            diff = targets_pose - predictions_pose
             if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                self.loss = tf.reduce_mean(tf.square(targets - predictions))
+                pose_loss = tf.reduce_mean(tf.square(diff))
+                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+                self.loss = pose_loss
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                 per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss), axis=-1)
-                self.loss = tf.reduce_mean(per_joint_loss)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
             elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                 per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-                self.loss = tf.reduce_mean(per_pose_loss)
+                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
             else:
                 raise Exception("Unknown angle loss.")
+
+        if not self.ignore_action_loss:
+            assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
+            with tf.name_scope("action_label_loss"):
+                targets_action = targets[:, :, self.HUMAN_SIZE:]
+                predictions_action = predictions[:, :, self.HUMAN_SIZE:]
+                action_loss = tf.nn.softmax_cross_entropy_with_logits(labels=targets_action,
+                                                                      logits=predictions_action)
+                action_loss = tf.reduce_mean(action_loss)
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+                self.loss = self.loss + action_loss
 
     def optimization_routines(self):
         # Gradients and update operation for training the model.
@@ -978,10 +1190,24 @@ class Wavenet(BaseModel):
         for step in range(self.target_seq_len):
             end_idx = min(self.receptive_field_width, input_sequence.shape[1])
             model_inputs = input_sequence[:, -end_idx:]
+
             # Insert a dummy frame since the sampling model ignores the last step.
             model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
+
+            # get the prediction
             model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.pl_inputs: model_inputs})
-            predictions.append(model_outputs[:, -1, :])
+            prediction = model_outputs[:, -1, :]
+
+            # if action vector is predicted, must convert the logits to one-hot vectors
+            # TODO if we don't have the action loss, is there nothing to do?
+            if not self.ignore_action_loss:
+                action_logits = prediction[:, self.HUMAN_SIZE:]
+                action_probs = softmax(action_logits)
+                max_idx = np.argmax(action_probs, axis=-1)
+                one_hot = np.eye(self.ACTION_SIZE)[max_idx]
+                prediction[:, self.HUMAN_SIZE:] = one_hot
+
+            predictions.append(prediction)
             input_sequence = np.concatenate([input_sequence, np.expand_dims(predictions[-1], axis=1)], axis=1)
 
         return predictions

@@ -122,7 +122,7 @@ def expmap2rotmat(r):
     r0 = np.divide(r, theta + np.finfo(np.float32).eps)
     r0x = np.array([0, -r0[2], r0[1], 0, 0, -r0[0], 0, 0, 0]).reshape(3, 3)
     r0x = r0x - r0x.T
-    R = np.eye(3, 3) + np.sin(theta)*r0x + (1 - np.cos(theta))*(r0x).dot(r0x);
+    R = np.eye(3, 3) + np.sin(theta)*r0x + (1 - np.cos(theta))*(r0x).dot(r0x)
     return R
 
 
@@ -301,13 +301,14 @@ def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot):
     return data_out
 
 
-def normalization_stats(completeData):
+def normalization_stats(completeData, ignore_entire_joints=True):
     """"
     Also borrowed for SRNN code. Computes mean, stdev and dimensions to ignore.
     https://github.com/asheshjain399/RNNexp/blob/srnn/structural_rnn/CRFProblems/H3.6m/processdata.py#L33
 
     Args
       completeData: nx99 matrix with data to normalize
+      ignore_entire_joints: If True only discards entire joints, not single DOFs
     Returns
       data_mean: vector of mean used to normalize the data
       data_std: vector of standard deviation used to normalize the data
@@ -317,25 +318,27 @@ def normalization_stats(completeData):
     data_mean = np.mean(completeData, axis=0)
     data_std = np.std(completeData, axis=0)
 
-    # Manuel way ignores the joints with zero triplets, preserving the joint integrity.
-    # We also ignore the root translation.
-    # In total we have 21 joints.
-    joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
-    joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # Ignoring the root translation.
-    dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
-                                           joints_to_ignore*3+1,
-                                           joints_to_ignore*3+2])
-    dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
+    # Manuel way.
+    if ignore_entire_joints:
+        joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
+        joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # always ignore first entry (root translation)
+        dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
+                                               joints_to_ignore*3+1,
+                                               joints_to_ignore*3+2])
+        dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
+    else:
+        # Martinez way.
+        dimensions_to_ignore = []
+        dimensions_to_use = []
+        dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
+        dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
 
-    """
-    # Martinez way ignores arbitrary dimensions with zeros, violating the joint triplets.
-    # dimensions_to_ignore = [0, 1, 2]
-    dimensions_to_ignore = []
-    dimensions_to_use = []
-    dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
-    dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
-    # dimensions_to_use = dimensions_to_use[3:]
-    """
     data_std[np.where(data_std < 1e-4)] = 1.0
 
     return data_mean, data_std, dimensions_to_ignore, dimensions_to_use
+
+
+def softmax(x, axis=-1):
+    """Softmax in numpy."""
+    e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return e_x / np.sum(e_x, axis=axis, keepdims=True)
