@@ -4,16 +4,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.contrib.timeseries.examples import predict
-from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import variable_scope as vs
-
-import random
-import os
 import numpy as np
 import tensorflow as tf
 import rnn_cell_extensions  # my extensions of the tf repos
-import data_utils
 
 # ETH imports
 from constants import Constants as C
@@ -23,19 +16,26 @@ from data_utils import softmax
 
 
 class BaseModel(object):
-    def __init__(self, **kwargs):
-        self.session = kwargs["session"]
-        self.mode = kwargs["mode"]
-        self.reuse = kwargs["reuse"]
-        self.source_seq_len = kwargs["source_seq_len"]
-        self.target_seq_len = kwargs["target_seq_len"]
-        self.batch_size = kwargs["batch_size"]
-        self.number_of_actions = kwargs["number_of_actions"]
-        self.one_hot = kwargs["one_hot"]
-        self.loss_to_use = kwargs["loss_to_use"]
-        self.dtype = kwargs["dtype"]
-        self.ignore_action_loss = kwargs["ignore_action_loss"]
-        self.global_step = tf.train.get_global_step(graph=None)
+    def __init__(self, config, session, mode, reuse, dtype, **kwargs):
+        self.config = config
+        self.session = session
+        self.mode = mode
+        self.reuse = reuse
+        self.dtype = dtype
+        self.source_seq_len = config["source_seq_len"]
+        self.target_seq_len = config["target_seq_len"]
+        self.batch_size = config["batch_size"]
+        self.number_of_actions = config["number_of_actions"]
+        self.one_hot = config["one_hot"]
+        self.autoregressive_input = config["autoregressive_input"]
+        self.residual_velocities = config["residual_velocities"]
+        self.action_loss_type = config["action_loss_type"]
+        self.angle_loss_type = config["angle_loss_type"]
+        self.joint_prediction_model = config["joint_prediction_model"]
+        self.grad_clip_by_norm = config["grad_clip_by_norm"]
+        self.loss_on_encoder_outputs = config['loss_on_encoder_outputs']
+        self.output_layer_config = config.get('output_layer', dict())
+        self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -45,13 +45,15 @@ class BaseModel(object):
         # (1) "plain": latent samples correspond to joint predictions. dimensions must meet.
         # (2) "separate_joints": each latent variable is transformed into a joint prediction by using separate networks.
         # (3) "fk_joints": latent samples on the forward kinematic chain are concatenated and used as in (2).
-        self.joint_prediction = kwargs.get('joint_prediction', None)
+        self.joint_prediction_model = config.get('joint_prediction_model', "plain")
 
         # Set by the child model class.
-        self.outputs_mu = None
-        self.outputs = None
-        self.states = None
-        self.loss = None
+        self.outputs_tensor = None  # Tensor of predicted frames.
+        self.outputs = None  # List of predicted frames.
+        self.prediction_targets = None  # Targets in pose loss term.
+        self.prediction_inputs = None  # Inputs that are used to make predictions.
+        self.prediction_representation = None  # Intermediate representation of the model to make predictions.
+        self.loss = None  # Loss op to be used in training.
         self.learning_rate = None
         self.learning_rate_scheduler = None
         self.gradient_norms = None
@@ -83,17 +85,166 @@ class BaseModel(object):
                 joint_id = joint_entry[1]
                 self.structure_indexed[joint_id] = joint_entry
 
+        # Setup learning rate scheduler.
+        self.global_step = tf.train.get_global_step(graph=None)
+        self.learning_rate_decay_type = config.get('learning_rate_decay_type')
+        if self.is_training:
+            if config.get('learning_rate_decay_type') == 'exponential':
+                self.learning_rate = tf.train.exponential_decay(config.get('learning_rate'),
+                                                                global_step=self.global_step,
+                                                                decay_steps=config.get('learning_rate_decay_steps'),
+                                                                decay_rate=config.get('learning_rate_decay_rate'),
+                                                                staircase=True)
+            elif config.get('learning_rate_decay_type') == 'piecewise':
+                self.learning_rate = tf.Variable(float(config.get('learning_rate')),
+                                                 trainable=False,
+                                                 dtype=dtype,
+                                                 name="learning_rate_op")
+                self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*config.get('learning_rate_decay_rate'))
+            elif config.get('learning_rate_decay_type') == 'fixed':
+                self.learning_rate = config.get('learning_rate')
+            else:
+                raise Exception("Invalid learning rate type")
+
     def build_graph(self):
         self.build_network()
 
     def build_network(self):
         pass
 
+    def build_loss(self):
+        if self.is_eval or not self.loss_on_encoder_outputs:
+            predictions = self.outputs_tensor[:, -self.target_seq_len:, :]
+            targets = self.prediction_targets[:, -self.target_seq_len:, :]
+            seq_len = self.target_seq_len
+        else:
+            predictions = self.outputs_tensor
+            targets = self.prediction_targets
+            seq_len = tf.shape(self.outputs_tensor)[1]
+
+        targets_pose = targets[:, :, :self.HUMAN_SIZE]
+        predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
+
+        with tf.name_scope("loss_angles"):
+            diff = targets_pose - predictions_pose
+            if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
+                pose_loss = tf.reduce_mean(tf.square(diff))
+                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+                self.loss = pose_loss
+            elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
+            elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                self.loss = per_joint_loss
+            else:
+                raise Exception("Unknown angle loss.")
+
+        with tf.name_scope("action_label_loss"):
+            assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
+            targets_action = targets[:, :, self.HUMAN_SIZE:]
+            predictions_action = predictions[:, :, self.HUMAN_SIZE:]
+            if self.action_loss_type == C.LOSS_ACTION_CENT:
+                action_loss = tf.nn.softmax_cross_entropy_with_logits(labels=targets_action, logits=predictions_action)
+                action_loss = tf.reduce_mean(action_loss)
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+                self.loss = self.loss + action_loss
+            elif self.action_loss_type == C.LOSS_ACTION_L2:
+                action_loss = tf.reduce_mean(tf.reduce_sum(tf.square(predictions_action - targets_action), axis=-1))
+                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
+                self.loss = self.loss + action_loss
+            elif self.action_loss_type == C.LOSS_ACTION_NONE:
+                pass
+            else:
+                raise Exception("Unknown action loss.")
+
     def optimization_routines(self):
         pass
 
     def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
         pass
+
+    def build_output_layer(self):
+        """
+        Builds layers to make predictions.
+        """
+        with tf.variable_scope('output_layer', reuse=self.reuse):
+            prediction = []
+
+            if self.joint_prediction_model == "plain":
+                prediction.append(self.build_predictions(self.prediction_representation, self.HUMAN_SIZE, "all"))
+
+            elif self.joint_prediction_model == "separate_joints":
+                for joint_key in sorted(self.structure_indexed.keys()):
+                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                    prediction.append(self.build_predictions(self.prediction_representation, self.JOINT_SIZE, joint_name))
+
+            elif self.joint_prediction_model == "fk_joints":
+                def traverse_parents(tree, source_list, output_list, parent_id):
+                    if parent_id >= 0:
+                        output_list.append(source_list[parent_id])
+                        traverse_parents(tree, source_list, output_list, tree[parent_id][0])
+
+                for joint_key in sorted(self.structure_indexed.keys()):
+                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                    joint_inputs = []
+                    traverse_parents(self.structure_indexed, prediction, joint_inputs, parent_joint_idx)
+                    joint_inputs.append(self.prediction_representation)
+                    prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
+            else:
+                raise Exception("Prediction model not recognized.")
+
+            pose_prediction = tf.concat(prediction, axis=-1)
+            assert pose_prediction.get_shape()[-1] == self.HUMAN_SIZE, "Prediction not matching with the skeleton."
+
+            # Apply residual connection on the pose only.
+            if self.residual_velocities:
+                pose_prediction += self.prediction_inputs[:, 0:-1, :self.HUMAN_SIZE]
+
+            if self.action_loss_type == C.LOSS_ACTION_NONE:
+                # Replicate the input action labels.
+                action_prediction = tf.tile(self.prediction_inputs[0:1, 0:1, -self.ACTION_SIZE:], (tf.shape(pose_prediction)[0], tf.shape(pose_prediction)[1], 1))
+            else:
+                # We want to predict the action vector on the output.
+                assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
+                action_prediction = self.build_predictions(self.prediction_representation, self.ACTION_SIZE, "actions")
+
+            self.outputs_tensor = tf.concat([pose_prediction, action_prediction], axis=-1)
+
+            # This code repository expects the outputs to be a list of time-steps.
+            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+            # Select only the "decoder" predictions.
+            self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
+
+    def build_predictions(self, inputs, output_size, name):
+        """
+        Builds dense output layers given the inputs. First, creates a number of hidden layers if set in the config and
+        then makes the prediction without applying an activation function.
+        Args:
+            inputs (tf.Tensor):
+            output_size (int):
+            name (str):
+        Returns:
+            (tf.Tensor) prediction.
+        """
+        hidden_size = self.output_layer_config.get('size', 0)
+        num_hidden_layers = self.output_layer_config.get('num_layers', 0)
+
+        current_layer = inputs
+        for layer_idx in range(num_hidden_layers):
+            with tf.variable_scope('out_dense_' + name + "_" + str(layer_idx), reuse=self.reuse):
+                current_layer = tf.layers.dense(inputs=current_layer, units=hidden_size, activation=self.activation_fn)
+
+        with tf.variable_scope('out_dense_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+            prediction = tf.layers.dense(inputs=current_layer, units=output_size, activation=None)
+        return prediction
 
     def summary_routines(self):
         # Note that summary_routines are called outside of the self.mode name_scope. Hence, self.mode should be
@@ -457,39 +608,27 @@ class Seq2SeqModel(BaseModel):
     """Sequence-to-sequence model for human motion prediction"""
 
     def __init__(self,
+                 config,
                  session,
                  mode,
                  reuse,
-                 architecture,
-                 source_seq_len,
-                 target_seq_len,
-                 rnn_size,  # hidden recurrent layer size
-                 num_layers,
-                 max_gradient_norm,
-                 batch_size,
-                 learning_rate,
-                 learning_rate_decay_factor,
-                 loss_to_use,
-                 number_of_actions,
-                 one_hot=True,
-                 residual_velocities=False,
                  dtype=tf.float32,
                  **kwargs):
         """Create the model.
 
-        Args:
+        Related parameters in config :
           architecture: [basic, tied] whether to tie the decoder and decoder.
           source_seq_len: length of the input sequence.
           target_seq_len: length of the target sequence.
           rnn_size: number of units in the rnn.
           num_layers: number of rnns to stack.
-          max_gradient_norm: gradients will be clipped to maximally this norm.
+          grad_clip_by_norm: gradients will be clipped to maximally this norm.
           batch_size: the size of the batches used during training;
             the model construction is independent of batch_size, so it can be
             changed after initialization if this is convenient, e.g., for decoding.
           learning_rate: learning rate to start with.
-          learning_rate_decay_factor: decay learning rate by this much when needed.
-          loss_to_use: [supervised, sampling_based]. Whether to use ground truth in
+          learning_rate_decay_rate: decay learning rate by this much when needed.
+          autoregressive_input: [supervised, sampling_based]. Whether to use ground truth in
             each timestep to compute the loss after decoding, or to feed back the
             prediction from the previous time-step.
           number_of_actions: number of classes we have.
@@ -497,23 +636,15 @@ class Seq2SeqModel(BaseModel):
           residual_velocities: whether to use a residual connection that models velocities.
           dtype: the data type to use to store internal variables.
         """
-        super(Seq2SeqModel, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
-                                           target_seq_len=target_seq_len, batch_size=batch_size,
-                                           number_of_actions=number_of_actions, residual_velocities=residual_velocities,
-                                           one_hot=one_hot, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
-        self.residual_velocities = residual_velocities
-        self.num_layers = num_layers
-        self.architecture = architecture
-        self.rnn_size = rnn_size
-        self.max_gradient_norm = max_gradient_norm
-        self.feed_error_to_encoder = kwargs['feed_error_to_decoder']
-
-        if self.is_training:
-            self.learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=dtype, name="learning_rate_op")
-            self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*learning_rate_decay_factor)
+        super(Seq2SeqModel, self).__init__(config=config, session=session, mode=mode, reuse=reuse,
+                                           dtype=dtype, **kwargs)
+        self.num_layers = self.config["num_layers"]
+        self.architecture = self.config["architecture"]
+        self.rnn_size = self.config["rnn_size"]
+        self.states = None
 
         if self.reuse is False:
-            print("One hot is ", one_hot)
+            print("One hot is ", self.one_hot)
             print("Input size is %d" % self.input_size)
             print('rnn_size = {0}'.format(self.rnn_size))
 
@@ -535,6 +666,8 @@ class Seq2SeqModel(BaseModel):
             self.enc_in = tf.split(enc_in, self.source_seq_len - 1, axis=0)
             self.dec_in = tf.split(dec_in, self.target_seq_len, axis=0)
             self.dec_out = tf.split(dec_out, self.target_seq_len, axis=0)
+            self.prediction_inputs = tf.stack(self.enc_in)
+            self.prediction_targets = tf.stack(self.dec_out)
 
     def build_network(self):
         # === Create the RNN that will keep the state ===
@@ -553,36 +686,28 @@ class Seq2SeqModel(BaseModel):
 
             # Define the loss function
             loop_function = None
-            if self.loss_to_use == "sampling_based":
+            if self.autoregressive_input == "sampling_based":
                 def loop_function(prev, i):  # function for sampling_based loss
                     return prev
-            elif self.loss_to_use == "supervised":
+            elif self.autoregressive_input == "supervised":
                 pass
             else:
-                raise (ValueError, "unknown loss: %s" % self.loss_to_use)
+                raise (ValueError, "unknown loss: %s" % self.autoregressive_input)
 
             # Build the RNN
             if self.architecture == "basic":
                 # Basic RNN does not have a loop function in its API, so copying here.
-                with vs.variable_scope("basic_rnn_seq2seq"):
+                with tf.variable_scope("basic_rnn_seq2seq"):
                     _, enc_state = tf.contrib.rnn.static_rnn(cell, self.enc_in, dtype=tf.float32)  # Encoder
                     self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, cell, loop_function=loop_function)  # Decoder
 
             elif self.architecture == "tied":
                 self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(self.enc_in, self.dec_in, cell, loop_function=loop_function)
             else:
-                raise (ValueError, "Unknown architecture: %s"%self.architecture)
+                raise (ValueError, "Unknown architecture: %s" % self.architecture)
 
-        with tf.name_scope("loss_angles"):
-            # self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
-
-            # if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-            # self.loss = tf.reduce_mean(tf.square(tf.subtract(self.dec_out, self.outputs)))
-            # elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-            per_joint_loss = tf.reshape(tf.square(tf.subtract(self.dec_out, self.outputs)), (-1, len(self.outputs), self.input_size // self.JOINT_SIZE, self.JOINT_SIZE))
-            per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-            per_pose_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-            self.loss = tf.reduce_mean(per_pose_loss)
+        self.outputs_tensor = tf.stack(self.outputs)
+        self.build_loss()
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -592,8 +717,8 @@ class Seq2SeqModel(BaseModel):
         # Update all the trainable parameters
         gradients = tf.gradients(self.loss, params)
         # Apply gradient clipping.
-        if self.max_gradient_norm > 0:
-            clipped_gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.max_gradient_norm)
+        if self.grad_clip_by_norm > 0:
+            clipped_gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.grad_clip_by_norm)
         else:
             self.gradient_norms = tf.linalg.global_norm(gradients)
             clipped_gradients = gradients
@@ -646,32 +771,15 @@ class Seq2SeqModel(BaseModel):
 class Seq2SeqFeedbackModel(Seq2SeqModel):
     """Sequence-to-sequence model with error feedback,"""
     def __init__(self,
+                 config,
                  session,
                  mode,
                  reuse,
-                 architecture,
-                 source_seq_len,
-                 target_seq_len,
-                 rnn_size,  # hidden recurrent layer size
-                 num_layers,
-                 max_gradient_norm,
-                 batch_size,
-                 learning_rate,
-                 learning_rate_decay_factor,
-                 loss_to_use,
-                 number_of_actions,
-                 one_hot=True,
-                 residual_velocities=False,
                  dtype=tf.float32,
                  **kwargs):
-        super(Seq2SeqFeedbackModel, self).__init__(session=session, mode=mode, reuse=reuse, architecture=architecture,
-                                                   source_seq_len=source_seq_len, target_seq_len=target_seq_len,
-                                                   rnn_size=rnn_size, num_layers=num_layers, batch_size=batch_size,
-                                                   max_gradient_norm=max_gradient_norm,  learning_rate=learning_rate,
-                                                   learning_rate_decay_factor=learning_rate_decay_factor,
-                                                   number_of_actions=number_of_actions, one_hot=one_hot,
-                                                   residual_velocities=residual_velocities,
-                                                   loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+        super(Seq2SeqFeedbackModel, self).__init__(config=config, session=session, mode=mode, reuse=reuse,
+                                                   dtype=dtype, **kwargs)
+        self.feed_error_to_encoder = config['feed_error_to_encoder']
 
     def create_cell(self, scope, reuse, error_signal_size=0):
         with tf.variable_scope(scope, reuse=reuse):
@@ -680,6 +788,7 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
             if self.num_layers > 1:
                 cells = [rnn_cell(self.rnn_size) for _ in range(self.num_layers)]
                 cell = tf.contrib.rnn.MultiRNNCell(cells)
+
             # === Add space decoder ===
             cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
             # Finally, wrap everything in a residual layer if we want to model velocities
@@ -760,13 +869,13 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
                 encoder_loop_fn = loop_fn_supervised if self.feed_error_to_encoder else loop_fn_gt
 
             # decoder depends on configuration
-            if self.loss_to_use == "sampling_based":
+            if self.autoregressive_input == "sampling_based":
                 decoder_loop_fn = loop_fn_sampling
-            elif self.loss_to_use == "supervised":
+            elif self.autoregressive_input == "supervised":
                 print("WARNING: using ground-truth poses in decoder might be nonsense")
                 decoder_loop_fn = loop_fn_supervised
             else:
-                raise ValueError("'{}' loss unknown".format(self.loss_to_use))
+                raise ValueError("'{}' loss unknown".format(self.autoregressive_input))
 
             with tf.variable_scope("rnn_encoder"):
                 outputs = []
@@ -798,31 +907,8 @@ class Seq2SeqFeedbackModel(Seq2SeqModel):
                     prev = output
 
             self.outputs, self.states = outputs, state
-
-        with tf.name_scope("loss_angles"):
-            if not self.ignore_action_loss:
-                # compute pose loss normally
-                assert self.one_hot
-
-                targets = tf.stack(self.dec_out)
-                predictions = tf.stack(self.outputs)
-
-                pose_diff = targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]
-                pose_loss = tf.reduce_mean(tf.square(pose_diff))
-                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
-
-                # compute loss on one-hot encoded actions via cross entropy
-                action_loss = tf.nn.softmax_cross_entropy_with_logits(logits=predictions[:, :, self.HUMAN_SIZE:],
-                                                                      labels=targets[:, :, self.HUMAN_SIZE:])
-                action_loss = tf.reduce_mean(action_loss)
-                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
-
-                self.loss = pose_loss + action_loss
-            else:
-                # completely ignore the output action vector
-                targets = tf.stack(self.dec_out)
-                predictions = tf.stack(self.outputs)
-                self.loss = tf.reduce_mean(tf.square(targets[:, :, :self.HUMAN_SIZE] - predictions[:, :, :self.HUMAN_SIZE]))
+            self.outputs_tensor = tf.stack(self.outputs)
+        self.build_loss()
 
 
 class Wavenet(BaseModel):
@@ -831,19 +917,9 @@ class Wavenet(BaseModel):
                  session,
                  mode,
                  reuse,
-                 source_seq_len,
-                 target_seq_len,
-                 batch_size,
-                 loss_to_use,
-                 number_of_actions,
-                 one_hot=True,
                  dtype=tf.float32,
                  **kwargs):
-        super(Wavenet, self).__init__(session=session, mode=mode, reuse=reuse, source_seq_len=source_seq_len,
-                                      target_seq_len=target_seq_len, batch_size=batch_size, one_hot=one_hot,
-                                      number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype,
-                                      joint_prediction=config['joint_prediction'], **kwargs)
-        self.config = config
+        super(Wavenet, self).__init__(config=config, session=session, mode=mode, reuse=reuse, dtype=dtype, **kwargs)
         self.input_layer_config = config.get('input_layer', None)
         self.cnn_layer_config = config.get('cnn_layer')
         self.output_layer_config = config.get('output_layer')
@@ -872,30 +948,11 @@ class Wavenet(BaseModel):
         self.decoder_blocks_no_res = []
 
         # Specific to this code:
-        self.angle_loss_type = self.config.get("angle_loss_type", C.LOSS_POSE_ALL_MEAN)
-        self.residual_velocities = self.config.get("residual_velocities", False)
-        self.loss_encoder_inputs = self.config.get("loss_encoder_inputs", False)
         self.summary_ops = dict()  # A container for summary ops of this model. We use "model_summary" collection name.
         self.inputs_hidden = None
         self.receptive_field_width = None
-        self.temporal_block_outputs = None
+        self.prediction_representation = None
         self.output_width = None
-        self.outputs_tensor = None  # self.outputs is a list of frames.
-
-        if self.is_training:
-            if config.get('learning_rate_type') == 'exponential':
-                self.learning_rate = tf.train.exponential_decay(config.get('learning_rate'),
-                                                                global_step=self.global_step,
-                                                                decay_steps=config.get('learning_rate_decay_steps'),
-                                                                decay_rate=config.get('learning_rate_decay_rate'),
-                                                                staircase=False)
-            elif config.get('learning_rate_type') == 'piecewise':
-                self.learning_rate = tf.Variable(float(config.get('learning_rate')), trainable=False, dtype=dtype, name="learning_rate_op")
-                self.learning_rate_scheduler = self.learning_rate.assign(self.learning_rate*config.get('learning_rate_decay_rate'))
-            elif config.get('learning_rate_type') == 'fixed':
-                self.learning_rate = config.get('learning_rate')
-            else:
-                raise Exception("Invalid learning rate type")
 
         with tf.name_scope("inputs"):
             # If we have a sequence of [0,1...13,14], source_seq_len and target_seq_len with values 10 and 5:
@@ -913,18 +970,14 @@ class Wavenet(BaseModel):
 
         # Get the last frame of decoder_outputs in order to use in approximate inference.
         last_frame = self.decoder_outputs[:, -1:, :]
-        self.pl_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
-        self.pl_targets = self.pl_inputs[:, 1:, :]
-        self.pl_sequence_length = tf.ones((tf.shape(self.pl_targets)[0]), dtype=tf.int32) * self.sequence_length
-
-        # Ignoring the action labels.
-        # self.pl_targets = self.pl_inputs[:, 1:, :-self.number_of_actions]
-        # self.action_label = self.pl_inputs[0:1, 0:1, -self.number_of_actions:]
+        self.prediction_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
+        self.prediction_targets = self.prediction_inputs[:, 1:, :]
+        self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
 
     def build_network(self):
         # We always pad the input sequences such that the output sequence has the same length with input sequence.
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
-        self.inputs_hidden = self.pl_inputs
+        self.inputs_hidden = self.prediction_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config["seed"], training=self.is_training)
@@ -939,7 +992,7 @@ class Wavenet(BaseModel):
         if self.decoder_use_enc_last:
             decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
         if self.decoder_use_raw_inputs:
-            decoder_inputs.append(self.pl_inputs[:, 0:-1])
+            decoder_inputs.append(self.prediction_inputs[:, 0:-1])
         assert len(decoder_inputs) != 0, "Decoder input is not defined."
 
         # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
@@ -949,11 +1002,11 @@ class Wavenet(BaseModel):
                 decoder_input_layer = tf.concat(decoder_inputs, axis=-1)
                 decoder_filter_size = self.cnn_layer_config.get("decoder_filter_size", self.cnn_layer_config['filter_size'])
                 self.decoder_blocks, self.decoder_blocks_no_res = self.build_temporal_block(decoder_input_layer, self.num_decoder_blocks, self.reuse, kernel_size=decoder_filter_size)
-                self.temporal_block_outputs = self.decoder_blocks[-1]
+                self.prediction_representation = self.decoder_blocks[-1]
         else:
-            self.temporal_block_outputs = tf.concat(decoder_inputs, axis=-1)
+            self.prediction_representation = tf.concat(decoder_inputs, axis=-1)
 
-        self.output_width = tf.shape(self.temporal_block_outputs)[1]
+        self.output_width = tf.shape(self.prediction_representation)[1]
         self.build_output_layer()
         self.build_loss()
 
@@ -977,62 +1030,6 @@ class Wavenet(BaseModel):
                 current_layer = temp_block
 
         return temporal_blocks, temporal_blocks_no_res
-
-    def build_output_layer(self):
-        """
-        Builds layers to make predictions.
-        """
-        with tf.variable_scope('output_layer', reuse=self.reuse):
-            prediction = []
-
-            if self.joint_prediction == "plain":
-                prediction.append(self.build_predictions(self.temporal_block_outputs, self.HUMAN_SIZE, "all"))
-
-            elif self.joint_prediction == "separate_joints":
-                for joint_key in sorted(self.structure_indexed.keys()):
-                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
-                    prediction.append(self.build_predictions(self.temporal_block_outputs, self.JOINT_SIZE, joint_name))
-
-            elif self.joint_prediction == "fk_joints":
-                def traverse_parents(tree, source_list, output_list, parent_id):
-                    if parent_id >= 0:
-                        output_list.append(source_list[parent_id])
-                        traverse_parents(tree, source_list, output_list, tree[parent_id][0])
-
-                for joint_key in sorted(self.structure_indexed.keys()):
-                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
-                    joint_inputs = []
-                    traverse_parents(self.structure_indexed, prediction, joint_inputs, parent_joint_idx)
-                    joint_inputs.append(self.temporal_block_outputs)
-                    prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
-            else:
-                raise Exception("Prediction model not recognized.")
-
-            if self.ignore_action_loss:
-                # we don't want any loss on the output
-                if self.residual_velocities and self.one_hot:
-                    # must append some dummy values to predictions otherwise the residual connection mismatches
-                    prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
-                    self.outputs_mu = tf.concat(prediction, axis=-1)
-                else:
-                    # no action encoded in the input or not residual velocity, so no need to add dummy values
-                    self.outputs_mu = prediction
-            else:
-                # we want to predict the action vector on the output
-                assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
-                action_logits = tf.layers.dense(self.temporal_block_outputs, self.ACTION_SIZE,
-                                                name="action_prediction", reuse=self.reuse)
-                prediction.append(action_logits)
-                self.outputs_mu = tf.concat(prediction, axis=-1)
-
-            if self.residual_velocities:
-                self.outputs_mu += self.pl_inputs[:, 0:-1]
-            self.outputs_tensor = self.outputs_mu
-
-            # This code repository expects the outputs to be a list of time-steps.
-            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
-            # Select only the "decoder" predictions.
-            self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
 
     def build_predictions(self, inputs, output_size, name):
         """
@@ -1088,52 +1085,6 @@ class Wavenet(BaseModel):
         else:
             raise Exception("Layer type not recognized.")
         return prediction
-
-    def build_loss(self):
-        if self.is_eval or not self.loss_encoder_inputs:
-            predictions = self.outputs_mu[:, -self.target_seq_len:, :]
-            targets = self.pl_targets[:, -self.target_seq_len:, :]
-            seq_len = self.target_seq_len
-        else:
-            predictions = self.outputs_mu
-            targets = self.pl_targets
-            seq_len = self.sequence_length
-
-        targets_pose = targets[:, :, :self.HUMAN_SIZE]
-        predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
-
-        with tf.name_scope("loss_angles"):
-            diff = targets_pose - predictions_pose
-            if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                pose_loss = tf.reduce_mean(tf.square(diff))
-                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
-                self.loss = pose_loss
-            elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.reshape(tf.square(targets - predictions), (-1, seq_len, num_joints, self.JOINT_SIZE))
-                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_joint_loss = tf.reduce_mean(per_joint_loss)
-                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
-                self.loss = per_joint_loss
-            elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-                per_joint_loss = tf.reduce_mean(per_joint_loss)
-                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
-                self.loss = per_joint_loss
-            else:
-                raise Exception("Unknown angle loss.")
-
-        if not self.ignore_action_loss:
-            assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
-            with tf.name_scope("action_label_loss"):
-                targets_action = targets[:, :, self.HUMAN_SIZE:]
-                predictions_action = predictions[:, :, self.HUMAN_SIZE:]
-                action_loss = tf.nn.softmax_cross_entropy_with_logits(labels=targets_action,
-                                                                      logits=predictions_action)
-                action_loss = tf.reduce_mean(action_loss)
-                tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
-                self.loss = self.loss + action_loss
 
     def optimization_routines(self):
         # Gradients and update operation for training the model.
@@ -1203,12 +1154,11 @@ class Wavenet(BaseModel):
             model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
 
             # get the prediction
-            model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.pl_inputs: model_inputs})
+            model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.prediction_inputs: model_inputs})
             prediction = model_outputs[:, -1, :]
 
             # if action vector is predicted, must convert the logits to one-hot vectors
-            # TODO if we don't have the action loss, is there nothing to do?
-            if not self.ignore_action_loss:
+            if self.action_loss_type == C.LOSS_ACTION_CENT:
                 action_logits = prediction[:, self.HUMAN_SIZE:]
                 action_probs = softmax(action_logits)
                 max_idx = np.argmax(action_probs, axis=-1)
@@ -1319,20 +1269,11 @@ class STCN(Wavenet):
                  session,
                  mode,
                  reuse,
-                 source_seq_len,
-                 target_seq_len,
-                 batch_size,
-                 loss_to_use,
-                 number_of_actions,
-                 one_hot=True,
                  dtype=tf.float32,
                  **kwargs):
-        super(STCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse, batch_size=batch_size,
-                                   target_seq_len=target_seq_len, source_seq_len=source_seq_len, one_hot=one_hot,
-                                   number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype, **kwargs)
+        super(STCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse, dtype=dtype, **kwargs)
         # Add latent layer related fields.
         self.latent_layer_config = self.config.get("latent_layer")
-
         self.use_future_steps_in_q = self.config.get('use_future_steps_in_q', False)
         self.bw_encoder_blocks = []
         self.bw_encoder_blocks_no_res = []
@@ -1347,7 +1288,7 @@ class STCN(Wavenet):
                                             global_step=self.global_step)
 
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
-        self.inputs_hidden = self.pl_inputs
+        self.inputs_hidden = self.prediction_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config["seed"], training=self.is_training)
@@ -1357,7 +1298,7 @@ class STCN(Wavenet):
 
         if self.use_future_steps_in_q:
             reuse_params_in_bw = True
-            reversed_inputs = tf.manip.reverse(self.pl_inputs, axis=[1])
+            reversed_inputs = tf.manip.reverse(self.prediction_inputs, axis=[1])
             if reuse_params_in_bw:
                 with tf.variable_scope("encoder", reuse=True):
                     self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
@@ -1387,7 +1328,7 @@ class STCN(Wavenet):
         if self.decoder_use_enc_last:
             decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
         if self.decoder_use_raw_inputs:
-            decoder_inputs.append(self.pl_inputs[:, 0:-1])
+            decoder_inputs.append(self.prediction_inputs[:, 0:-1])
 
         # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
         # build_output_layer. Note that there are several input options.
@@ -1399,11 +1340,11 @@ class STCN(Wavenet):
                                                                                             self.num_decoder_blocks,
                                                                                             self.reuse,
                                                                                             kernel_size=decoder_filter_size)
-                self.temporal_block_outputs = self.decoder_blocks[-1]
+                self.prediction_representation = self.decoder_blocks[-1]
         else:
-            self.temporal_block_outputs = tf.concat(decoder_inputs, axis=-1)
+            self.prediction_representation = tf.concat(decoder_inputs, axis=-1)
 
-        self.output_width = tf.shape(self.temporal_block_outputs)[1]
+        self.output_width = tf.shape(self.prediction_representation)[1]
         self.build_output_layer()
         self.build_loss()
 
@@ -1412,7 +1353,7 @@ class STCN(Wavenet):
 
         # KLD Loss.
         if self.is_training:
-            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.pl_sequence_length, dtype=tf.float32), -1)
+            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
             latent_loss_dict = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
             for loss_key, loss_op in latent_loss_dict.items():
                 self.loss += loss_op
@@ -1430,18 +1371,9 @@ class StructuredSTCN(STCN):
                  session,
                  mode,
                  reuse,
-                 source_seq_len,
-                 target_seq_len,
-                 batch_size,
-                 loss_to_use,
-                 number_of_actions,
-                 one_hot=True,
                  dtype=tf.float32,
                  **kwargs):
-        super(StructuredSTCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse,
-                                             batch_size=batch_size, target_seq_len=target_seq_len,
-                                             source_seq_len=source_seq_len, one_hot=one_hot,
-                                             number_of_actions=number_of_actions, loss_to_use=loss_to_use, dtype=dtype,
+        super(StructuredSTCN, self).__init__(config=config, session=session, mode=mode, reuse=reuse, dtype=dtype,
                                              **kwargs)
 
     def build_network(self):
@@ -1453,7 +1385,7 @@ class StructuredSTCN(STCN):
                                             structure=self.structure)
 
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
-        self.inputs_hidden = self.pl_inputs
+        self.inputs_hidden = self.prediction_inputs
         if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config["seed"], training=self.is_training)
@@ -1463,7 +1395,7 @@ class StructuredSTCN(STCN):
 
         if self.use_future_steps_in_q:
             reuse_params_in_bw = True
-            reversed_inputs = tf.manip.reverse(self.pl_inputs, axis=[1])
+            reversed_inputs = tf.manip.reverse(self.prediction_inputs, axis=[1])
             if reuse_params_in_bw:
                 with tf.variable_scope("encoder", reuse=True):
                     self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
@@ -1508,14 +1440,14 @@ class StructuredSTCN(STCN):
             for joint_key in sorted(self.structure_indexed.keys()):
                 parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
                 joint_sample = self.latent_samples[joint_key]
-                if self.joint_prediction == "plain":
+                if self.joint_prediction_model == "plain":
                     prediction.append(joint_sample)
 
-                elif self.joint_prediction == "separate_joints":
+                elif self.joint_prediction_model == "separate_joints":
                     joint_prediction = self.build_predictions(joint_sample, self.JOINT_SIZE, joint_name)
                     prediction.append(joint_prediction)
 
-                elif self.joint_prediction == "fk_joints":
+                elif self.joint_prediction_model == "fk_joints":
                     joint_inputs = []
                     traverse_parents(self.structure_indexed, self.latent_layer.latent_samples_indexed, joint_inputs, parent_joint_idx)
                     joint_inputs.append(joint_sample)
@@ -1524,12 +1456,11 @@ class StructuredSTCN(STCN):
                     raise Exception("Prediction model not recognized.")
 
             # TODO action labels for skip connection.
-            prediction.append(tf.zeros_like(self.pl_inputs[:, 0:-1, -self.ACTION_SIZE:]))
+            prediction.append(tf.zeros_like(self.prediction_inputs[:, 0:-1, -self.ACTION_SIZE:]))
             self.outputs_mu = tf.concat(prediction, axis=-1)
 
             if self.residual_velocities:
-                self.outputs_mu += self.pl_inputs[:, 0:-1]
-            self.outputs_tensor = self.outputs_mu
+                self.outputs_mu += self.prediction_inputs[:, 0:-1]
 
             # This code repository expects the outputs to be a list of time-steps.
             # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
