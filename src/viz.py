@@ -64,7 +64,7 @@ class Ax3DPose(object):
             self.plots[i][0].set_3d_properties(z)
             self.plots[i][0].set_color(lcolor if self.LR[i] else rcolor)
 
-        r = 750;
+        r = 750
         xroot, yroot, zroot = vals[0, 0], vals[0, 1], vals[0, 2]
         self.ax.set_xlim3d([-r + xroot, r + xroot])
         self.ax.set_zlim3d([-r + zroot, r + zroot])
