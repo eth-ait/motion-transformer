@@ -132,6 +132,7 @@ class Constants(object):
     LATENT_VARIATIONAL_CODEBOOK = "latent_variational_codebook"
     LATENT_CATEGORICAL = "latent_categorical"
     LATENT_LADDER_GAUSSIAN = "latent_ladder_gaussian"
+    LATENT_STRUCTURED_HUMAN = "latent_structured_human"
 
     DETERMINISTIC = "deterministic"
     PROBABILISTIC = "probabilistic"
@@ -148,3 +149,7 @@ class Constants(object):
     LOSS_POSE_ALL_MEAN = "all_mean"
     LOSS_POSE_JOINT_SUM = "joint_sum"
     LOSS_POSE_JOINT_MEAN = "joint_mean"
+
+    LOSS_ACTION_CENT = "cross_entropy"
+    LOSS_ACTION_L2 = "l2"
+    LOSS_ACTION_NONE = "none"

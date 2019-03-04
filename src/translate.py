@@ -24,8 +24,9 @@ import json
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.95, "Learning rate mutiplier. 1 means no decay.")
-tf.app.flags.DEFINE_integer("learning_rate_step", 10000, "Every this many steps, do decay.")
+tf.app.flags.DEFINE_float("learning_rate_decay_rate", 0.95, "Learning rate mutiplier. 1 means no decay.")
+tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning rate decay type.")
+tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("iterations", int(1e5), "Iterations to train for.")
@@ -42,8 +43,7 @@ tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments/"), "Training directory.")
 
 tf.app.flags.DEFINE_string("action", "all", "The action to train on. all actions")
-tf.app.flags.DEFINE_string("loss_to_use", "sampling_based", "The type of loss to use, supervised or sampling_based")
-
+tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
 tf.app.flags.DEFINE_integer("save_every", 2000, "How often to compute error on the test set.")
 tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
@@ -51,10 +51,12 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn or seq2seq_feedback.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn or structured_stcn.")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
-tf.app.flags.DEFINE_boolean("ignore_action_loss", True, "Whether to apply loss on the action labels or not.")
+tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
+tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
+tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -74,6 +76,8 @@ def create_model(session, actions, sampling=False):
         train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     elif FLAGS.model_type == "seq2seq_feedback":
         train_model, eval_model, experiment_dir = create_seq2seq_model(session, actions, sampling)
+    elif FLAGS.model_type == "structured_stcn":
+        train_model, eval_model, experiment_dir = create_stcn_model(session, actions, sampling)
     else:
         raise Exception("Unknown model type.")
 
@@ -118,7 +122,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['seed'] = 1234
     config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
-    config['learning_rate_type'] = 'exponential'
+    config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
@@ -144,6 +148,7 @@ def create_stcn_model(session, actions, sampling=False):
     config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
+    config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 21
     config['cnn_layer']['num_decoder_layers'] = 0
@@ -157,17 +162,27 @@ def create_stcn_model(session, actions, sampling=False):
     config['decoder_use_enc_last'] = True
     config['decoder_use_raw_inputs'] = False
     config['grad_clip_by_norm'] = 1
-    config['loss_encoder_inputs'] = True
-    config['angle_loss_type'] = C.LOSS_POSE_JOINT_SUM
-    config['residual_velocities'] = FLAGS.residual_velocities
     config['use_future_steps_in_q'] = False
-    config['joint_prediction'] = "plain"  # "plain", "separate_joints", "fk_joints"
+    config['loss_on_encoder_outputs'] = True
+
+    config['source_seq_len'] = FLAGS.seq_length_in if not sampling else 50
+    config['target_seq_len'] = FLAGS.seq_length_out if not sampling else 100
+    config['batch_size'] = FLAGS.batch_size
+    config['autoregressive_input'] = FLAGS.autoregressive_input if not sampling else "sampling_based",
+    config['number_of_actions'] = len(actions)
+    config['one_hot'] = not FLAGS.omit_one_hot
+    config['residual_velocities'] = FLAGS.residual_velocities
+    config['joint_prediction_model'] = FLAGS.joint_prediction_model
+    config['angle_loss_type'] = FLAGS.angle_loss
+    config['action_loss_type'] = FLAGS.action_loss
 
     if FLAGS.model_type == "stcn":
         model_cls = models.STCN
     elif FLAGS.model_type == "wavenet":
         model_cls = models.Wavenet
         del config["latent_layer"]
+    elif FLAGS.model_type == "structured_stcn":
+        model_cls = models.StructuredSTCN
     else:
         raise Exception()
 
@@ -177,14 +192,7 @@ def create_stcn_model(session, actions, sampling=False):
             session=session,
             mode=C.TRAIN,
             reuse=False,
-            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-            batch_size=FLAGS.batch_size,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
-            number_of_actions=len(actions),
-            one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32,
-            ignore_action_loss=FLAGS.ignore_action_loss)
+            dtype=tf.float32)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -193,14 +201,7 @@ def create_stcn_model(session, actions, sampling=False):
             session=session,
             mode=C.SAMPLE,
             reuse=True,
-            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-            batch_size=FLAGS.batch_size,
-            loss_to_use=FLAGS.loss_to_use if not sampling else "sampling_based",
-            number_of_actions=len(actions),
-            one_hot=not FLAGS.omit_one_hot,
-            dtype=tf.float32,
-            ignore_action_loss=FLAGS.ignore_action_loss)
+            dtype=tf.float32)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}{}-{}x{}@{}{}-in{}_out{}-{}-{}-{}"
@@ -215,7 +216,7 @@ def create_stcn_model(session, actions, sampling=False):
                                                     FLAGS.seq_length_out,
                                                     config['angle_loss_type'],
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
-                                                    'no_action' if FLAGS.ignore_action_loss else 'action_loss')
+                                                    'no_action' if FLAGS.action_loss else 'action_loss_type')
     if FLAGS.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
     else:
@@ -230,64 +231,64 @@ def create_stcn_model(session, actions, sampling=False):
 def create_seq2seq_model(session, actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
 
+    config = dict()
+    config['seed'] = 1234
+    config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
+    config['residual_velocities'] = FLAGS.residual_velocities
+    config['joint_prediction_model'] = FLAGS.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
+    config['architecture'] = FLAGS.architecture
+    config['source_seq_len'] = FLAGS.seq_length_in if not sampling else 50
+    config['target_seq_len'] = FLAGS.seq_length_out if not sampling else 100
+    config['rnn_size'] = FLAGS.size
+    config['num_layers'] = FLAGS.num_layers
+    config['grad_clip_by_norm'] = FLAGS.max_gradient_norm
+    config['batch_size'] = FLAGS.batch_size
+    config['learning_rate'] = FLAGS.learning_rate
+    config['learning_rate_decay_rate'] = FLAGS.learning_rate_decay_rate
+    config['learning_rate_decay_type'] = FLAGS.learning_rate_decay_type
+    config['autoregressive_input'] = FLAGS.autoregressive_input
+    config['number_of_actions'] = len(actions)
+    config['one_hot'] = not FLAGS.omit_one_hot
+    config['residual_velocities'] = FLAGS.residual_velocities
+    config['joint_prediction_model'] = FLAGS.joint_prediction_model  # currently ignored by seq2seq models
+    config['output_layer'] = dict()
+    config['output_layer']['num_layers'] = 0
+    config['output_layer']['size'] = 128
+    config['output_layer']['activation_fn'] = C.RELU
+    config['angle_loss_type'] = FLAGS.angle_loss
+    config['action_loss_type'] = C.LOSS_ACTION_L2
+    if FLAGS.action_loss != C.LOSS_ACTION_L2:
+        print("!!!Only L2 action loss is implemented for seq2seq models!!!")
+
     if FLAGS.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
     elif FLAGS.model_type == "seq2seq_feedback":
         model_cls = models.Seq2SeqFeedbackModel
+        config['feed_error_to_encoder'] = FLAGS.feed_error_to_encoder
     else:
         raise ValueError("'{}' model unknown".format(FLAGS.model_type))
 
     if not sampling:
-        loss_to_use = FLAGS.loss_to_use
+        autoregressive_input = FLAGS.autoregressive_input
     else:
-        loss_to_use = "sampling_based"
+        autoregressive_input = "sampling_based"
 
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
+            config=config,
             session=session,
             mode=C.TRAIN,
             reuse=False,
-            architecture=FLAGS.architecture,
-            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-            rnn_size=FLAGS.size,  # hidden layer size
-            num_layers=FLAGS.num_layers,
-            max_gradient_norm=FLAGS.max_gradient_norm,
-            batch_size=FLAGS.batch_size,
-            learning_rate=FLAGS.learning_rate,
-            learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=loss_to_use,
-            number_of_actions=len(actions),
-            one_hot=not FLAGS.omit_one_hot,
-            residual_velocities=FLAGS.residual_velocities,
-            dtype=tf.float32,
-            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
-            joint_prediction="plain",  # currently ignored by seq2seq models
-            ignore_action_loss=FLAGS.ignore_action_loss)
+            dtype=tf.float32)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
         eval_model = model_cls(
+            config=config,
             session=session,
             mode=C.SAMPLE,
             reuse=True,
-            architecture=FLAGS.architecture,
-            source_seq_len=FLAGS.seq_length_in if not sampling else 50,
-            target_seq_len=FLAGS.seq_length_out if not sampling else 100,
-            rnn_size=FLAGS.size,  # hidden layer size
-            num_layers=FLAGS.num_layers,
-            max_gradient_norm=FLAGS.max_gradient_norm,
-            batch_size=FLAGS.batch_size,
-            learning_rate=FLAGS.learning_rate,
-            learning_rate_decay_factor=FLAGS.learning_rate_decay_factor,
-            loss_to_use=loss_to_use,
-            number_of_actions=len(actions),
-            one_hot=not FLAGS.omit_one_hot,
-            residual_velocities=FLAGS.residual_velocities,
-            dtype=tf.float32,
-            feed_error_to_decoder=FLAGS.feed_error_to_encoder,
-            joint_prediction="plain",  # currently ignored by seq2seq models
-            ignore_action_loss=FLAGS.ignore_action_loss)
+            dtype=tf.float32)
         eval_model.build_graph()
 
     experiment_name_format = "{}-{}-{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-lr{}-{}-{}"
@@ -298,7 +299,7 @@ def create_seq2seq_model(session, actions, sampling=False):
                                                     FLAGS.seq_length_out,
                                                     FLAGS.architecture,
                                                     '' if FLAGS.feed_error_to_encoder else 'no',
-                                                    loss_to_use,
+                                                    autoregressive_input,
                                                     'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
                                                     FLAGS.num_layers,
                                                     FLAGS.size,
@@ -312,6 +313,7 @@ def create_seq2seq_model(session, actions, sampling=False):
     if not os.path.exists(experiment_dir):
         os.mkdir(experiment_dir)
 
+    json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
     return train_model, eval_model, experiment_dir
 
 
@@ -374,7 +376,7 @@ def train():
             current_step += 1
 
             # === step decay ===
-            if current_step % FLAGS.learning_rate_step == 0 and train_model.learning_rate_scheduler is not None:
+            if current_step % FLAGS.learning_rate_decay_steps == 0 and train_model.learning_rate_decay_type == "piecewise":
                 sess.run(train_model.learning_rate_scheduler)
 
             # Once in a while, we save checkpoint, print statistics, and run evals.
