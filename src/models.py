@@ -148,18 +148,25 @@ class BaseModel(object):
                 raise Exception("Unknown angle loss.")
 
         with tf.name_scope("action_label_loss"):
-            assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
-            targets_action = targets[:, :, self.HUMAN_SIZE:]
-            predictions_action = predictions[:, :, self.HUMAN_SIZE:]
             if self.action_loss_type == C.LOSS_ACTION_CENT:
+                assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
+                targets_action = targets[:, :, self.HUMAN_SIZE:]
+                predictions_action = predictions[:, :, self.HUMAN_SIZE:]
+
                 action_loss = tf.nn.softmax_cross_entropy_with_logits(labels=targets_action, logits=predictions_action)
                 action_loss = tf.reduce_mean(action_loss)
                 tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
                 self.loss = self.loss + action_loss
+
             elif self.action_loss_type == C.LOSS_ACTION_L2:
+                assert targets.get_shape()[-1].value == self.HUMAN_SIZE + self.ACTION_SIZE
+                targets_action = targets[:, :, self.HUMAN_SIZE:]
+                predictions_action = predictions[:, :, self.HUMAN_SIZE:]
+
                 action_loss = tf.reduce_mean(tf.reduce_sum(tf.square(predictions_action - targets_action), axis=-1))
                 tf.summary.scalar(self.mode + "/action_loss", action_loss, collections=[self.mode + "/model_summary"])
                 self.loss = self.loss + action_loss
+
             elif self.action_loss_type == C.LOSS_ACTION_NONE:
                 pass
             else:
@@ -206,17 +213,17 @@ class BaseModel(object):
 
             # Apply residual connection on the pose only.
             if self.residual_velocities:
-                pose_prediction += self.prediction_inputs[:, 0:-1, :self.HUMAN_SIZE]
+                pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
 
-            if self.action_loss_type == C.LOSS_ACTION_NONE:
+            if self.one_hot:
                 # Replicate the input action labels.
-                action_prediction = tf.tile(self.prediction_inputs[0:1, 0:1, -self.ACTION_SIZE:], (tf.shape(pose_prediction)[0], tf.shape(pose_prediction)[1], 1))
+                if self.action_loss_type == C.LOSS_ACTION_NONE:
+                    action_prediction = tf.tile(self.prediction_inputs[0:1, 0:1, -self.ACTION_SIZE:], (tf.shape(pose_prediction)[0], tf.shape(pose_prediction)[1], 1))
+                else:  # self.action_loss_type in [C.LOSS_ACTION_L2 or C.LOSS_ACTION_CENT]:
+                    action_prediction = self.build_predictions(self.prediction_representation, self.ACTION_SIZE, "actions")
+                self.outputs_tensor = tf.concat([pose_prediction, action_prediction], axis=-1)
             else:
-                # We want to predict the action vector on the output.
-                assert self.one_hot  # currently need the action class on the input otherwise we don't have any labels
-                action_prediction = self.build_predictions(self.prediction_representation, self.ACTION_SIZE, "actions")
-
-            self.outputs_tensor = tf.concat([pose_prediction, action_prediction], axis=-1)
+                self.outputs_tensor = pose_prediction
 
             # This code repository expects the outputs to be a list of time-steps.
             # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
@@ -685,6 +692,9 @@ class Seq2SeqModel(BaseModel):
                 cell = rnn_cell_extensions.ResidualWrapper(cell)
 
             # Define the loss function
+            if self.is_eval:
+                self.autoregressive_input = "sampling_based"
+
             loop_function = None
             if self.autoregressive_input == "sampling_based":
                 def loop_function(prev, i):  # function for sampling_based loss
@@ -955,6 +965,8 @@ class Wavenet(BaseModel):
         self.output_width = None
 
         with tf.name_scope("inputs"):
+            # We concatenate encoder and decoder inputs. The model is fed with a slice of [0:-1] while the target
+            # is shifted by one step (i.e., a slice of [1:]).
             # If we have a sequence of [0,1...13,14], source_seq_len and target_seq_len with values 10 and 5:
             # [0,1,2,3,4,5,6,7,8]
             self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
@@ -970,8 +982,9 @@ class Wavenet(BaseModel):
 
         # Get the last frame of decoder_outputs in order to use in approximate inference.
         last_frame = self.decoder_outputs[:, -1:, :]
-        self.prediction_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
-        self.prediction_targets = self.prediction_inputs[:, 1:, :]
+        all_frames = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
+        self.prediction_inputs = all_frames[:, :-1, :]
+        self.prediction_targets = all_frames[:, 1:, :]
         self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
 
     def build_network(self):
@@ -987,12 +1000,12 @@ class Wavenet(BaseModel):
 
         decoder_inputs = []
         if self.decoder_use_enc_skip:
-            skip_connections = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks_no_res]
+            skip_connections = [enc_layer for enc_layer in self.encoder_blocks_no_res]
             decoder_inputs.append(self.activation_fn(sum(skip_connections)))
         if self.decoder_use_enc_last:
-            decoder_inputs.append(self.encoder_blocks[-1][:, 0:-1])  # Top-most convolutional layer.
+            decoder_inputs.append(self.encoder_blocks[-1])  # Top-most convolutional layer.
         if self.decoder_use_raw_inputs:
-            decoder_inputs.append(self.prediction_inputs[:, 0:-1])
+            decoder_inputs.append(self.prediction_inputs)
         assert len(decoder_inputs) != 0, "Decoder input is not defined."
 
         # Build causal decoder blocks if we have any. Otherwise, we just use a number of 1x1 convolutions in
@@ -1144,14 +1157,10 @@ class Wavenet(BaseModel):
         assert self.is_eval, "Only works in sampling mode."
 
         input_sequence = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1, :]], axis=1)
-        dummy_frame = np.zeros([input_sequence.shape[0], 1, input_sequence.shape[2]])
         predictions = []
         for step in range(self.target_seq_len):
             end_idx = min(self.receptive_field_width, input_sequence.shape[1])
             model_inputs = input_sequence[:, -end_idx:]
-
-            # Insert a dummy frame since the sampling model ignores the last step.
-            model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
 
             # get the prediction
             model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.prediction_inputs: model_inputs})
@@ -1280,6 +1289,13 @@ class STCN(Wavenet):
         self.latent_layer = None
         self.latent_samples = None
 
+        # Get the last frame of decoder_outputs in order to use in approximate inference.
+        last_frame = self.decoder_outputs[:, -1:, :]
+        all_frames = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
+        self.prediction_inputs = all_frames  # The q and p models require all frames.
+        self.prediction_targets = all_frames[:, 1:, :]
+        self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
+
     def build_network(self):
         self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
                                             layer_type=self.latent_layer_config["type"],
@@ -1363,6 +1379,39 @@ class STCN(Wavenet):
         self.kld_weight_summary = tf.summary.scalar(self.mode + "/kld_weight", self.latent_layer.kld_weight,
                                                     collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
+
+    def sampled_step(self, encoder_inputs, decoder_inputs, decoder_outputs):
+        """
+        Generates a synthetic sequence by feeding the prediction at t+1.
+        """
+        assert self.is_eval, "Only works in sampling mode."
+
+        input_sequence = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1, :]], axis=1)
+        dummy_frame = np.zeros([input_sequence.shape[0], 1, input_sequence.shape[2]])
+        predictions = []
+        for step in range(self.target_seq_len):
+            end_idx = min(self.receptive_field_width, input_sequence.shape[1])
+            model_inputs = input_sequence[:, -end_idx:]
+
+            # Insert a dummy frame since the sampling model ignores the last step.
+            model_inputs = np.concatenate([model_inputs, dummy_frame], axis=1)
+
+            # get the prediction
+            model_outputs = self.session.run(self.outputs_tensor, feed_dict={self.prediction_inputs: model_inputs})
+            prediction = model_outputs[:, -1, :]
+
+            # if action vector is predicted, must convert the logits to one-hot vectors
+            if self.action_loss_type == C.LOSS_ACTION_CENT:
+                action_logits = prediction[:, self.HUMAN_SIZE:]
+                action_probs = softmax(action_logits)
+                max_idx = np.argmax(action_probs, axis=-1)
+                one_hot = np.eye(self.ACTION_SIZE)[max_idx]
+                prediction[:, self.HUMAN_SIZE:] = one_hot
+
+            predictions.append(prediction)
+            input_sequence = np.concatenate([input_sequence, np.expand_dims(predictions[-1], axis=1)], axis=1)
+
+        return predictions
 
 
 class StructuredSTCN(STCN):

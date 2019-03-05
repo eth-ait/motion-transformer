@@ -1,13 +1,7 @@
 import tensorflow as tf
-import numpy as np
-import sys
-import time
-import math
-import copy
 import tf_loss
-from tf_model_utils import get_reduce_loss_func, get_rnn_cell, linear, fully_connected_layer, get_activation_fn, get_decay_variable
+from tf_model_utils import linear, fully_connected_layer, get_activation_fn, get_decay_variable
 from constants import Constants
-from tf_rnn_cells import LatentCell, VRNNCell, ZForcingCell
 
 """
 Vanilla variational recurrent neural network model.
@@ -448,7 +442,6 @@ class LadderLatentLayer(LatentLayer):
         Creates KL-divergence loss between prior and approximate posterior distributions. If use_temporal_kld is True,
         then creates another KL-divergence term between consecutive approximate posteriors in time.
         """
-        loss_ops_dict = loss_ops_dict or dict()
         # eval_dict contains each KLD term and latent q, p distributions for further analysis.
         eval_dict = kwargs.get("eval_dict", None)
         if eval_dict is not None:
@@ -469,7 +462,7 @@ class LadderLatentLayer(LatentLayer):
 
                         # This is just for monitoring. Only the entries in loss_ops_dict starting with "loss"
                         # contribute to the gradients.
-                        if not self.is_training:
+                        if not self.is_training and loss_ops_dict is not None:
                             loss_ops_dict["KL"+str(sl)] = tf.stop_gradient(kld_term)
 
                         self.kld_loss_terms.append(kld_term)
@@ -480,7 +473,8 @@ class LadderLatentLayer(LatentLayer):
 
                 # Optimization is done through the accumulated term (i.e., loss_ops_dict[loss_key]).
                 self.ops_loss[loss_key] = kld_loss
-                loss_ops_dict[loss_key] = kld_loss
+                if loss_ops_dict is not None:
+                    loss_ops_dict[loss_key] = kld_loss
 
         return self.ops_loss
 
