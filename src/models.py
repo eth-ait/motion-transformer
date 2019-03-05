@@ -12,6 +12,7 @@ import rnn_cell_extensions  # my extensions of the tf repos
 from constants import Constants as C
 from tf_model_utils import get_activation_fn
 from tf_models import LatentLayer
+from tf_rnn_cells import LatentCell, GaussianLatentCell
 from data_utils import softmax
 
 
@@ -1518,3 +1519,183 @@ class StructuredSTCN(STCN):
 
     def build_loss(self):
         super(StructuredSTCN, self).build_loss()
+
+
+class RNNLatentCellModel(BaseModel):
+    """
+    Variational RNN model.
+    """
+    def __init__(self, config, session, mode, reuse, dtype, **kwargs):
+        super(RNNLatentCellModel, self).__init__(config, session, mode, reuse, dtype, **kwargs)
+        self.cell_config = self.config.get("cell")
+        self.input_layer_config = config.get('input_layer', None)
+
+        self.cell = None
+        self.initial_states = None
+        self.rnn_outputs = None  # Output of RNN layer.
+        self.rnn_state = None  # Final state of RNN layer.
+        self.inputs_hidden = None
+
+        self.summary_ops = dict()  # A container for summary ops of this model. We use "model_summary" collection name.
+        self.kld_weight_summary = None
+
+        with tf.name_scope("inputs"):
+            # If we have a sequence of [0,1...13,14], source_seq_len and target_seq_len with values 10 and 5:
+            # [0,1,2,3,4,5,6,7,8]
+            self.encoder_inputs = tf.placeholder(self.dtype, shape=[None, self.source_seq_len - 1, self.input_size], name="enc_in")
+            # [9,10,11,12,13]
+            if self.is_training:
+                self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
+                self.sequence_length = self.source_seq_len + self.target_seq_len
+            else:
+                self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, None, self.input_size], name="dec_in")
+                self.sequence_length = tf.shape(self.decoder_inputs)[1]
+            # [10,11,12,13,14]
+            self.decoder_outputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_out")
+
+        # Get the last frame of decoder_outputs in order to use in approximate inference.
+        last_frame = self.decoder_outputs[:, -1:, :]
+        all_frames = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
+        self.prediction_inputs = all_frames  # [:, :-1, :]
+        self.prediction_targets = all_frames  # [:, 1:, :]
+        self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
+
+        self.tf_batch_size = self.prediction_inputs.shape.as_list()[0]
+        if self.tf_batch_size is None:
+            self.tf_batch_size = tf.shape(self.prediction_inputs)[0]
+
+    def build_input_layer(self):
+        current_layer = self.prediction_inputs
+        if self.input_layer_config is not None:
+            dropout_rate = self.input_layer_config.get("dropout_rate", 0)
+            if dropout_rate > 0:
+                with tf.variable_scope('input_dropout', reuse=self.reuse):
+                    current_layer = tf.layers.dropout(current_layer,
+                                                      rate=self.input_layer_config.get("dropout_rate"),
+                                                      seed=self.config["seed"],
+                                                      training=self.is_training)
+            hidden_size = self.input_layer_config.get('size', 0)
+            for layer_idx in range(self.input_layer_config.get("num_layers", 0)):
+                with tf.variable_scope("inp_dense_" + str(layer_idx), reuse=self.reuse):
+                    current_layer = tf.layers.dense(inputs=current_layer,
+                                                    units=hidden_size,
+                                                    activation=self.activation_fn)
+        self.inputs_hidden = current_layer
+        return self.inputs_hidden
+
+    def create_cell(self):
+        return LatentCell.get(self.cell_config["type"], self.cell_config, self.mode, self.reuse,
+                              global_step=self.global_step)
+
+    def build_network(self):
+        self.cell = self.create_cell()
+        self.initial_states = self.cell.zero_state(batch_size=self.tf_batch_size, dtype=tf.float32)
+
+        self.inputs_hidden = self.build_input_layer()
+
+        with tf.variable_scope("rnn_layer", reuse=self.reuse):
+            self.rnn_outputs, self.rnn_state = tf.nn.dynamic_rnn(self.cell,
+                                                                 self.inputs_hidden,
+                                                                 sequence_length=self.prediction_seq_len,
+                                                                 initial_state=self.initial_states,
+                                                                 dtype=tf.float32)
+            self.prediction_representation = self.rnn_outputs[-1]
+
+        self.cell.register_sequence_components(self.rnn_outputs)
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_loss(self):
+        super(RNNLatentCellModel, self).build_loss()
+
+        # KLD Loss.
+        if self.is_training:
+            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
+            latent_loss_dict = self.cell.build_loss(loss_mask, tf.reduce_mean)
+            for loss_key, loss_op in latent_loss_dict.items():
+                self.loss += loss_op
+                self.summary_ops[loss_key] = tf.summary.scalar(str(loss_key),
+                                                               loss_op,
+                                                               collections=[self.mode + "/model_summary"])
+
+    def summary_routines(self):
+        self.kld_weight_summary = tf.summary.scalar(self.mode + "/kld_weight",
+                                                    self.cell.kld_weight,
+                                                    collections=[self.mode + "/model_summary"])
+        super(RNNLatentCellModel, self).summary_routines()
+
+    def optimization_routines(self):
+        # Gradients and update operation for training the model.
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            params = tf.trainable_variables()
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+            # Gradient clipping.
+            gradients = tf.gradients(self.loss, params)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
+            else:
+                self.gradient_norms = tf.global_norm(gradients)
+
+            self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params), global_step=self.global_step)
+
+    def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
+        """Run a step of the model feeding the given inputs.
+
+        Args
+          session: tensorflow session to use.
+          encoder_inputs: list of numpy vectors to feed as encoder inputs.
+          decoder_inputs: list of numpy vectors to feed as decoder inputs.
+          decoder_outputs: list of numpy vectors that are the expected decoder outputs.
+        Returns
+          A triple consisting of gradient norm (or None if we did not do backward),
+          mean squared error, and the outputs.
+        Raises
+          ValueError: if length of encoder_inputs, decoder_inputs, or
+            target_weights disagrees with bucket size for the specified bucket_id.
+        """
+        input_feed = {self.encoder_inputs : encoder_inputs,
+                      self.decoder_inputs : decoder_inputs,
+                      self.decoder_outputs: decoder_outputs}
+
+        # Output feed: depends on whether we do a backward step or not.
+        if self.is_training:
+            # Training step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs,
+                           self.parameter_update]  # Update Op that does SGD.
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[0], outputs[1], outputs[2]
+        else:
+            # Evaluation step
+            output_feed = [self.loss,  # Loss for this batch.
+                           self.summary_update,
+                           self.outputs]
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[0], outputs[1], outputs[2]
+
+    def sampled_step(self, encoder_inputs, decoder_inputs, decoder_outputs):
+        """
+        Generates a synthetic sequence by feeding the prediction at t+1.
+        """
+        assert self.is_eval, "Only works in sampling mode."
+        assert self.action_loss_type != C.LOSS_ACTION_CENT, "Action labels not supported."
+
+        num_samples = encoder_inputs.shape[0]
+        input_sequence = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1, :]], axis=1)
+        # Get the model state by feeding the seed sequence.
+        feed_dict = {self.prediction_inputs: input_sequence,
+                     self.prediction_seq_len: np.ones(input_sequence.shape[0])*input_sequence.shape[1]}
+        state, prediction = self.session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+
+        predictions = [prediction[:, -1]]
+        for step in range(self.target_seq_len - 1):
+            # get the prediction
+            feed_dict = {self.prediction_inputs: prediction,
+                         self.initial_states: state,
+                         self.prediction_seq_len: np.ones(num_samples)}
+            state, prediction = self.session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+            predictions.append(prediction[:, -1])
+
+        return predictions
