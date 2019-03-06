@@ -3,6 +3,8 @@ import numpy as np
 import os
 import functools
 
+from constants import Constants as C
+
 
 class Dataset(object):
     """
@@ -10,10 +12,11 @@ class Dataset(object):
     transformations.
     """
 
-    def __init__(self, data_path, meta_data_path, batch_size):
-        self.tf_dataset = None
+    def __init__(self, data_path, meta_data_path, batch_size, shuffle, **kwargs):
+        self.tf_data = None
         self.data_path = data_path
         self.batch_size = batch_size
+        self.shuffle = shuffle
 
         # Load statistics and other data summary stored in the meta-data file.
         self.meta_data = self.load_meta_data(meta_data_path)
@@ -27,6 +30,13 @@ class Dataset(object):
         self.tf_data_transformations()
         self.tf_data_normalization()
         self.tf_data_to_model()
+
+        if tf.executing_eagerly():
+            self.iterator = self.tf_data.make_one_shot_iterator()
+        else:
+            self.iterator = self.tf_data.make_initializable_iterator()
+
+        self.tf_samples = self.iterator.get_next()
 
     def load_meta_data(self, meta_data_path):
         """
@@ -65,16 +75,24 @@ class Dataset(object):
         sample_dict[key] = (sample_dict[key] - self.mean_channel) / self.var_channel
         return sample_dict
 
-    def __iter__(self):
-        return self.tf_dataset.__iter__()
+    def get_iterator(self):
+        return self.iterator
+
+    def get_tf_samples(self):
+        return self.tf_samples
 
 
 class TFRecordMotionDataset(Dataset):
     """
     Dataset class for AMASS dataset stored as TFRecord files.
     """
-    def __init__(self, data_path, meta_data_path, batch_size):
-        super(TFRecordMotionDataset, self).__init__(data_path, meta_data_path, batch_size)
+    def __init__(self, data_path, meta_data_path, batch_size, shuffle, **kwargs):
+        # Extract a window. If the sequence is shorter, ignore it.
+        self.extract_windows_of = kwargs.get("extract_windows_of", 0)
+        self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
+        self.num_parallel_calls = kwargs.get("num_parallel_calls", 8)
+
+        super(TFRecordMotionDataset, self).__init__(data_path, meta_data_path, batch_size, shuffle, **kwargs)
 
     def load_meta_data(self, meta_data_path):
         """
@@ -95,20 +113,30 @@ class TFRecordMotionDataset(Dataset):
         Loads the raw data and apply preprocessing.
         This method is also used in calculation of the dataset statistics (i.e., meta-data file).
         """
-        self.tf_dataset = tf.data.TFRecordDataset.list_files(self.data_path, seed=42, shuffle=True)
-        self.tf_dataset = self.tf_dataset.interleave(tf.data.TFRecordDataset, cycle_length=4, block_length=1)
-        self.tf_dataset = self.tf_dataset.map(functools.partial(self.__parse_tfexample_fn), num_parallel_calls=4)
+        tf_data_opt = tf.data.Options()
+        tf_data_opt.experimental_autotune = True
+
+        self.tf_data = tf.data.TFRecordDataset.list_files(self.data_path, seed=1234, shuffle=self.shuffle)
+        self.tf_data = self.tf_data.with_options(tf_data_opt)
+        self.tf_data = self.tf_data.apply(tf.data.experimental.parallel_interleave(tf.data.TFRecordDataset, cycle_length=self.num_parallel_calls, block_length=1, sloppy=self.shuffle))
+        self.tf_data = self.tf_data.map(functools.partial(self.__parse_tfexample_fn), num_parallel_calls=self.num_parallel_calls)
+        if self.extract_windows_of > 0:
+            self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
+            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows), num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_normalization(self):
         # Applies normalization.
-        self.tf_dataset = self.tf_dataset.prefetch(self.batch_size * 2)
-        self.tf_dataset = self.tf_dataset.map(functools.partial(self.normalize_zero_mean_unit_variance_channel,
-                                                                key="poses"))
+        self.tf_data = self.tf_data.map(functools.partial(self.normalize_zero_mean_unit_variance_channel,
+                                                          key="poses"), num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_to_model(self):
         # Converts the data into the format that a model expects. Creates input, target, sequence_length, etc.
-        self.tf_dataset = self.tf_dataset.map(functools.partial(self.__to_model_batch))
-        self.tf_dataset = self.tf_dataset.padded_batch(self.batch_size, padded_shapes=self.tf_dataset.output_shapes)
+        self.tf_data = self.tf_data.map(functools.partial(self.__to_model_batch), num_parallel_calls=self.num_parallel_calls)
+        if self.shuffle:
+            self.tf_data = self.tf_data.shuffle(self.batch_size*10)
+        self.tf_data = self.tf_data.padded_batch(self.batch_size, padded_shapes=self.tf_data.output_shapes)
+        self.tf_data = self.tf_data.prefetch(2)
+        self.tf_data = self.tf_data.apply(tf.data.experimental.prefetch_to_device('/device:GPU:0'))
 
     def create_meta_data(self):
         """We assume meta data always exists."""
@@ -116,6 +144,18 @@ class TFRecordMotionDataset(Dataset):
 
     def data_summary(self):
         pass
+
+    def __pp_filter(self, sample):
+        return tf.shape(sample["poses"])[0] > self.length_threshold
+
+    def __pp_get_windows(self, sample):
+        start = tf.random_uniform((1, 1), minval=0, maxval=tf.shape(sample["poses"])[0]-self.extract_windows_of+1, dtype=tf.int32)[0][0]
+        end = tf.minimum(start+self.extract_windows_of, tf.shape(sample["poses"])[0])
+
+        sample["poses"] = sample["poses"][start:end, :]
+        sample["poses"].set_shape([self.extract_windows_of, None])
+        sample["shape"] = tf.shape(sample["poses"])
+        return sample
 
     def __to_model_batch(self, tf_sample_dict):
         """
@@ -126,9 +166,9 @@ class TFRecordMotionDataset(Dataset):
         Returns:
         """
         model_sample = dict()
-        model_sample["batch_seq_len"] = tf_sample_dict["shape"][0]
-        model_sample["batch_input"] = tf_sample_dict["poses"]
-        model_sample["batch_target"] = tf_sample_dict["poses"]
+        model_sample[C.BATCH_SEQ_LEN] = tf_sample_dict["shape"][0]
+        model_sample[C.BATCH_INPUT] = tf_sample_dict["poses"]
+        model_sample[C.BATCH_TARGET] = tf_sample_dict["poses"]
         model_sample["file_id"] = tf_sample_dict["file_id"]
         return model_sample
 
@@ -141,7 +181,7 @@ class TFRecordMotionDataset(Dataset):
             }
 
         parsed_features = tf.parse_single_example(proto, feature_to_type)
-        parsed_features["poses"] = tf.reshape(tf.sparse.to_dense(parsed_features["poses"]), parsed_features["shape"])
+        parsed_features["poses"] = tf.reshape(tf.sparse_tensor_to_dense(parsed_features["poses"]), parsed_features["shape"])
         return parsed_features
 
 
@@ -154,26 +194,21 @@ if __name__ == '__main__':
         print("[{2}] min length: {0}, max length: {1}".format(stats["min_seq_len"], stats["max_seq_len"], tag))
         print("============")
 
-    # some tests
-    tfrecord_pattern = "../data/amass/tfrecords/amass-?????-of-?????"
-    dataset = TFRecordMotionDataset(tfrecord_pattern,
-                                    "../data/amass/stats.npz",
-                                    32)
+    # some tests in eager mode.
+    tf.enable_eager_execution()
 
+    tfrecord_pattern = "../data/amass/training/amass-?????-of-?????"
+    dataset = TFRecordMotionDataset(data_path=tfrecord_pattern,
+                                    meta_data_path="../data/amass/stats.npz",
+                                    batch_size=32,
+                                    shuffle=False,
+                                    extract_windows_of=80)
     stats = dataset.meta_data
     # log_stats(stats, "OnlineTFRecord")
 
-    train_iterator = dataset.tf_dataset.make_one_shot_iterator()
-    next_batch = train_iterator.get_next()
+    train_iterator = dataset.get_iterator()
+    num_samples = 0
+    for batch in train_iterator:
+        num_samples += batch[C.BATCH_INPUT].shape[0]
 
-    counter = 0
-    with tf.Session() as sess:
-        try:
-            while True:
-                b = sess.run(next_batch)
-                print(b["file_id"])
-                counter += len(b["file_id"])
-        except tf.errors.OutOfRangeError:
-            pass
-
-    print("found {} samples".format(counter))
+    print("# samples: {}".format(num_samples))
