@@ -78,24 +78,26 @@ def create_model(session):
     else:
         raise Exception("Unknown model type.")
 
-    windows_length = args.seq_length_in + args.seq_length_out
-    train_data = TFRecordMotionDataset(data_path=args.train_data_path,
-                                       meta_data_path=args.meta_data_path,
-                                       batch_size=args.batch_size,
-                                       shuffle=True,
-                                       num_epochs=args.num_epochs,
-                                       extract_windows_of=windows_length,
-                                       num_parallel_calls=16)
-    train_pl = train_data.get_tf_samples()
+    with tf.name_scope("training_data"):
+        windows_length = args.seq_length_in + args.seq_length_out
+        train_data = TFRecordMotionDataset(data_path=args.train_data_path,
+                                           meta_data_path=args.meta_data_path,
+                                           batch_size=args.batch_size,
+                                           shuffle=True,
+                                           num_epochs=args.num_epochs,
+                                           extract_windows_of=windows_length,
+                                           num_parallel_calls=16)
+        train_pl = train_data.get_tf_samples()
 
-    eval_data = TFRecordMotionDataset(data_path=args.valid_data_path,
-                                      meta_data_path=args.meta_data_path,
-                                      batch_size=args.batch_size,
-                                      shuffle=False,
-                                      num_epochs=args.num_epochs,
-                                      extract_windows_of=windows_length,
-                                      num_parallel_calls=16)
-    eval_pl = eval_data.get_tf_samples()
+    with tf.name_scope("validation_data"):
+        eval_data = TFRecordMotionDataset(data_path=args.valid_data_path,
+                                          meta_data_path=args.meta_data_path,
+                                          batch_size=args.batch_size,
+                                          shuffle=False,
+                                          num_epochs=args.num_epochs,
+                                          extract_windows_of=windows_length,
+                                          num_parallel_calls=16)
+        eval_pl = eval_data.get_tf_samples()
 
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
@@ -128,6 +130,7 @@ def create_model(session):
     if not os.path.exists(experiment_dir):
         os.mkdir(experiment_dir)
     json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
+    print("Experiment directory " + experiment_dir)
 
     train_model.optimization_routines()
     train_model.summary_routines()
@@ -237,7 +240,7 @@ def get_stcn_config(args):
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 100
+    config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 1
     config['latent_layer']['vertical_dilation'] = 4
     config['latent_layer']['use_fixed_pz1'] = False
@@ -251,15 +254,15 @@ def get_stcn_config(args):
     config['input_layer'] = dict()
     config['input_layer']['dropout_rate'] = 0
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
-    config['output_layer']['size'] = 64
+    config['output_layer']['num_layers'] = 2
+    config['output_layer']['size'] = 256
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 28
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*7
     config['cnn_layer']['activation_fn'] = C.RELU
@@ -419,7 +422,7 @@ def train():
 
                     # Save the model
                     if step % args.save_every == 0:
-                        print("Saving the model...")
+                        print("Saving the model to {} ...".format(experiment_dir))
                         saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step)
 
                 except tf.errors.OutOfRangeError:
@@ -435,11 +438,12 @@ def train():
             eval_loss = 0
             try:
                 while True:
-                    step_loss, loss_summary, _ = eval_model.step(sess)
+                    prediction, targets, seed_sequence = eval_model.sampled_step(sess)
+                    step_loss = np.mean(np.square(prediction - targets))  # Dummy loss calculation.
                     eval_loss += step_loss
                     eval_step += 1
             except tf.errors.OutOfRangeError:
-                test_writer.add_summary(loss_summary, step)  # TODO Accumulate evaluation error.
+                # test_writer.add_summary(loss_summary, step)  # TODO Accumulate evaluation error.
                 sess.run(eval_iter.initializer)
                 eval_loss_avg = eval_loss / eval_step
                 print("Eval [{:04d}] \t Loss: {:.3f}".format(step - 1, eval_loss_avg))
