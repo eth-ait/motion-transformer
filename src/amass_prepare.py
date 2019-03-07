@@ -33,26 +33,11 @@ def to_tfexample(poses, file_id, db_name):
     return example
 
 
-if __name__ == '__main__':
-    amass_folder = "C:/Users/manuel/projects/imu/data/new_batch_v9_unnorm"
-    output_folder = "C:/Users/manuel/projects/motion-modelling/data/amass"
-    n_shards = 20  # need to save the data in shards, it's too big otherwise
+def process_split(all_fnames, output_path, n_shards, compute_stats):
+    print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
 
-    # gather all file names first so that we can create the shards
-    all_fnames = []
-    for root_dir, dir_names, file_names in os.walk(amass_folder):
-        for f in file_names:
-            if f.endswith('.pkl'):
-                all_fnames.append((root_dir, f))
-
-    # find out size of each shard
-    print("found {} files ...".format(len(all_fnames)))
-    n_samples_per_shard = [len(all_fnames) // n_shards] * n_shards
-    n_samples_per_shard[-1] += len(all_fnames) % n_shards  # make last one a bit bigger
-    assert np.sum(n_samples_per_shard) == len(all_fnames), 'not using all the samples'
-
-    # also save data as tfrecords
-    tfrecord_writers = create_tfrecord_writers(os.path.join(output_folder, 'tfrecords', 'amass'), n_shards)
+    # save data as tfrecords
+    tfrecord_writers = create_tfrecord_writers(os.path.join(output_path, 'amass'), n_shards)
 
     # compute normalization stats online
     n_all, mean_all, var_all, m2_all = 0.0, 0.0, 0.0, 0.0
@@ -61,95 +46,152 @@ if __name__ == '__main__':
     min_seq_len, max_seq_len = np.inf, -np.inf
 
     # keep track of some stats to print in the end
-    stats_per_db = dict()
-    idx = 0
-    tot_samples = 0
+    meta_stats_per_db = dict()
 
-    for i, n_samples in enumerate(n_samples_per_shard):
+    for idx in range(len(all_fnames)):
+        root_dir, f = all_fnames[idx]
+        with open(os.path.join(root_dir, f), 'rb') as f_handle:
+            print('\rprocessing file {}'.format(f), end='')
+            data = pkl.load(f_handle, encoding='latin1')
+            poses = np.array(data['poses'])  # shape (seq_length, 135)
+            assert len(poses) > 0, 'file is empty'
 
-        all_samples = dict()  # db_name -> list of samples
+            db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
+            if "AMASS" in db_name:
+                db_name = '_'.join(db_name.split('_')[1:])
+            else:
+                db_name = db_name.split('_')[0]
 
-        for n in range(n_samples):
-            root_dir, f = all_fnames[idx]
-            with open(os.path.join(root_dir, f), 'rb') as f_handle:
-                print('\rprocessing file {}'.format(f), end='')
-                data = pkl.load(f_handle, encoding='latin1')
-                poses = np.array(data['poses'])  # shape (seq_length, 135)
+            if db_name not in meta_stats_per_db:
+                meta_stats_per_db[db_name] = {'n_samples': 0, 'n_frames': 0}
 
-                # some files are empty
-                if len(poses) > 0:
-                    db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
-                    if "AMASS" in db_name:
-                        db_name = '_'.join(db_name.split('_')[1:])
-                    else:
-                        db_name = db_name.split('_')[0]
+            tfexample = to_tfexample(poses, f, db_name)
+            write_tfexample(tfrecord_writers, tfexample)
 
-                    if db_name not in all_samples:
-                        all_samples[db_name] = {'poses': [], 'file_ids': []}
-                    if db_name not in stats_per_db:
-                        stats_per_db[db_name] = {'n_samples': 0, 'n_frames': 0}
+            meta_stats_per_db[db_name]['n_samples'] += 1
+            meta_stats_per_db[db_name]['n_frames'] += poses.shape[0]
 
-                    all_samples[db_name]['poses'].append(poses)
-                    all_samples[db_name]['file_ids'].append(f)
+            # update normalization stats
+            if compute_stats:
+                seq_len, feature_size = poses.shape
 
-                    tfexample = to_tfexample(poses, f, db_name)
-                    write_tfexample(tfrecord_writers, tfexample)
+                # Global mean&variance
+                n_all += seq_len * feature_size
+                delta_all = poses - mean_all
+                mean_all = mean_all + delta_all.sum() / n_all
+                m2_all = m2_all + (delta_all * (poses - mean_all)).sum()
 
-                    stats_per_db[db_name]['n_samples'] += 1
-                    stats_per_db[db_name]['n_frames'] += poses.shape[0]
-                    tot_samples += 1
+                # Channel-wise mean&variance
+                n_channel += seq_len
+                delta_channel = poses - mean_channel
+                mean_channel = mean_channel + delta_channel.sum(axis=0) / n_channel
+                m2_channel = m2_channel + (delta_channel * (poses - mean_channel)).sum(axis=0)
 
-                    # update normalization stats
-                    seq_len, feature_size = poses.shape
+                # Global min&max values.
+                min_all = np.min(poses) if np.min(poses) < min_all else min_all
+                max_all = np.max(poses) if np.max(poses) > max_all else max_all
 
-                    # Global mean&variance
-                    n_all += seq_len * feature_size
-                    delta_all = poses - mean_all
-                    mean_all = mean_all + delta_all.sum() / n_all
-                    m2_all = m2_all + (delta_all * (poses - mean_all)).sum()
+                # Min&max sequence length.
+                min_seq_len = seq_len if seq_len < min_seq_len else min_seq_len
+                max_seq_len = seq_len if seq_len > max_seq_len else max_seq_len
 
-                    # Channel-wise mean&variance
-                    n_channel += seq_len
-                    delta_channel = poses - mean_channel
-                    mean_channel = mean_channel + delta_channel.sum(axis=0) / n_channel
-                    m2_channel = m2_channel + (delta_channel * (poses - mean_channel)).sum(axis=0)
+    # finalize and save stats
+    if compute_stats:
+        var_all = m2_all / (n_all - 1)
+        var_channel = m2_channel / (n_channel - 1)
 
-                    # Global min&max values.
-                    min_all = np.min(poses) if np.min(poses) < min_all else min_all
-                    max_all = np.max(poses) if np.max(poses) > max_all else max_all
+        stats = {'mean_all': mean_all, 'mean_channel': mean_channel, 'var_all': var_all,
+                 'var_channel': var_channel, 'min_all': min_all, 'max_all': max_all,
+                 'min_seq_len': min_seq_len, 'max_seq_len': max_seq_len, 'num_samples': len(all_fnames)}
 
-                    # Min&max sequence length.
-                    min_seq_len = seq_len if seq_len < min_seq_len else min_seq_len
-                    max_seq_len = seq_len if seq_len > max_seq_len else max_seq_len
-
-                idx += 1
-
-        # save to data directory with numpy
-        out_file = os.path.join(output_folder, 'amass-shard{:0>2d}'.format(i))
-        print('\nsaving to {}...'.format(out_file))
-        np.savez(out_file, data=all_samples)
-
-    # finalize stats
-    var_all = m2_all / (n_all - 1)
-    var_channel = m2_channel / (n_channel - 1)
-
-    stats = {'mean_all': mean_all, 'mean_channel': mean_channel, 'var_all': var_all,
-             'var_channel': var_channel, 'min_all': min_all, 'max_all': max_all,
-             'min_seq_len': min_seq_len, 'max_seq_len': max_seq_len, 'num_samples': idx}
-
-    # save stats
-    stats_file = os.path.join(output_folder, 'stats.npz')
-    print('saving statistics to {} ...'.format(stats_file))
-    np.savez(stats_file, stats=stats)
+        stats_file = os.path.join(output_path, 'stats.npz')
+        print('saving statistics to {} ...'.format(stats_file))
+        np.savez(stats_file, stats=stats)
 
     close_tfrecord_writers(tfrecord_writers)
 
-    # print stats
+    # print meta stats
+    tot_samples = len(all_fnames)
     tot_frames = 0
-    for db in stats_per_db.keys():
-        tot_frames += stats_per_db[db]['n_frames']
+    for db in meta_stats_per_db.keys():
+        tot_frames += meta_stats_per_db[db]['n_frames']
+        print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format(db, meta_stats_per_db[db]['n_samples'],
+                                                                  meta_stats_per_db[db]['n_frames']))
 
-        print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format(db, stats_per_db[db]['n_samples'],
-                                                                  stats_per_db[db]['n_frames']))
+    print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format('Total', tot_samples, tot_frames))
+
+    return meta_stats_per_db
+
+
+if __name__ == '__main__':
+    amass_folder = "C:/Users/manuel/projects/imu/data/new_batch_v9_unnorm"
+    output_folder = "C:/Users/manuel/projects/motion-modelling/data/amass/tfrecords"
+    n_shards = 20  # need to save the data in shards, it's too big otherwise
+    valid_split = 0.05  # percentage of files we want to save for validation
+    test_split = 0.05  # percentage of files we want to save for test
+
+    # gather all file names to create the training/val/test splits
+    # this assumes the files are not empty
+    # we're sorthing so that the order is not dependent on the OS
+    train_fnames = []
+    valid_fnames = []
+    test_fnames = []
+    for root_dir, dir_names, file_names in os.walk(amass_folder):
+        dir_names.sort()
+        for f in sorted(file_names):
+            if f.endswith('.pkl'):
+                # special case for S5 in H36M => should always be in the test set
+                db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
+                if db_name.lower().startswith("h36_") and f.lower().startswith("s5_"):
+                    test_fnames.append((root_dir, f))
+                    continue
+
+                # otherwise assign to validation or test by chance
+                is_not_train = RNG.binomial(1, valid_split + test_split)
+                if is_not_train:
+                    is_valid = RNG.binomial(1, valid_split / (valid_split + test_split))
+                    if is_valid:
+                        valid_fnames.append((root_dir, f))
+                    else:
+                        test_fnames.append((root_dir, f))
+                else:
+                    train_fnames.append((root_dir, f))
+
+    # make sure the splits are distinct
+    training_set = set(train_fnames)
+    validation_set = set(valid_fnames)
+    test_set = set(test_fnames)
+    assert len(training_set.intersection(validation_set)) == 0
+    assert len(training_set.intersection(test_set)) == 0
+    assert len(validation_set.intersection(test_set)) == 0
+
+    tot_files = len(train_fnames) + len(valid_fnames) + len(test_fnames)
+    print("found {} training files {:.2f} %".format(len(train_fnames), len(train_fnames) / tot_files * 100.0))
+    print("found {} validation files {:.2f} %".format(len(valid_fnames), len(valid_fnames) / tot_files * 100.0))
+    print("found {} test files {:.2f} %".format(len(test_fnames), len(test_fnames) / tot_files * 100.0))
+
+    print("process training data ...")
+    tr_stats = process_split(train_fnames, os.path.join(output_folder, "training"), n_shards, compute_stats=True)
+
+    print("process validation data ...")
+    va_stats = process_split(valid_fnames, os.path.join(output_folder, "validation"), n_shards, compute_stats=False)
+
+    print("process test data ...")
+    te_stats = process_split(test_fnames, os.path.join(output_folder, "test"), n_shards, compute_stats=False)
+
+    print("Meta stats for all splits combined")
+    total_stats = tr_stats
+    for db in tr_stats.keys():
+        for k in tr_stats[db].keys():
+            total_stats[db][k] += va_stats[db][k] if db in va_stats else 0
+            total_stats[db][k] += te_stats[db][k] if db in te_stats else 0
+
+    tot_samples = 0
+    tot_frames = 0
+    for db in total_stats.keys():
+        tot_frames += total_stats[db]['n_frames']
+        tot_samples += total_stats[db]['n_samples']
+        print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format(db, total_stats[db]['n_samples'],
+                                                                  total_stats[db]['n_frames']))
 
     print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format('Total', tot_samples, tot_frames))
