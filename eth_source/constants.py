@@ -13,6 +13,11 @@ class Constants(object):
     EVAL = 'evaluation'
     SAMPLE = 'sampling'
 
+    # Data Batch
+    BATCH_SEQ_LEN = "seq_len"
+    BATCH_INPUT = "inputs"
+    BATCH_TARGET = "targets"
+
     # RNN cells
     GRU = 'gru'
     LSTM = 'lstm'
