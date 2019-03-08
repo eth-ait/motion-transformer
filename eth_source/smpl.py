@@ -5,12 +5,11 @@ import quaternion
 import cv2
 
 import sys
-import os
 
 from tf_rot_conversions import quat2rotmat, aa2rotmat
 
 try:
-    sys.path.append(os.path.join('C:\\Users\\manuel', "smpl_py3"))
+    sys.path.append('../external/smpl_py3')
     from smpl_webuser.serialization import load_model
 except:
     print("SMPL model not available.")
@@ -57,6 +56,38 @@ def smpl_rot_to_global(joint_angles, rep="rot_mat"):
             out[..., j, :, :] = np.matmul(parent_rot, local_rot)
 
     return out
+
+
+def smpl_sparse_to_full(joint_angles_sparse, sparse_joints_idxs=None, rep="rot_mat"):
+    """
+    Pad the given sparse joint angles with identity elements to retrieve a full SMPL skeleton with SMPL_NR_JOINTS
+    many joints.
+    Args:
+        joint_angles_sparse: An np array of shape (N, len(sparse_joints_idxs) * dof)
+        sparse_joints_idxs: A list of joint indices pointing into the full SMPL skeleton, defaults to SMPL_MAJOR_JOINTS
+        rep: Which representation is used, rot_mat or quat
+
+    Returns:
+        The padded joint angles as an array of shape (N, SMPL_NR_JOINTS*dof)
+    """
+    joint_idxs = sparse_joints_idxs if sparse_joints_idxs is not None else SMPL_MAJOR_JOINTS
+    assert rep in ["rot_mat", "quat"]
+    dof = 9 if rep == "rot_mat" else 4
+    n_sparse_joints = len(sparse_joints_idxs)
+    angles_sparse = np.reshape(joint_angles_sparse, [-1, n_sparse_joints, dof])
+
+    # fill in the missing indices with the identity element
+    smpl_full = np.zeros(shape=[angles_sparse.shape[0], SMPL_NR_JOINTS, dof])  # (N, SMPL_NR_JOINTS, dof)
+    if rep == "quat":
+        smpl_full[..., 0] = 1.0
+    else:
+        smpl_full[..., 0] = 1.0
+        smpl_full[..., 4] = 1.0
+        smpl_full[..., 8] = 1.0
+
+    smpl_full[:, joint_idxs] = angles_sparse
+    smpl_full = np.reshape(smpl_full, [-1, SMPL_NR_JOINTS * dof])
+    return smpl_full
 
 
 class SMPLForwardKinematics(object):
@@ -129,25 +160,9 @@ class SMPLForwardKinematics(object):
         """
         assert rep in ["rot_mat", "quat"]
         joint_idxs = sparse_joints_idxs if sparse_joints_idxs is not None else SMPL_MAJOR_JOINTS
-        dof = 9 if rep == "rot_mat" else 4
-        n_sparse_joints = len(joint_idxs)
-        angles_sparse = np.reshape(joint_angles_sparse, [-1, n_sparse_joints, dof])
-
-        # fill in the missing indices with the identity element
-        smpl_full = np.zeros(shape=[angles_sparse.shape[0], SMPL_NR_JOINTS, dof])  # (N, SMPL_NR_JOINTS, dof)
-        if rep == "quat":
-            smpl_full[..., 0] = 1.0
-            fk_func = self.from_quat
-        else:
-            smpl_full[..., 0] = 1.0
-            smpl_full[..., 4] = 1.0
-            smpl_full[..., 8] = 1.0
-            fk_func = self.from_rotmat
-
-        smpl_full[:, joint_idxs] = angles_sparse
-        smpl_full = np.reshape(smpl_full, [-1, SMPL_NR_JOINTS*dof])
+        smpl_full = smpl_sparse_to_full(joint_angles_sparse, joint_idxs, rep)
+        fk_func = self.from_quat if rep == "quat" else self.from_rotmat
         positions = fk_func(smpl_full)
-
         if return_sparse:
             positions = positions[:, joint_idxs]
         return positions
@@ -403,7 +418,7 @@ class SMPLForwardKinematicsTF(SMPLForwardKinematics):
 
 def _test_smpl_fk():
     # from angle axis
-    m = SMPLForwardKinematics(os.path.join('C:\\Users\\manuel', 'smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl'))
+    m = SMPLForwardKinematics('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
     random_pose = np.random.rand(100, 72) * .3
     positions = m.fk(random_pose)
 
@@ -425,14 +440,14 @@ def _test_smpl_fk():
 def _test_np_fk():
     import time
     # get ground truth SMPL pose
-    m = SMPLForwardKinematics(os.path.join('C:\\Users\\manuel', 'smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl'))
+    m = SMPLForwardKinematics('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
     random_pose = np.random.rand(100, 72) * .3
 
     start = time.time()
     positions = m.fk(random_pose)
     print("SMPL: {} seconds".format(time.time() - start))
 
-    mnp = SMPLForwardKinematicsNP(os.path.join('C:\\Users\\manuel', 'smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl'))
+    mnp = SMPLForwardKinematicsNP('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
 
     start = time.time()
     positions_np = mnp.from_aa(random_pose)
@@ -443,7 +458,7 @@ def _test_np_fk():
 
 
 def _test_fk_sparse():
-    m = load_model(os.path.join('C:\\Users\\manuel', 'smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl'))
+    m = load_model('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
     n = 100
     random_poses = np.random.rand(n, 72) * .3
     smpl_poses = []
@@ -456,7 +471,7 @@ def _test_fk_sparse():
         smpl_poses.append(smpl_joints)
     smpl_poses = np.stack(smpl_poses)
 
-    tf_m = SMPLForwardKinematicsTF(os.path.join('C:\\Users\\manuel', 'smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl'))
+    tf_m = SMPLForwardKinematicsTF('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
     pose_r = np.reshape(random_poses, [-1, SMPL_NR_JOINTS, 3])[:, SMPL_MAJOR_JOINTS]
     pose_r = quaternion.as_rotation_matrix(quaternion.from_rotation_vector(pose_r))
     pose_r = np.reshape(pose_r, [n, -1])

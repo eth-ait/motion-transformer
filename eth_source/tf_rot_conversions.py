@@ -55,7 +55,6 @@ def aa2rotmat(angle_axis):
     Returns:
         A tensor of shape (..., 3, 3) containing the converted rotation matrices.
     """
-    # TODO(kamanuel) we could also convert aa => quat => rotmat, may be it is more stable
     assert angle_axis.get_shape()[-1].value == 3
     ori_shape = tf.shape(angle_axis)[:-1]
     aa = tf.reshape(angle_axis, [-1, 3])  # (N, 3)

@@ -436,6 +436,8 @@ def train():
             try:
                 while True:
                     step_loss, loss_summary, _ = eval_model.step(sess)
+                    # TODO
+                    # metrics = compute_all_the_metrics(predictions, targets)
                     eval_loss += step_loss
                     eval_step += 1
             except tf.errors.OutOfRangeError:

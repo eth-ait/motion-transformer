@@ -23,21 +23,21 @@ def rotmat2euler(R):
     if R[0, 2] == 1 or R[0, 2] == -1:
         # special case
         E3 = 0  # set arbitrarily
-        dlta = np.arctan2(R[0, 1], R[0, 2]);
+        dlta = np.arctan2(R[0, 1], R[0, 2])
 
         if R[0, 2] == -1:
-            E2 = np.pi/2;
-            E1 = E3 + dlta;
+            E2 = np.pi/2
+            E1 = E3 + dlta
         else:
-            E2 = -np.pi/2;
-            E1 = -E3 + dlta;
+            E2 = -np.pi/2
+            E1 = -E3 + dlta
 
     else:
         E2 = -np.arcsin(R[0, 2])
         E1 = np.arctan2(R[1, 2]/np.cos(E2), R[2, 2]/np.cos(E2))
         E3 = np.arctan2(R[0, 1]/np.cos(E2), R[0, 0]/np.cos(E2))
 
-    eul = np.array([E1, E2, E3]);
+    eul = np.array([E1, E2, E3])
     return eul
 
 
@@ -60,7 +60,7 @@ def quat2expmap(q):
     sinhalftheta = np.linalg.norm(q[1:])
     coshalftheta = q[0]
 
-    r0 = np.divide(q[1:], (np.linalg.norm(q[1:]) + np.finfo(np.float32).eps));
+    r0 = np.divide(q[1:], (np.linalg.norm(q[1:]) + np.finfo(np.float32).eps))
     theta = 2*np.arctan2(sinhalftheta, coshalftheta)
     theta = np.mod(theta + 2*np.pi, 2*np.pi)
 
@@ -83,18 +83,18 @@ def rotmat2quat(R):
     Returns
       q: 1x4 quaternion
     """
-    rotdiff = R - R.T;
+    rotdiff = R - R.T
 
     r = np.zeros(3)
     r[0] = -rotdiff[1, 2]
     r[1] = rotdiff[0, 2]
     r[2] = -rotdiff[0, 1]
-    sintheta = np.linalg.norm(r)/2;
-    r0 = np.divide(r, np.linalg.norm(r) + np.finfo(np.float32).eps);
+    sintheta = np.linalg.norm(r)/2
+    r0 = np.divide(r, np.linalg.norm(r) + np.finfo(np.float32).eps)
 
-    costheta = (np.trace(R) - 1)/2;
+    costheta = (np.trace(R) - 1)/2
 
-    theta = np.arctan2(sintheta, costheta);
+    theta = np.arctan2(sintheta, costheta)
 
     q = np.zeros(4)
     q[0] = np.cos(theta/2)
@@ -103,7 +103,7 @@ def rotmat2quat(R):
 
 
 def rotmat2expmap(R):
-    return quat2expmap(rotmat2quat(R));
+    return quat2expmap(rotmat2quat(R))
 
 
 def expmap2rotmat(r):
