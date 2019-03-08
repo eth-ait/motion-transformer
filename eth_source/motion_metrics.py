@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import quaternion
+import tensorflow as tf
 
 from smpl import SMPL_NR_JOINTS, SMPL_MAJOR_JOINTS
 from smpl import smpl_sparse_to_full, smpl_rot_to_global
@@ -68,7 +69,9 @@ def rotmat2euler(rotmats):
 
     # normal cases
     is_normal = ~np.logical_or(is_one, is_minus_one)
-    e2[is_normal] = -np.arcsin(rs[is_normal, 0, 2])
+    # clip inputs to arcsin
+    in_ = np.clip(rs[is_normal, 0, 2], -1, 1)
+    e2[is_normal] = -np.arcsin(in_)
     e2_cos = np.cos(e2[is_normal])
     e1[is_normal] = np.arctan2(rs[is_normal, 1, 2]/e2_cos,
                                rs[is_normal, 2, 2]/e2_cos)
@@ -78,6 +81,40 @@ def rotmat2euler(rotmats):
     eul = np.stack([e1, e2, e3], axis=-1)
     eul = np.reshape(eul, np.concatenate([orig_shape, eul.shape[1:]]))
     return eul
+
+
+def get_closest_rotmat(rotmats):
+    """
+    Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
+    it computes the SVD as R = USV' and sets R_closest = UV'. Additionally, it is made sure that det(R_closest) == 1.
+    Args:
+        rotmats: np array of shape (..., 3, 3).
+
+    Returns:
+        A numpy array of the same shape as the inputs.
+    """
+    u, s, vh = np.linalg.svd(rotmats)
+    r_closest = np.matmul(u, vh)
+
+    def eye(batch_shape):
+        iden = np.zeros(np.concatenate([batch_shape, [3, 3]]))
+        iden[..., 0, 0] = 1.0
+        iden[..., 1, 1] = 1.0
+        iden[..., 2, 2] = 1.0
+        return iden
+
+    # if the determinant of UV' is -1, we must flip the sign of the last column of u
+    det = np.linalg.det(r_closest)  # (..., )
+    iden = eye(det.shape)
+    iden[..., 2, 2] = np.sign(det)
+    r_closest = np.matmul(np.matmul(u, iden), vh)
+
+    # check we have a valid rotation matrix
+    r_closest_t = np.transpose(r_closest, tuple(range(len(r_closest.shape[:-2]))) + (-1, -2))
+    assert np.all(np.abs(np.matmul(r_closest, r_closest_t) - eye(r_closest.shape[:-2])) < 1e-6)
+    assert np.all(np.abs(np.linalg.det(r_closest) - 1.0) < 1e-6)
+
+    return r_closest
 
 
 def pck(predictions, targets, thresh):
@@ -181,81 +218,230 @@ def euler_diff(predictions, targets):
     return np.reshape(euc_error, ori_shape)
 
 
-def compute_metrics(predictions, targets, which=None, is_sparse=True):
+class MetricsEngine(object):
     """
-    Compute the chosen metrics. Predictions and targets are assumed to be in rotation matrix format.
-    Args:
-        predictions: An np array of shape (n, seq_length, n_joints*9)
-        targets: An np array of the same shape as `predictions`
-        which: Which metrics to compute. Options are [positional, joint_angle, pck, euler], all be default.
-        is_sparse: If True, `n_joints` is assumed to be 15, otherwise the full SMPL skeleton is assumed. If it is
-          sparse, the metrics are only calculated on the given joints.
-
-    Returns:
-        A dictionary {metric_name -> values} where the values are given per batch entry, frame and joint in an
-        array of shape (n, seq_length, n_joints). If a metric cannot be reported per joint (e.g. PCK), it is returned
-        as an array of shape (n, seq_length) respectively.
+    Compute and aggregate various motion metrics. It keeps track of the metric values per frame, so that we can
+    evaluate them for different sequence lengths.
     """
-    # TODO(kamanuel) may be have a reduce funtion to [sum, average] over the joints
-    assert predictions.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
-    assert targets.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
-    assert is_sparse, "at the moment we expect sparse input; if that changes, the metrics values may not be comparable"
-    dof = 9
-    n_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
-    batch_size = predictions.shape[0]
-    seq_length = predictions.shape[1]
-    assert n_joints*dof == predictions.shape[-1], "unexpected number of joints"
-    which = which if which is None else ["positional", "joint_angle", "pck", "euler"]
+    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, which=None, is_sparse=True):
+        """
+        Initializer.
+        Args:
+            smpl_model_path: Path to the SMPL pickle file.
+            target_lengths: List of target sequence lengths that should be evaluated.
+            force_valid_rot: If True, the input rotation matrices might not be valid rotations and so it will find
+              the closest rotation before computing the metrics.
+            which: Which metrics to compute. Options are [positional, joint_angle, pck, euler], defaults to all.
+            is_sparse:  If True, `n_joints` is assumed to be 15, otherwise the full SMPL skeleton is assumed. If it is
+              sparse, the metrics are only calculated on the given joints.
+        """
+        self.which = which if which is not None else ["positional", "joint_angle", "pck", "euler"]
+        self.target_lengths = target_lengths
+        self.force_valid_rot = force_valid_rot
+        self.smpl_m = SMPLForwardKinematicsNP(smpl_model_path)
+        self.is_sparse = is_sparse
+        self.metrics_agg = {k: None for k in self.which}
+        self.summaries = {k: {t: None for t in target_lengths} for k in self.which}
+        self.all_summaries_op = None
+        self.n_samples = 0
+        self._should_call_reset = False  # a guard to avoid stupid mistakes
+        assert is_sparse, "at the moment we expect sparse input; if that changes, " \
+                          "the metrics values may not be comparable anymore"
 
-    # first reshape everything to (-1, n_joints * 9)
-    pred = np.reshape(predictions, [-1, n_joints*dof]).copy()
-    targ = np.reshape(targets, [-1, n_joints*dof]).copy()
+    def reset(self):
+        """
+        Reset all metrics.
+        """
+        self.metrics_agg = {k: None for k in self.which}
+        self.n_samples = 0
+        self._should_call_reset = False  # now it's again safe to compute new values
 
-    if is_sparse:
-        pred = smpl_sparse_to_full(pred, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
-        targ = smpl_sparse_to_full(targ, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
+    def create_summaries(self):
+        """
+        Create placeholders and summary ops for each metric and target length that we want to evaluate.
+        """
+        # TODO(kamanuel) for PCK this must be a bit different as we potentially have several values per frame
+        for m in self.summaries:
+            for t in self.summaries[m]:
+                assert self.summaries[m][t] is None
+                # placeholder to feed metric value
+                pl = tf.placeholder(tf.float32, name="{}{}_summary_pl".format(m, t))
+                # summary op to store in tensorboard
+                smry = tf.summary.scalar(name="{}/until_{}".format(m, t),
+                                         tensor=pl,
+                                         collections=["all_metrics_summaries"])
+                # store as tuple (summary, placeholder)
+                self.summaries[m][t] = (smry, pl)
+        # for convenience, so we don't have to list all summaries we want to request
+        self.all_summaries_op = tf.summary.merge_all('all_metrics_summaries')
 
-    # make sure we don't consider the root
-    pred[:, 0:9] = np.eye(3, 3).flatten()
-    targ[:, 0:9] = np.eye(3, 3).flatten()
+    def get_summary_feed_dict(self, final_metrics):
+        """
+        Compute the metrics for the target sequence lengths and return the feed dict that can be used in a call to
+        `sess.run` to retrieve the Tensorboard summary ops.
+        Args:
+            final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
 
-    metrics = dict()
+        Returns:
+            The feed dictionary filled with values per summary.
+        """
+        # TODO(kamanuel) may be have to adjust for PCK
+        feed_dict = dict()
+        for m in self.summaries:
+            for t in self.summaries[m]:
+                pl = self.summaries[m][t][1]
+                if m == "pck":
+                    # does not make sense to sum up for pck
+                    val = np.mean(final_metrics[m][:t])
+                else:
+                    val = np.sum(final_metrics[m][:t])
+                feed_dict[pl] = val
+        return feed_dict
 
-    if "positional" in which or "pck" in which:
-        # need to compute positions - only do this once for efficiency
-        # TODO(kamanuel) creating this object in every call is inefficient
-        smpl_m = SMPLForwardKinematicsNP('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
-        pred_pos = smpl_m.from_rotmat(pred)  # (-1, SMPL_NR_JOINTS, 3)
-        targ_pos = smpl_m.from_rotmat(targ)  # (-1, SMPL_NR_JOINTS, 3)
-    else:
-        pred_pos = targ_pos = None
+    def compute(self, predictions, targets, reduce_fn="mean"):
+        """
+        Compute the chosen metrics. Predictions and targets are assumed to be in rotation matrix format.
+        Args:
+            predictions: An np array of shape (n, seq_length, n_joints*9)
+            targets: An np array of the same shape as `predictions`
+            reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
 
-    select_joints = SMPL_MAJOR_JOINTS if is_sparse else list(range(SMPL_NR_JOINTS))
+        Returns:
+            A dictionary {metric_name -> values} where the values are given per batch entry and frame as an np array
+            of shape (n, seq_length). `reduce_fn` is only applied to metrics where it makes sense, i.e. not to PCK
+            and euler angle differences.
+        """
+        assert predictions.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
+        assert targets.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
+        assert reduce_fn in ["mean", "sum"]
+        assert not self._should_call_reset, "you should reset the state of this class after calling `finalize`"
+        dof = 9
+        n_joints = len(SMPL_MAJOR_JOINTS) if self.is_sparse else SMPL_NR_JOINTS
+        batch_size = predictions.shape[0]
+        seq_length = predictions.shape[1]
+        assert n_joints*dof == predictions.shape[-1], "unexpected number of joints"
 
-    for metric in which:
-        if metric == "positional":
-            v = positional(pred_pos[:, select_joints], targ_pos[:, select_joints])  # (-1, n_joints)
-            metrics[metric] = np.reshape(v, [batch_size, seq_length, n_joints])
-        elif metric == "pck":
-            # TODO(kamanuel) how to choose threshold?
-            v = pck(pred_pos[:, select_joints], targ_pos[:, select_joints], thresh=0.2)  # (-1, )
-            metrics[metric] = np.reshape(v, [batch_size, seq_length])
-        elif metric == "joint_angle":
-            # compute the joint angle diff on the global rotations, not the local ones, which is a harder metric
-            pred_global = smpl_rot_to_global(pred, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
-            targ_global = smpl_rot_to_global(targ, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
-            v = angle_diff(pred_global[:, select_joints], targ_global[:, select_joints])  # (-1, n_joints)
-            metrics[metric] = np.reshape(v, [batch_size, seq_length, n_joints])
-        elif metric == "euler":
-            # compute the euler angle error on the local rotations, which is how previous work does it
-            pred_local = np.reshape(pred, [-1, n_joints, 3, 3])
-            targ_local = np.reshape(targ, [-1, n_joints, 3, 3])
-            v = euler_diff(pred_local[:, select_joints], targ_local[:, select_joints])  # (-1, )
-            metrics[metric] = np.reshape(v, [batch_size, seq_length])
+        # first reshape everything to (-1, n_joints * 9)
+        pred = np.reshape(predictions, [-1, n_joints*dof]).copy()
+        targ = np.reshape(targets, [-1, n_joints*dof]).copy()
+
+        # enforce valid rotations
+        if self.force_valid_rot:
+            # TODO(kamanuel) should we do this for targets as well?
+            pred_val = np.reshape(pred, [-1, n_joints, 3, 3])
+            pred = get_closest_rotmat(pred_val)
+
+        # add potentially missing joints
+        if self.is_sparse:
+            pred = smpl_sparse_to_full(pred, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
+            targ = smpl_sparse_to_full(targ, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
+
+        # make sure we don't consider the root orientation
+        pred[:, 0:9] = np.eye(3, 3).flatten()
+        targ[:, 0:9] = np.eye(3, 3).flatten()
+
+        metrics = dict()
+
+        if "positional" in self.which or "pck" in self.which:
+            # need to compute positions - only do this once for efficiency
+            pred_pos = self.smpl_m.from_rotmat(pred)  # (-1, SMPL_NR_JOINTS, 3)
+            targ_pos = self.smpl_m.from_rotmat(targ)  # (-1, SMPL_NR_JOINTS, 3)
         else:
-            raise ValueError("metric '{}' unknown".format(metric))
+            pred_pos = targ_pos = None
 
-    return metrics
+        select_joints = SMPL_MAJOR_JOINTS if self.is_sparse else list(range(SMPL_NR_JOINTS))
+        reduce_fn_np = np.mean if reduce_fn == "mean" else np.sum
+
+        for metric in self.which:
+            if metric == "positional":
+                v = positional(pred_pos[:, select_joints], targ_pos[:, select_joints])  # (-1, n_joints)
+                v = np.reshape(v, [batch_size, seq_length, n_joints])
+                metrics[metric] = reduce_fn_np(v, axis=-1)
+            elif metric == "pck":
+                # No need for reduce function here
+                # TODO(kamanuel) how to choose threshold?
+                v = pck(pred_pos[:, select_joints], targ_pos[:, select_joints], thresh=0.2)  # (-1, )
+                metrics[metric] = np.reshape(v, [batch_size, seq_length])
+            elif metric == "joint_angle":
+                # compute the joint angle diff on the global rotations, not the local ones, which is a harder metric
+                pred_global = smpl_rot_to_global(pred, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
+                targ_global = smpl_rot_to_global(targ, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
+                v = angle_diff(pred_global[:, select_joints], targ_global[:, select_joints])  # (-1, n_joints)
+                v = np.reshape(v, [batch_size, seq_length, n_joints])
+                metrics[metric] = reduce_fn_np(v, axis=-1)
+            elif metric == "euler":
+                # compute the euler angle error on the local rotations, which is how previous work does it
+                pred_local = np.reshape(pred, [-1, SMPL_NR_JOINTS, 3, 3])
+                targ_local = np.reshape(targ, [-1, SMPL_NR_JOINTS, 3, 3])
+                v = euler_diff(pred_local[:, select_joints], targ_local[:, select_joints])  # (-1, )
+                metrics[metric] = np.reshape(v, [batch_size, seq_length])
+            else:
+                raise ValueError("metric '{}' unknown".format(metric))
+
+        return metrics
+
+    def aggregate(self, new_metrics):
+        """
+        Aggregate the metrics.
+        Args:
+            new_metrics: Dictionary of new metric values to aggregate. Each entry is expected to be a numpy array
+            of shape (batch_size, seq_length). For PCK values there might be more than 2 dimensions.
+        """
+        assert isinstance(new_metrics, dict)
+        assert list(new_metrics.keys()) == list(self.metrics_agg.keys())
+
+        # sum over the batch dimension
+        for m in new_metrics:
+            if self.metrics_agg[m] is None:
+                self.metrics_agg[m] = np.sum(new_metrics[m], axis=0)
+            else:
+                self.metrics_agg[m] += np.sum(new_metrics[m], axis=0)
+
+        # keep track of the total number of samples processed
+        batch_size = new_metrics[list(new_metrics.keys())[0]].shape[0]
+        self.n_samples += batch_size
+
+    def compute_and_aggregate(self, predictions, targets, reduce_fn="mean"):
+        """
+        Computes the metric values and aggregates them directly.
+        Args:
+            predictions: An np array of shape (n, seq_length, n_joints*9)
+            targets: An np array of the same shape as `predictions`
+            reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
+        """
+        new_metrics = self.compute(predictions, targets, reduce_fn)
+        self.aggregate(new_metrics)
+
+    def get_final_metrics(self):
+        """
+        Finalize and return the metrics - this should only be called once all the data has been processed.
+        Returns:
+            A dictionary of the final aggregated metrics per time step.
+        """
+        self._should_call_reset = True  # make sure to call `reset` before new values are computed
+        assert self.n_samples > 0
+
+        for m in self.metrics_agg:
+            self.metrics_agg[m] = self.metrics_agg[m] / self.n_samples
+
+        return self.metrics_agg
+
+    @classmethod
+    def get_summary_string(cls, final_metrics):
+        """
+        Create a summary string from the given metrics, e.g. for printing to the console.
+        Args:
+            final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
+
+        Returns:
+            A summary string.
+        """
+        seq_length = final_metrics[list(final_metrics.keys())[0]].shape[0]
+        s = "metrics@{}:".format(seq_length)
+        for m in final_metrics:
+            val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
+            s += "   {}: {:.3f}".format(m, val)
+        return s
 
 
 def _test_angle_diff():

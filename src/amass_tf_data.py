@@ -75,6 +75,14 @@ class Dataset(object):
         sample_dict[key] = (sample_dict[key] - self.mean_channel) / self.var_channel
         return sample_dict
 
+    def unnormalize_zero_mean_unit_variance_all(self, sample_dict, key):
+        sample_dict[key] = sample_dict[key] * self.var_all + self.mean_all
+        return sample_dict
+
+    def unnormalize_zero_mean_unit_variance_channel(self, sample_dict, key):
+        sample_dict[key] = sample_dict[key] * self.var_channel + self.mean_channel
+        return sample_dict
+
     def get_iterator(self):
         return self.iterator
 

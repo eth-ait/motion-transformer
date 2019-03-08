@@ -15,6 +15,7 @@ from amass_tf_data import TFRecordMotionDataset
 from constants import Constants as C
 import glob
 import json
+from motion_metrics import MetricsEngine
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
@@ -32,9 +33,9 @@ tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into 
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 # Directories
-tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/stats.npz", "Path to meta-data file.")
-tf.app.flags.DEFINE_string("train_data_path", "../data/amass/training/amass-?????-of-?????", "Path to train data folder.")
-tf.app.flags.DEFINE_string("valid_data_path", "../data/amass/validation/amass-?????-of-?????", "Path to valid data folder.")
+tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/tfrecords/training/stats.npz", "Path to meta-data file.")
+tf.app.flags.DEFINE_string("train_data_path", "../data/amass/tfrecords/training/amass-?????-of-?????", "Path to train data folder.")
+tf.app.flags.DEFINE_string("valid_data_path", "../data/amass/tfrecords/validation/amass-?????-of-?????", "Path to valid data folder.")
 tf.app.flags.DEFINE_string("test_data_path", None, "Path to test data folder.")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_amass/"), "Training directory.")
 
@@ -373,6 +374,17 @@ def train():
         # Create the model
         train_model, eval_model, train_data, eval_data, saver, global_step, experiment_dir = create_model(sess)
 
+        # Create metrics engine including summaries
+        # TODO(kamanuel) for now we just evaluate over the entire target sequence
+        target_lengths = [eval_model.target_seq_len]
+        metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
+                                       target_lengths,
+                                       force_valid_rot=True)
+        # create the necessary summary placeholders and ops
+        metrics_engine.create_summaries()
+        # reset computation of metrics
+        metrics_engine.reset()
+
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
         train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
@@ -386,7 +398,6 @@ def train():
         step = 1
         epoch = 0
         train_loss = 0.0
-        eval_loss = 0.0
         train_iter = train_data.get_iterator()
         eval_iter = eval_data.get_iterator()
 
@@ -434,21 +445,31 @@ def train():
                         break
 
             # Evaluation: make a full pass on the evaluation data.
-            eval_step = 0
-            eval_loss = 0
             try:
                 while True:
+                    # TODO(kamanuel) should we compute the validation loss here as well, if so how?
+                    # get the predictions and ground truth values
                     prediction, targets, seed_sequence = eval_model.sampled_step(sess)
-                    step_loss = np.mean(np.square(prediction - targets))  # Dummy loss calculation.
-                    # TODO
-                    # metrics = compute_all_the_metrics(predictions, targets)
-                    eval_loss += step_loss
-                    eval_step += 1
+                    # TODO(kamanuel) this should be configurable (may be)
+                    # unnormalize
+                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
+                    t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
+                    metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
             except tf.errors.OutOfRangeError:
-                # test_writer.add_summary(loss_summary, step)  # TODO Accumulate evaluation error.
+                # finalize the computation of the metrics
+                final_metrics = metrics_engine.get_final_metrics()
+                # print an informative string to the console
+                print("Eval [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(final_metrics)))
+                # get the summary feed dict
+                summary_feed = metrics_engine.get_summary_feed_dict(final_metrics)
+                # get the writable summaries
+                summaries = sess.run(metrics_engine.all_summaries_op, feed_dict=summary_feed)
+                # write to log
+                test_writer.add_summary(summaries, step)
+                # reset the computation of the metrics
+                metrics_engine.reset()
+                # reset the evaluation iterator
                 sess.run(eval_iter.initializer)
-                eval_loss_avg = eval_loss / eval_step
-                print("Eval [{:04d}] \t Loss: {:.3f}".format(step - 1, eval_loss_avg))
 
 
 def sample():
