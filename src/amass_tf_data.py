@@ -119,7 +119,11 @@ class TFRecordMotionDataset(Dataset):
         self.tf_data = tf.data.TFRecordDataset.list_files(self.data_path, seed=1234, shuffle=self.shuffle)
         self.tf_data = self.tf_data.with_options(tf_data_opt)
         self.tf_data = self.tf_data.apply(tf.data.experimental.parallel_interleave(tf.data.TFRecordDataset, cycle_length=self.num_parallel_calls, block_length=1, sloppy=self.shuffle))
-        self.tf_data = self.tf_data.map(functools.partial(self.__parse_tfexample_fn), num_parallel_calls=self.num_parallel_calls)
+        self.tf_data = self.tf_data.map(functools.partial(self.__parse_single_tfexample_fn), num_parallel_calls=self.num_parallel_calls)
+        self.tf_data = self.tf_data.prefetch(self.batch_size*10)
+        if self.shuffle:
+            self.tf_data = self.tf_data.shuffle(self.batch_size*10)
+
         if self.extract_windows_of > 0:
             self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
             self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows), num_parallel_calls=self.num_parallel_calls)
@@ -131,9 +135,7 @@ class TFRecordMotionDataset(Dataset):
 
     def tf_data_to_model(self):
         # Converts the data into the format that a model expects. Creates input, target, sequence_length, etc.
-        self.tf_data = self.tf_data.map(functools.partial(self.__to_model_batch), num_parallel_calls=self.num_parallel_calls)
-        if self.shuffle:
-            self.tf_data = self.tf_data.shuffle(self.batch_size*10)
+        self.tf_data = self.tf_data.map(functools.partial(self.__to_model_inputs), num_parallel_calls=self.num_parallel_calls)
         self.tf_data = self.tf_data.padded_batch(self.batch_size, padded_shapes=self.tf_data.output_shapes)
         self.tf_data = self.tf_data.prefetch(2)
         self.tf_data = self.tf_data.apply(tf.data.experimental.prefetch_to_device('/device:GPU:0'))
@@ -151,13 +153,12 @@ class TFRecordMotionDataset(Dataset):
     def __pp_get_windows(self, sample):
         start = tf.random_uniform((1, 1), minval=0, maxval=tf.shape(sample["poses"])[0]-self.extract_windows_of+1, dtype=tf.int32)[0][0]
         end = tf.minimum(start+self.extract_windows_of, tf.shape(sample["poses"])[0])
-
         sample["poses"] = sample["poses"][start:end, :]
-        sample["poses"].set_shape([self.extract_windows_of, None])
+        # sample["poses"].set_shape([self.extract_windows_of, None])
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 
-    def __to_model_batch(self, tf_sample_dict):
+    def __to_model_inputs(self, tf_sample_dict):
         """
         Transforms a TFRecord sample into a more general sample representation where we use global keys to represent
         the required fields by the models.
@@ -172,7 +173,7 @@ class TFRecordMotionDataset(Dataset):
         model_sample["file_id"] = tf_sample_dict["file_id"]
         return model_sample
 
-    def __parse_tfexample_fn(self, proto):
+    def __parse_single_tfexample_fn(self, proto):
         feature_to_type = {
             "file_id": tf.FixedLenFeature([], dtype=tf.string),
             "db_name": tf.FixedLenFeature([], dtype=tf.string),
@@ -181,7 +182,7 @@ class TFRecordMotionDataset(Dataset):
             }
 
         parsed_features = tf.parse_single_example(proto, feature_to_type)
-        parsed_features["poses"] = tf.reshape(tf.sparse_tensor_to_dense(parsed_features["poses"]), parsed_features["shape"])
+        parsed_features["poses"] = tf.reshape(tf.sparse.to_dense(parsed_features["poses"]), parsed_features["shape"])
         return parsed_features
 
 
@@ -207,8 +208,10 @@ if __name__ == '__main__':
     # log_stats(stats, "OnlineTFRecord")
 
     train_iterator = dataset.get_iterator()
-    num_samples = 0
+    import time
+    start_time = time.perf_counter()
+    i = 0
     for batch in train_iterator:
-        num_samples += batch[C.BATCH_INPUT].shape[0]
-
-    print("# samples: {}".format(num_samples))
+        i += 1
+        print(i, batch[C.BATCH_INPUT].shape)
+    print("Elapsed time {:.3f}".format(time.perf_counter()-start_time))
