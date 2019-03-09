@@ -28,6 +28,7 @@ class BaseModel(object):
         self.joint_prediction_model = config["joint_prediction_model"]
         self.grad_clip_by_norm = config["grad_clip_by_norm"]
         self.loss_on_encoder_outputs = config['loss_on_encoder_outputs']
+        self.force_valid_rot = config['force_valid_rot']
         self.output_layer_config = config.get('output_layer', dict())
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
 
@@ -196,8 +197,44 @@ class BaseModel(object):
             if self.residual_velocities:
                 pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
 
+            # Enforce valid rotations as the very last step
+            # TODO(kamanuel) discuss if this makes sense when residual connections are used
+            pose_prediction = self.build_valid_rot_layer(pose_prediction)
+
             self.outputs_tensor = pose_prediction
             self.outputs = self.outputs_tensor
+
+    def build_valid_rot_layer(self, rotmats):
+        """
+        Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
+        it computes the SVD as R = USV' and sets R_closest = UV'.
+        Args:
+            rotmats: A tensor of shape (N, seq_length, n_joints*9) containing the candidate rotation matrices.
+
+        Returns:
+            A tensor of the same shape as `rotmats` containing the closest rotation matrices.
+        """
+        if self.force_valid_rot:
+            # reshape to (N, seq_len, n_joints, 3, 3)
+            seq_length = tf.shape(rotmats)[1]
+            dof = rotmats.get_shape()[-1].value
+            rots = tf.reshape(rotmats, [-1, seq_length, dof//9, 3, 3])
+
+            # add tanh activation function to map to [-1, 1]
+            rots = tf.tanh(rots)
+
+            # compute SVD
+            # This is problematic when done on the GPU, see https://github.com/tensorflow/tensorflow/issues/13603
+            s, u, v = tf.svd(rots, full_matrices=True)
+            closest_rot = tf.matmul(u, v, transpose_b=True)
+            closest_rot = tf.Print(closest_rot, [closest_rot], "done with SVD")
+
+            # TODO(kamanuel) should we make sure that det == 1?
+
+            raise ValueError("SVD on GPU is super slow, not recommended to use.")
+            # return tf.reshape(closest_rot, [-1, seq_length, dof])
+        else:
+            return rotmats
 
     def build_predictions(self, inputs, output_size, name):
         """
@@ -321,7 +358,8 @@ class Seq2SeqModel(BaseModel):
             else:
                 raise (ValueError, "Unknown architecture: %s" % self.architecture)
 
-        self.outputs = tf.transpose(tf.stack(self.outputs), (1, 0, 2))
+        self.outputs = tf.transpose(tf.stack(self.outputs), (1, 0, 2))  # (N, seq_length, n_joints*dof)
+        self.outputs = self.build_valid_rot_layer(self.outputs)
         self.outputs_tensor = self.outputs
         self.build_loss()
 

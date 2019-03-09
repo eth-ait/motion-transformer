@@ -2,6 +2,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+# dirty hack so that it works on the server
+import sys
+sys.path.append('../eth_source')
+
 import os
 import time
 
@@ -16,6 +20,7 @@ from constants import Constants as C
 import glob
 import json
 from motion_metrics import MetricsEngine
+
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
@@ -53,6 +58,8 @@ tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is n
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
+tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
+tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
 
 args = tf.app.flags.FLAGS
 
@@ -63,6 +70,9 @@ experiment_timestamp = str(int(time.time()))
 def create_model(session):
     # Global step variable.
     global_step = tf.Variable(1, trainable=False, name='global_step')
+
+    if args.force_valid_rot:
+        assert args.no_normalization, 'normalization does not make sense when enforcing valid rotations'
 
     if args.model_type == "seq2seq":
         model_cls, config, experiment_name = get_seq2seq_config(args)
@@ -79,6 +89,8 @@ def create_model(session):
     else:
         raise Exception("Unknown model type.")
 
+    experiment_name += '{}-norm'.format('-no' if args.no_normalization else '')
+
     with tf.name_scope("training_data"):
         windows_length = args.seq_length_in + args.seq_length_out
         train_data = TFRecordMotionDataset(data_path=args.train_data_path,
@@ -87,7 +99,8 @@ def create_model(session):
                                            shuffle=True,
                                            num_epochs=args.num_epochs,
                                            extract_windows_of=windows_length,
-                                           num_parallel_calls=16)
+                                           num_parallel_calls=16,
+                                           normalize=not args.no_normalization)
         train_pl = train_data.get_tf_samples()
 
     with tf.name_scope("validation_data"):
@@ -97,7 +110,8 @@ def create_model(session):
                                           shuffle=False,
                                           num_epochs=args.num_epochs,
                                           extract_windows_of=windows_length,
-                                          num_parallel_calls=16)
+                                          num_parallel_calls=16,
+                                          normalize=not args.no_normalization)
         eval_pl = eval_data.get_tf_samples()
 
     with tf.name_scope(C.TRAIN):
@@ -205,13 +219,14 @@ def get_rnn_config(args):
     config['residual_velocities'] = args.residual_velocities
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
+    config['force_valid_rot'] = args.force_valid_rot
 
     if args.model_type == "vrnn":
         model_cls = models.RNNLatentCellModel
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
@@ -223,7 +238,8 @@ def get_rnn_config(args):
                                                     config['cell']['cell_type'],
                                                     '-residual_vel' if args.residual_velocities else '',
                                                     args.seq_length_in,
-                                                    args.seq_length_out)
+                                                    args.seq_length_out,
+                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
     return model_cls, config, experiment_name
 
 
@@ -283,6 +299,7 @@ def get_stcn_config(args):
     config['residual_velocities'] = args.residual_velocities
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
+    config['force_valid_rot'] = args.force_valid_rot
 
     if args.model_type == "stcn":
         model_cls = models.STCN
@@ -296,7 +313,7 @@ def get_stcn_config(args):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
@@ -308,7 +325,8 @@ def get_stcn_config(args):
                                                     config['cnn_layer']['filter_size'],
                                                     '-residual_vel' if args.residual_velocities else '',
                                                     args.seq_length_in,
-                                                    args.seq_length_out)
+                                                    args.seq_length_out,
+                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
     return model_cls, config, experiment_name
 
 
@@ -338,6 +356,7 @@ def get_seq2seq_config(args):
     config['output_layer']['size'] = 128
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = args.angle_loss
+    config['force_valid_rot'] = args.force_valid_rot
 
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
@@ -347,7 +366,7 @@ def get_seq2seq_config(args):
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
-    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}"
+    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
@@ -360,7 +379,8 @@ def get_seq2seq_config(args):
                                                     config['autoregressive_input'],
                                                     args.num_layers,
                                                     args.size,
-                                                    'residual_vel' if args.residual_velocities else 'not_residual_vel')
+                                                    'residual_vel' if args.residual_velocities else 'not_residual_vel',
+                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
     return model_cls, config, experiment_name
 
 
@@ -450,8 +470,7 @@ def train():
                     # TODO(kamanuel) should we compute the validation loss here as well, if so how?
                     # get the predictions and ground truth values
                     prediction, targets, seed_sequence = eval_model.sampled_step(sess)
-                    # TODO(kamanuel) this should be configurable (may be)
-                    # unnormalize
+                    # unnormalize - if normalization is not configured, these calls do nothing
                     p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
                     t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
                     metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
