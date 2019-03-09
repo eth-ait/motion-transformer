@@ -71,14 +71,12 @@ class BaseModel(object):
 
         # [(Parent ID, Joint ID, Joint Name), (...)] where each entry in a list corresponds to the joints at the same
         # level in the joint tree.
-        # TODO Need to adapt to SMPL skeleton.
-        self.structure = [[(-1, 0, "Hips")],
-                          [(0, 1, "RightUpLeg"), (0, 5, "LeftUpLeg"), (0, 9, "Spine")],
-                          [(1, 2, "RightLeg"), (5, 6, "LeftLeg"), (9, 10, "Spine1")],
-                          [(2, 3, "RightFoot"), (6, 7, "LeftFoot"), (10, 17, "RightShoulder"), (10, 13, "LeftShoulder"), (10, 11, "Neck")],
-                          [(3, 4, "RightToeBase"), (7, 8, "LeftToeBase"), (17, 18, "RightArm"), (13, 14, "LeftArm"), (11, 12, "Head")],
-                          [(18, 19, "RightForeArm"), (14, 15, "LeftForeArm")],
-                          [(19, 20, "RightHand"), (15, 16, "LeftHand")]]
+        self.structure = [[(-1, 0, "l_hip"), (-1, 1, "r_hip"), (-1, 2, "spine1")],
+                          [(0, 3, "l_knee"), (1, 4, "r_knee"), (2, 5, "spine2")],
+                          [(5, 6, "spine3")],
+                          [(6, 7, "neck"), (6, 8, "l_collar"), (6, 9, "r_collar")],
+                          [(7, 10, "head"), (8, 11, "l_shoulder"), (9, 12, "r_shoulder")],
+                          [(11, 13, "l_elbow"), (12, 14, "r_elbow")]]
 
         # Reorder the structure so that we can access joint information by using its index.
         self.structure_indexed = dict()

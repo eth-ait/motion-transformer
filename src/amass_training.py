@@ -29,7 +29,7 @@ tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning ra
 tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("num_epochs", 10, "Number of training epochs.")
+tf.app.flags.DEFINE_integer("num_epochs", 100, "Number of training epochs.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -47,7 +47,6 @@ tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_amass/"
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
 tf.app.flags.DEFINE_integer("print_every", 100, "How often to log training error.")
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
-tf.app.flags.DEFINE_integer("save_every", 2000, "How often to save the model.")
 tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
@@ -60,6 +59,7 @@ tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_j
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 5, "# of waiting steps until the evaluation loss improves.")
 
 args = tf.app.flags.FLAGS
 
@@ -202,7 +202,7 @@ def get_rnn_config(args):
     config['cell']['cell_size'] = 512
     config['cell']['cell_num_layers'] = 1
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.5
     config['input_layer']['num_layers'] = 1
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
@@ -253,7 +253,7 @@ def get_stcn_config(args):
     config['learning_rate_decay_steps'] = 1000
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [256, 128, 64, 32, 16, 8, 4]
+    config['latent_layer']['latent_size'] = [128, 64, 32, 16, 8, 4, 2]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
@@ -269,15 +269,15 @@ def get_stcn_config(args):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.1
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 256
+    config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
-    config['cnn_layer']['num_encoder_layers'] = 28
+    config['cnn_layer']['num_encoder_layers'] = 21
     config['cnn_layer']['num_decoder_layers'] = 0
     config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
@@ -301,8 +301,13 @@ def get_stcn_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
 
+    input_dropout = config['input_layer'].get('dropout_rate', 0)
+    model_exp_name = ""
     if args.model_type == "stcn":
         model_cls = models.STCN
+        kld_weight = config['latent_layer']['kld_weight']
+        kld_txt = str(int(kld_weight)) if isinstance(kld_weight, float) or isinstance(kld_weight, int) else "a"
+        model_exp_name = "-kld_{}".format(kld_txt)
     elif args.model_type == "wavenet":
         model_cls = models.Wavenet
         if not(config['decoder_use_enc_skip'] or config['decoder_use_enc_last'] or config['decoder_use_raw_inputs']):
@@ -313,12 +318,14 @@ def get_stcn_config(args):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}-{}"
+    experiment_name_format = "{}-{}{}-{}-{}{}{}-b{}-{}x{}@{}{}-in{}_out{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
+                                                    model_exp_name,
+                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cnn_layer']['num_encoder_layers'],
                                                     config['cnn_layer']['num_filters'],
@@ -411,23 +418,26 @@ def train():
         test_writer = train_writer
         print("Model created")
 
-        # Training loop
-        print("Running Training Loop.")
-        time_counter = 0.0
+        # Early stopping configuration.
+        early_stopping_metric_key = C.METRIC_JOINT_ANGLE
+        improvement_ratio = 0.01
+        best_eval_loss = np.inf
+        num_steps_wo_improvement = 0
         stop_signal = False
+
+        # Training loop configuration.
+        time_counter = 0.0
         step = 1
         epoch = 0
         train_loss = 0.0
         train_iter = train_data.get_iterator()
         eval_iter = eval_data.get_iterator()
 
+        print("Running Training Loop.")
         # Assuming that we use initializable iterators.
         sess.run(train_iter.initializer)
         sess.run(eval_iter.initializer)
-        while True:
-            if stop_signal:
-                break
-
+        while not stop_signal:
             # Training.
             for i in range(args.test_every):
                 try:
@@ -441,9 +451,8 @@ def train():
                     time_counter += (time.perf_counter() - start_time)
                     if step % args.print_every == 0:
                         train_loss_avg = train_loss / args.print_every
-                        train_loss = 0
                         time_elapsed = time_counter/args.print_every
-                        time_counter = 0
+                        train_loss, time_counter = 0., 0.
                         print("Train [{:04d}] \t Loss: {:.3f} \t time/batch = {:.3f}".format(step,
                                                                                              train_loss_avg,
                                                                                              time_elapsed))
@@ -451,17 +460,11 @@ def train():
                     if step % args.learning_rate_decay_steps == 0 and train_model.learning_rate_decay_type == "piecewise":
                         sess.run(train_model.learning_rate_scheduler)
 
-                    # Save the model
-                    if step % args.save_every == 0:
-                        print("Saving the model to {} ...".format(experiment_dir))
-                        saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step)
-
                 except tf.errors.OutOfRangeError:
                     sess.run(train_iter.initializer)
                     epoch += 1
                     if epoch >= args.num_epochs:
                         stop_signal = True
-                        print("End of Training.")
                         break
 
             # Evaluation: make a full pass on the evaluation data.
@@ -489,6 +492,22 @@ def train():
                 metrics_engine.reset()
                 # reset the evaluation iterator
                 sess.run(eval_iter.initializer)
+
+                # Early stopping check.
+                eval_loss = final_metrics[early_stopping_metric_key].sum()
+                if (best_eval_loss - eval_loss) > np.abs(best_eval_loss*improvement_ratio):
+                    num_steps_wo_improvement = 0
+                else:
+                    num_steps_wo_improvement += 1
+                if num_steps_wo_improvement == args.early_stopping_tolerance:
+                    stop_signal = True
+
+                if eval_loss <= best_eval_loss:
+                    best_eval_loss = eval_loss
+                    print("Saving the model to {}".format(experiment_dir))
+                    saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step)
+
+        print("End of Training.")
 
 
 def sample():

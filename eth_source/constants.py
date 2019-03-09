@@ -158,3 +158,8 @@ class Constants(object):
     LOSS_ACTION_CENT = "cross_entropy"
     LOSS_ACTION_L2 = "l2"
     LOSS_ACTION_NONE = "none"
+
+    METRIC_POSITIONAL = "positional"
+    METRIC_JOINT_ANGLE = "joint_angle"
+    METRIC_PCK = "pck"
+    METRIC_EULER_ANGLE = "euler"
