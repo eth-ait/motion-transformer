@@ -36,6 +36,31 @@ def rz(angle):
                      [0.0, 0.0, 1.0]])
 
 
+def eye(n, batch_shape):
+    iden = np.zeros(np.concatenate([batch_shape, [n, n]]))
+    iden[..., 0, 0] = 1.0
+    iden[..., 1, 1] = 1.0
+    iden[..., 2, 2] = 1.0
+    return iden
+
+
+def is_valid_rotmat(rotmats, thresh=1e-6):
+    """
+    Checks that the rotation matrices are valid, i.e. R*R' == I and det(R) == 1
+    Args:
+        rotmats: A np array of shape (..., 3, 3).
+        thresh: Numerical threshold.
+
+    Returns:
+        True if all rotation matrices are valid, False if at least one is not valid.
+    """
+    # check we have a valid rotation matrix
+    rotmats_t = np.transpose(rotmats, tuple(range(len(rotmats.shape[:-2]))) + (-1, -2))
+    is_orthogonal = np.all(np.abs(np.matmul(rotmats, rotmats_t) - eye(3, rotmats.shape[:-2])) < thresh)
+    det_is_one = np.all(np.abs(np.linalg.det(rotmats) - 1.0) < thresh)
+    return is_orthogonal and det_is_one
+
+
 def rotmat2euler(rotmats):
     """
     Converts rotation matrices to euler angles. This is an adaptation of Martinez et al.'s code to work with batched
@@ -96,24 +121,11 @@ def get_closest_rotmat(rotmats):
     u, s, vh = np.linalg.svd(rotmats)
     r_closest = np.matmul(u, vh)
 
-    def eye(batch_shape):
-        iden = np.zeros(np.concatenate([batch_shape, [3, 3]]))
-        iden[..., 0, 0] = 1.0
-        iden[..., 1, 1] = 1.0
-        iden[..., 2, 2] = 1.0
-        return iden
-
     # if the determinant of UV' is -1, we must flip the sign of the last column of u
     det = np.linalg.det(r_closest)  # (..., )
-    iden = eye(det.shape)
+    iden = eye(3, det.shape)
     iden[..., 2, 2] = np.sign(det)
     r_closest = np.matmul(np.matmul(u, iden), vh)
-
-    # check we have a valid rotation matrix
-    r_closest_t = np.transpose(r_closest, tuple(range(len(r_closest.shape[:-2]))) + (-1, -2))
-    assert np.all(np.abs(np.matmul(r_closest, r_closest_t) - eye(r_closest.shape[:-2])) < 1e-6)
-    assert np.all(np.abs(np.linalg.det(r_closest) - 1.0) < 1e-6)
-
     return r_closest
 
 
@@ -327,9 +339,15 @@ class MetricsEngine(object):
 
         # enforce valid rotations
         if self.force_valid_rot:
-            # TODO(kamanuel) should we do this for targets as well?
             pred_val = np.reshape(pred, [-1, n_joints, 3, 3])
             pred = get_closest_rotmat(pred_val)
+            pred = np.reshape(pred, [-1, n_joints*dof])
+
+        # check that the rotations are valid
+        pred_are_valid = is_valid_rotmat(np.reshape(pred, [-1, n_joints, 3, 3]))
+        assert pred_are_valid, 'predicted rotation matrices are not valid'
+        targ_are_valid = is_valid_rotmat(np.reshape(targ, [-1, n_joints, 3, 3]))
+        assert targ_are_valid, 'target rotation matrices are not valid'
 
         # add potentially missing joints
         if self.is_sparse:
@@ -337,6 +355,8 @@ class MetricsEngine(object):
             targ = smpl_sparse_to_full(targ, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
 
         # make sure we don't consider the root orientation
+        assert pred.shape[-1] == SMPL_NR_JOINTS*dof
+        assert targ.shape[-1] == SMPL_NR_JOINTS*dof
         pred[:, 0:9] = np.eye(3, 3).flatten()
         targ[:, 0:9] = np.eye(3, 3).flatten()
 

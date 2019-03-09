@@ -64,6 +64,7 @@ def smpl_sparse_to_full(joint_angles_sparse, sparse_joints_idxs=None, rep="rot_m
     many joints.
     Args:
         joint_angles_sparse: An np array of shape (N, len(sparse_joints_idxs) * dof)
+          or (N, len(sparse_joints_idxs), dof)
         sparse_joints_idxs: A list of joint indices pointing into the full SMPL skeleton, defaults to SMPL_MAJOR_JOINTS
         rep: Which representation is used, rot_mat or quat
 
