@@ -458,7 +458,7 @@ class MetricsEngine(object):
         """
         seq_length = final_metrics[list(final_metrics.keys())[0]].shape[0]
         s = "metrics@{}:".format(seq_length)
-        for m in final_metrics:
+        for m in sorted(final_metrics):
             val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
             s += "   {}: {:.3f}".format(m, val)
         return s
