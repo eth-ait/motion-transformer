@@ -924,3 +924,24 @@ class STCN(Wavenet):
                                                     self.latent_layer.kld_weight,
                                                     collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
+
+
+class ASimpleYetEffectiveBaseline(Seq2SeqModel):
+    """
+    Does not predict anything, but just repeats the last known frame for as many frames necessary.
+    """
+    def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
+        super(ASimpleYetEffectiveBaseline, self).__init__(config, data_pl, mode, reuse, dtype, **kwargs)
+
+    def build_network(self):
+        # don't do anything, just repeat the last known pose
+        last_known_pose = self.decoder_inputs[:, 0:1]
+        self.outputs_tensor = tf.tile(last_known_pose, [1, self.target_seq_len, 1])
+        self.outputs = self.outputs_tensor
+        # dummy variable
+        self._dummy = tf.Variable(0.0, name="imadummy")
+        self.build_loss()
+
+    def build_loss(self):
+        d = self._dummy - self._dummy
+        self.loss = tf.reduce_mean(tf.reduce_sum(d*d))

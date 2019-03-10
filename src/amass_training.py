@@ -53,7 +53,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or vrnn")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, simple_baseline, seq2seq_feedback, wavenet, stcn, structured_stcn or vrnn")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
@@ -77,6 +77,10 @@ def create_model(session):
 
     if args.model_type == "seq2seq":
         model_cls, config, experiment_name = get_seq2seq_config(args)
+    elif args.model_type == "simple_baseline":
+        # get a dummy config from seq2seq
+        model_cls, config, _ = get_seq2seq_config(args)
+        experiment_name = "25041990-a-simple-yet-effective-baseline"
     elif args.model_type == "stcn":
         model_cls, config, experiment_name = get_stcn_config(args)
     elif args.model_type == "wavenet":
@@ -407,6 +411,8 @@ def get_seq2seq_config(args):
     elif args.model_type == "seq2seq_feedback":
         model_cls = models.Seq2SeqFeedbackModel
         config['feed_error_to_encoder'] = args.feed_error_to_encoder
+    elif args.model_type == "simple_baseline":
+        model_cls = models.ASimpleYetEffectiveBaseline
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
@@ -563,9 +569,9 @@ def train():
                 saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step)
 
         print("End of Training.")
+        load_latest_checkpoint(sess, saver, experiment_dir)
 
         print("Evaluating validation set ...")
-        load_latest_checkpoint(sess, saver, experiment_dir)
         eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
         glog_eval_metrics = metrics_engine.get_summary_glogger(eval_metrics)
 
