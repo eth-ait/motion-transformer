@@ -31,6 +31,7 @@ tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
+tf.app.flags.DEFINE_string("optimizer", "adam", "Optimization algorithm: adam or sgd.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -53,14 +54,14 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or vrnn")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn, or rnn.")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
-tf.app.flags.DEFINE_integer("early_stopping_tolerance", 5, "# of waiting steps until the evaluation loss improves.")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 10, "# of waiting steps until the evaluation loss improves.")
 
 args = tf.app.flags.FLAGS
 
@@ -85,7 +86,7 @@ def create_model(session):
         model_cls, config, experiment_name = get_seq2seq_config(args)
     elif args.model_type == "structured_stcn":
         model_cls, config, experiment_name = get_stcn_config(args)
-    elif args.model_type == "vrnn":
+    elif args.model_type == "rnn":
         model_cls, config, experiment_name = get_rnn_config(args)
     else:
         raise Exception("Unknown model type.")
@@ -98,7 +99,6 @@ def create_model(session):
                                            meta_data_path=args.meta_data_path,
                                            batch_size=args.batch_size,
                                            shuffle=True,
-                                           num_epochs=args.num_epochs,
                                            extract_windows_of=windows_length,
                                            num_parallel_calls=16,
                                            normalize=not args.no_normalization)
@@ -109,7 +109,6 @@ def create_model(session):
                                           meta_data_path=args.meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          num_epochs=args.num_epochs,
                                           extract_windows_of=windows_length,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
@@ -120,7 +119,6 @@ def create_model(session):
                                           meta_data_path=args.meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          num_epochs=args.num_epochs,
                                           extract_windows_of=windows_length,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
@@ -223,30 +221,32 @@ def get_rnn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['seed'] = 1234
-    config['learning_rate'] = 5e-4
+    config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['cell']['type'] = C.LATENT_GAUSSIAN
-    config['cell']['latent_size'] = 64
-    config['cell']["hidden_activation_fn"] = C.RELU
-    config['cell']["num_hidden_units"] = 256
-    config['cell']["num_hidden_layers"] = 2
-    config['cell']['latent_sigma_threshold'] = 5.0
-    config['cell']['cell_type'] = C.LSTM
-    config['cell']['cell_size'] = 512
+    config['cell']['cell_type'] = C.GRU
+    config['cell']['cell_size'] = 1024
     config['cell']['cell_num_layers'] = 1
+    if args.model_type == 'vrnn':
+        config['cell']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+        config['cell']['type'] = C.LATENT_GAUSSIAN
+        config['cell']['latent_size'] = 64
+        config['cell']["hidden_activation_fn"] = C.RELU
+        config['cell']["num_hidden_units"] = 256
+        config['cell']["num_hidden_layers"] = 2
+        config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0.5
+    config['input_layer']['dropout_rate'] = 0.2
     config['input_layer']['num_layers'] = 1
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 2
+    config['output_layer']['num_layers'] = 1
     config['output_layer']['size'] = 256
     config['output_layer']['activation_fn'] = C.RELU
 
+    config['optimizer'] = args.optimizer
     config['grad_clip_by_norm'] = 1
     config['loss_on_encoder_outputs'] = True
     config['source_seq_len'] = args.seq_length_in
@@ -258,19 +258,18 @@ def get_rnn_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
 
-    if args.model_type == "vrnn":
-        model_cls = models.RNNLatentCellModel
+    if args.model_type == "rnn":
+        model_cls = models.RNNModel
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}@{}{}-in{}_out{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     config['batch_size'],
-                                                    config['cell']['latent_size'],
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
                                                     '-residual_vel' if args.residual_velocities else '',
@@ -286,17 +285,17 @@ def get_stcn_config(args):
     config['seed'] = 1234
     config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
-    config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
+    config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
-    config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    config['latent_layer']['kld_weight'] = 1.0  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
     config['latent_layer']['latent_size'] = [128, 64, 32, 16, 8, 4, 2]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
     config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 1
-    config['latent_layer']['vertical_dilation'] = 4
+    config['latent_layer']['vertical_dilation'] = 3
     config['latent_layer']['use_fixed_pz1'] = False
     config['latent_layer']['use_same_q_sample'] = False
     config['latent_layer']['dynamic_prior'] = True
@@ -318,7 +317,7 @@ def get_stcn_config(args):
     config['cnn_layer']['num_decoder_layers'] = 0
     config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
-    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*7
+    config['cnn_layer']['dilation_size'] = [1, 2, 4]*7
     config['cnn_layer']['activation_fn'] = C.RELU
     config['cnn_layer']['use_residual'] = True
     config['cnn_layer']['zero_padding'] = True
@@ -329,6 +328,7 @@ def get_stcn_config(args):
     config['use_future_steps_in_q'] = False
     config['loss_on_encoder_outputs'] = True
 
+    config['optimizer'] = args.optimizer
     config['source_seq_len'] = args.seq_length_in
     config['target_seq_len'] = args.seq_length_out
     config['batch_size'] = args.batch_size
@@ -380,6 +380,7 @@ def get_seq2seq_config(args):
     config = dict()
     config['seed'] = 1234
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
+    config['optimizer'] = args.optimizer
     config['residual_velocities'] = args.residual_velocities
     config['joint_prediction_model'] = args.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
     config['architecture'] = args.architecture
@@ -560,7 +561,7 @@ def train():
             if eval_loss <= best_eval_loss:
                 best_eval_loss = eval_loss
                 print("Saving the model to {}".format(experiment_dir))
-                saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step)
+                saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step-1)
 
         print("End of Training.")
 

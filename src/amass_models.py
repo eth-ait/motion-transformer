@@ -8,7 +8,7 @@ import rnn_cell_extensions  # my extensions of the tf repos
 
 # ETH imports
 from constants import Constants as C
-from tf_model_utils import get_activation_fn
+from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
 
 
@@ -148,7 +148,26 @@ class BaseModel(object):
                 raise Exception("Unknown angle loss.")
 
     def optimization_routines(self):
-        pass
+        if self.config["optimizer"] == C.OPTIMIZER_ADAM:
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        elif self.config["optimizer"] == C.OPTIMIZER_SGD:
+            optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
+        else:
+            raise Exception("Optimization not found.")
+
+        # Gradients and update operation for training the model.
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            params = tf.trainable_variables()
+            # Gradient clipping.
+            gradients = tf.gradients(self.loss, params)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
+            else:
+                self.gradient_norms = tf.global_norm(gradients)
+
+            self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params),
+                                                              global_step=self.global_step)
 
     def step(self, session):
         pass
@@ -167,13 +186,11 @@ class BaseModel(object):
                 prediction.append(self.build_predictions(self.prediction_representation, self.HUMAN_SIZE, "all"))
 
             elif self.joint_prediction_model == "separate_joints":
-                raise Exception("SMPL skeleton is not ready yet.")
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
                     prediction.append(self.build_predictions(self.prediction_representation, self.JOINT_SIZE, joint_name))
 
             elif self.joint_prediction_model == "fk_joints":
-                raise Exception("SMPL skeleton is not ready yet.")
                 def traverse_parents(tree, source_list, output_list, parent_id):
                     if parent_id >= 0:
                         output_list.append(source_list[parent_id])
@@ -360,21 +377,6 @@ class Seq2SeqModel(BaseModel):
         self.outputs = self.build_valid_rot_layer(self.outputs)
         self.outputs_tensor = self.outputs
         self.build_loss()
-
-    def optimization_routines(self):
-        # Gradients and SGD update operation for training the model.
-        params = tf.trainable_variables()
-        opt = tf.train.GradientDescentOptimizer(self.learning_rate)
-
-        # Update all the trainable parameters
-        gradients = tf.gradients(self.loss, params)
-        # Apply gradient clipping.
-        if self.grad_clip_by_norm > 0:
-            clipped_gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.grad_clip_by_norm)
-        else:
-            self.gradient_norms = tf.linalg.global_norm(gradients)
-            clipped_gradients = gradients
-        self.parameter_update = opt.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
     def step(self, session):
         """Run a step of the model feeding the given inputs.
@@ -621,22 +623,6 @@ class Wavenet(BaseModel):
         else:
             raise Exception("Layer type not recognized.")
         return prediction
-
-    def optimization_routines(self):
-        # Gradients and update operation for training the model.
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        with tf.control_dependencies(update_ops):
-            params = tf.trainable_variables()
-            optimizer = tf.train.AdamOptimizer(self.learning_rate)
-            # Gradient clipping.
-            gradients = tf.gradients(self.loss, params)
-            if self.config.get('grad_clip_by_norm', 0) > 0:
-                gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
-            else:
-                self.gradient_norms = tf.global_norm(gradients)
-
-            self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params),
-                                                              global_step=self.global_step)
 
     def step(self, session):
         """
@@ -924,3 +910,153 @@ class STCN(Wavenet):
                                                     self.latent_layer.kld_weight,
                                                     collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
+
+
+class RNNModel(BaseModel):
+    """
+    Autoregressive RNN.
+    """
+    def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
+        super(RNNModel, self).__init__(config, data_pl, mode, reuse, dtype, **kwargs)
+
+        self.cell_config = self.config.get("cell")
+        self.input_layer_config = config.get('input_layer', None)
+
+        self.cell = None
+        self.initial_states = None
+        self.rnn_outputs = None  # Output of RNN layer.
+        self.rnn_state = None  # Final state of RNN layer.
+        self.inputs_hidden = None
+
+        with tf.name_scope("inputs"):
+            if self.is_training:
+                self.sequence_length = self.source_seq_len + self.target_seq_len - 1
+            else:
+                self.sequence_length = self.target_seq_len
+
+        self.prediction_inputs = self.data_inputs[:, :-1, :]
+        self.prediction_targets = self.data_inputs[:, 1:, :]
+        self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
+
+        self.tf_batch_size = self.prediction_inputs.shape.as_list()[0]
+        if self.tf_batch_size is None:
+            self.tf_batch_size = tf.shape(self.prediction_inputs)[0]
+
+    def build_input_layer(self):
+        current_layer = self.prediction_inputs
+        if self.input_layer_config is not None:
+            dropout_rate = self.input_layer_config.get("dropout_rate", 0)
+            if dropout_rate > 0:
+                with tf.variable_scope('input_dropout', reuse=self.reuse):
+                    current_layer = tf.layers.dropout(current_layer,
+                                                      rate=self.input_layer_config.get("dropout_rate"),
+                                                      seed=self.config["seed"],
+                                                      training=self.is_training)
+            hidden_size = self.input_layer_config.get('size', 0)
+            for layer_idx in range(self.input_layer_config.get("num_layers", 0)):
+                with tf.variable_scope("inp_dense_" + str(layer_idx), reuse=self.reuse):
+                    current_layer = tf.layers.dense(inputs=current_layer,
+                                                    units=hidden_size,
+                                                    activation=self.activation_fn)
+        self.inputs_hidden = current_layer
+        return self.inputs_hidden
+
+    def create_cell(self):
+        return get_rnn_cell(cell_type=self.cell_config["cell_type"],
+                            size=self.cell_config["cell_size"],
+                            num_layers=self.cell_config["cell_num_layers"],
+                            mode=self.mode,
+                            reuse=self.reuse)
+
+    def build_network(self):
+        self.cell = self.create_cell()
+        self.initial_states = self.cell.zero_state(batch_size=self.tf_batch_size, dtype=tf.float32)
+
+        self.inputs_hidden = self.build_input_layer()
+
+        with tf.variable_scope("rnn_layer", reuse=self.reuse):
+            self.rnn_outputs, self.rnn_state = tf.nn.dynamic_rnn(self.cell,
+                                                                 self.inputs_hidden,
+                                                                 sequence_length=self.prediction_seq_len,
+                                                                 initial_state=self.initial_states,
+                                                                 dtype=tf.float32)
+            self.prediction_representation = self.rnn_outputs
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_loss(self):
+        super(RNNModel, self).build_loss()
+
+    def step(self, session):
+        """
+        Run a step of the model feeding the given inputs.
+        Args:
+          session: Tensorflow session object.
+        Returns:
+          A triplet of loss, summary update and predictions.
+        """
+        if self.is_training:
+            # Training step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs,
+                           self.parameter_update]
+            outputs = session.run(output_feed)
+            return outputs[0], outputs[1], outputs[2]
+        else:
+            # Evaluation step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs]
+            outputs = session.run(output_feed)
+            return outputs[0], outputs[1], outputs[2]
+
+    def sampled_step(self, session):
+        """
+        Generates a synthetic sequence by feeding the prediction at t+1. First, we get the next sample from the dataset.
+        Args:
+          session: Tensorflow session object.
+        Returns:
+          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets and seed sequence.
+        """
+        assert self.is_eval, "Only works in sampling mode."
+
+        dataset_sample = session.run(self.data_placeholders)[C.BATCH_INPUT]
+        targets = dataset_sample[:, self.source_seq_len:]
+
+        # Get the model state by feeding the seed sequence.
+        seed_sequence = dataset_sample[:, :self.source_seq_len]
+        predictions = self.sample(session, seed_sequence, prediction_steps=self.target_seq_len)
+
+        return predictions, targets, seed_sequence
+
+    def sample(self, session, seed_sequence, prediction_steps, **kwargs):
+        """
+        Generates a synthetic sequence by feeding the prediction at t+1. The first prediction step corresponds to the
+        last input step.
+        Args:
+            session: Tensorflow session object.
+            seed_sequence: (batch_size, seq_len, feature_size)
+            prediction_steps: number of prediction steps.
+            **kwargs:
+        Returns:
+            Prediction with shape (batch_size, prediction_steps, feature_size)
+        """
+        assert self.is_eval, "Only works in sampling mode."
+        one_step_seq_len = np.ones(seed_sequence.shape[0])
+
+        feed_dict = {self.prediction_inputs: seed_sequence,
+                     self.prediction_seq_len: np.ones(seed_sequence.shape[0])*seed_sequence.shape[1]}
+        state, prediction = session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+
+        prediction = prediction[:, -1:]
+        predictions = [prediction]
+        for step in range(prediction_steps-1):
+            # get the prediction
+            feed_dict = {self.prediction_inputs: prediction,
+                         self.initial_states: state,
+                         self.prediction_seq_len: one_step_seq_len}
+            state, prediction = session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+            predictions.append(prediction)
+
+        return np.concatenate(predictions, axis=1)
