@@ -160,3 +160,8 @@ class Constants(object):
     LOSS_ACTION_NONE = "none"
 
     LOGGER_MANU = '../experiment-logger-b4bcfef9f37f.json'
+
+    METRIC_POSITIONAL = "positional"
+    METRIC_JOINT_ANGLE = "joint_angle"
+    METRIC_PCK = "pck"
+    METRIC_EULER_ANGLE = "euler"
