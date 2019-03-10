@@ -158,3 +158,5 @@ class Constants(object):
     LOSS_ACTION_CENT = "cross_entropy"
     LOSS_ACTION_L2 = "l2"
     LOSS_ACTION_NONE = "none"
+
+    LOGGER_MANU = '../experiment-logger-b4bcfef9f37f.json'

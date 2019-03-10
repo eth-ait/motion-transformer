@@ -463,6 +463,24 @@ class MetricsEngine(object):
             s += "   {}: {:.3f}".format(m, val)
         return s
 
+    @classmethod
+    def get_summary_glogger(cls, final_metrics, is_validation=True):
+        """
+        Create a summary that can be written into glogger.
+        Args:
+            final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
+            is_validation: If the given metrics are from the validation set, otherwise it's assumed they're from test.
+
+        Returns:
+            A dictionary that can be written into glogger
+        """
+        glog_data = dict()
+        for m in final_metrics:
+            key = "val {}".format(m) if is_validation else "test {}".format(m)
+            val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
+            glog_data[key] = [float(val)]
+        return glog_data
+
 
 def _test_angle_diff():
     # test random angle diffs

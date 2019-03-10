@@ -14,6 +14,7 @@ import tensorflow as tf
 
 import amass_models as models
 from amass_tf_data import TFRecordMotionDataset
+from logger import GoogleSheetLogger
 
 # ETH imports
 from constants import Constants as C
@@ -29,7 +30,7 @@ tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning ra
 tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("num_epochs", 10, "Number of training epochs.")
+tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -41,7 +42,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/tfrecords/training/stats.npz", "Path to meta-data file.")
 tf.app.flags.DEFINE_string("train_data_path", "../data/amass/tfrecords/training/amass-?????-of-?????", "Path to train data folder.")
 tf.app.flags.DEFINE_string("valid_data_path", "../data/amass/tfrecords/validation/amass-?????-of-?????", "Path to valid data folder.")
-tf.app.flags.DEFINE_string("test_data_path", None, "Path to test data folder.")
+tf.app.flags.DEFINE_string("test_data_path", "../data/amass/tfrecords/test/amass-?????-of-?????", "Path to test data folder.")
 tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_amass/"), "Training directory.")
 
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -114,6 +115,17 @@ def create_model(session):
                                           normalize=not args.no_normalization)
         eval_pl = eval_data.get_tf_samples()
 
+    with tf.name_scope("test_data"):
+        test_data = TFRecordMotionDataset(data_path=args.test_data_path,
+                                          meta_data_path=args.meta_data_path,
+                                          batch_size=args.batch_size,
+                                          shuffle=False,
+                                          num_epochs=args.num_epochs,
+                                          extract_windows_of=windows_length,
+                                          num_parallel_calls=16,
+                                          normalize=not args.no_normalization)
+        test_pl = test_data.get_tf_samples()
+
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
             config=config,
@@ -131,6 +143,15 @@ def create_model(session):
             reuse=True,
             dtype=tf.float32)
         eval_model.build_graph()
+
+    with tf.name_scope(C.TEST):
+        test_model = model_cls(
+            config=config,
+            data_pl=test_pl,
+            mode=C.SAMPLE,  # TODO(kamanuel) is this the correct mode?
+            reuse=True,
+            dtype=tf.float32)
+        test_model.build_graph()
 
     num_param = 0
     for v in tf.global_variables():
@@ -154,10 +175,13 @@ def create_model(session):
     # Create saver.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
 
+    models = (train_model, eval_model, test_model)
+    data = (train_data, eval_data, test_data)
+
     if args.experiment_id is None:
         print("Creating model with fresh parameters.")
         session.run(tf.global_variables_initializer())
-        return train_model, eval_model, train_data, eval_data, saver, global_step, experiment_dir
+        return models, data, saver, global_step, experiment_dir
 
     # Load a pre-trained model.
     ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
@@ -176,10 +200,23 @@ def create_model(session):
 
         print("Loading model {0}".format(ckpt_name))
         saver.restore(session, ckpt.model_checkpoint_path)
-        return train_model, eval_model, train_data, eval_data, saver, global_step, experiment_dir
+        return models, data, saver, global_step, experiment_dir
     else:
         print("Could not find checkpoint. Aborting.")
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
+
+
+def load_latest_checkpoint(sess, saver, experiment_dir):
+    """Restore the latest checkpoint found in `experiment_dir`."""
+    ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
+
+    if ckpt and ckpt.model_checkpoint_path:
+        # Check if the specific checkpoint exists
+        ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+        print("Loading model checkpoint {0}".format(ckpt_name))
+        saver.restore(sess, ckpt.model_checkpoint_path)
+    else:
+        raise ValueError("could not load checkpoint")
 
 
 def get_rnn_config(args):
@@ -226,7 +263,7 @@ def get_rnn_config(args):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}-{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
@@ -239,7 +276,7 @@ def get_rnn_config(args):
                                                     '-residual_vel' if args.residual_velocities else '',
                                                     args.seq_length_in,
                                                     args.seq_length_out,
-                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
+                                                    '-force_rot' if args.force_valid_rot else '')
     return model_cls, config, experiment_name
 
 
@@ -269,7 +306,7 @@ def get_stcn_config(args):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.5
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
     config['output_layer']['size'] = 256
@@ -313,7 +350,7 @@ def get_stcn_config(args):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}-{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
@@ -326,7 +363,7 @@ def get_stcn_config(args):
                                                     '-residual_vel' if args.residual_velocities else '',
                                                     args.seq_length_in,
                                                     args.seq_length_out,
-                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
+                                                    '-force_rot' if args.force_valid_rot else '')
     return model_cls, config, experiment_name
 
 
@@ -366,7 +403,7 @@ def get_seq2seq_config(args):
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
-    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}-{}"
+    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
@@ -380,7 +417,7 @@ def get_seq2seq_config(args):
                                                     args.num_layers,
                                                     args.size,
                                                     'residual_vel' if args.residual_velocities else 'not_residual_vel',
-                                                    'force_rot' if args.force_valid_rot else 'no_force_rot')
+                                                    '-force_rot' if args.force_valid_rot else '')
     return model_cls, config, experiment_name
 
 
@@ -392,7 +429,9 @@ def train():
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
 
         # Create the model
-        train_model, eval_model, train_data, eval_data, saver, global_step, experiment_dir = create_model(sess)
+        models, data, saver, global_step, experiment_dir = create_model(sess)
+        train_model, eval_model, test_model = models
+        train_data, eval_data, test_data = data
 
         # Create metrics engine including summaries
         # TODO(kamanuel) for now we just evaluate over the entire target sequence
@@ -404,6 +443,13 @@ def train():
         metrics_engine.create_summaries()
         # reset computation of metrics
         metrics_engine.reset()
+
+        # create logger
+        gLogger = GoogleSheetLogger(sheet_name="logs", credential_file=C.LOGGER_MANU,
+                                    workbook_name="motion_modelling_experiments")
+        glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
+                     'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
+                     'Comment': ["until {}".format(target_lengths[-1])]}
 
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
@@ -420,10 +466,30 @@ def train():
         train_loss = 0.0
         train_iter = train_data.get_iterator()
         eval_iter = eval_data.get_iterator()
+        test_iter = test_data.get_iterator()
 
         # Assuming that we use initializable iterators.
         sess.run(train_iter.initializer)
         sess.run(eval_iter.initializer)
+
+        def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
+            # make a full pass on the validation or test dataset and compute the metrics
+            _metrics_engine.reset()
+            sess.run(_eval_iter.initializer)
+            try:
+                while True:
+                    # TODO(kamanuel) should we compute the validation loss here as well, if so how?
+                    # get the predictions and ground truth values
+                    prediction, targets, seed_sequence = _eval_model.sampled_step(sess)
+                    # unnormalize - if normalization is not configured, these calls do nothing
+                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
+                    t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
+                    _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+            except tf.errors.OutOfRangeError:
+                # finalize the computation of the metrics
+                final_metrics = _metrics_engine.get_final_metrics()
+            return final_metrics
+
         while True:
             if stop_signal:
                 break
@@ -465,30 +531,31 @@ def train():
                         break
 
             # Evaluation: make a full pass on the evaluation data.
-            try:
-                while True:
-                    # TODO(kamanuel) should we compute the validation loss here as well, if so how?
-                    # get the predictions and ground truth values
-                    prediction, targets, seed_sequence = eval_model.sampled_step(sess)
-                    # unnormalize - if normalization is not configured, these calls do nothing
-                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
-                    t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
-                    metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
-            except tf.errors.OutOfRangeError:
-                # finalize the computation of the metrics
-                final_metrics = metrics_engine.get_final_metrics()
-                # print an informative string to the console
-                print("Eval [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(final_metrics)))
-                # get the summary feed dict
-                summary_feed = metrics_engine.get_summary_feed_dict(final_metrics)
-                # get the writable summaries
-                summaries = sess.run(metrics_engine.all_summaries_op, feed_dict=summary_feed)
-                # write to log
-                test_writer.add_summary(summaries, step)
-                # reset the computation of the metrics
-                metrics_engine.reset()
-                # reset the evaluation iterator
-                sess.run(eval_iter.initializer)
+            eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
+            # print an informative string to the console
+            print("Eval [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(eval_metrics)))
+            # get the summary feed dict
+            summary_feed = metrics_engine.get_summary_feed_dict(eval_metrics)
+            # get the writable summaries
+            summaries = sess.run(metrics_engine.all_summaries_op, feed_dict=summary_feed)
+            # write to log
+            test_writer.add_summary(summaries, step)
+            # reset the computation of the metrics
+            metrics_engine.reset()
+            # reset the evaluation iterator
+            sess.run(eval_iter.initializer)
+
+        print("Evaluating validation set")
+        load_latest_checkpoint(sess, saver, experiment_dir)
+        eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
+        glog_eval_metrics = metrics_engine.get_summary_glogger(eval_metrics)
+
+        print("Evaluating test set")
+        test_metrics = evaluate_model(test_model, test_iter, metrics_engine)
+        glog_test_metrics = metrics_engine.get_summary_glogger(test_metrics, is_validation=False)
+
+        glog_data = {**glog_data, **glog_eval_metrics, **glog_test_metrics}
+        gLogger.append_row(glog_data)
 
 
 def sample():
