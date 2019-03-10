@@ -39,6 +39,7 @@ tf.app.flags.DEFINE_integer("num_layers", 1, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder. 25 fps")
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
+tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 # Directories
 tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/tfrecords/training/stats.npz", "Path to meta-data file.")
 tf.app.flags.DEFINE_string("train_data_path", "../data/amass/tfrecords/training/amass-?????-of-?????", "Path to train data folder.")
@@ -54,7 +55,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn, simple_baseline, or rnn.")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn, simple_baseline, rnn or vrnn.")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
@@ -91,6 +92,8 @@ def create_model(session):
     elif args.model_type == "structured_stcn":
         model_cls, config, experiment_name = get_stcn_config(args)
     elif args.model_type == "rnn":
+        model_cls, config, experiment_name = get_rnn_config(args)
+    elif args.model_type == "vrnn":
         model_cls, config, experiment_name = get_rnn_config(args)
     else:
         raise Exception("Unknown model type.")
@@ -225,7 +228,7 @@ def get_rnn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['seed'] = 1234
-    config['learning_rate'] = 1e-3
+    config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
@@ -234,15 +237,15 @@ def get_rnn_config(args):
     config['cell']['cell_size'] = 1024
     config['cell']['cell_num_layers'] = 1
     if args.model_type == 'vrnn':
-        config['cell']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+        config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
         config['cell']['type'] = C.LATENT_GAUSSIAN
-        config['cell']['latent_size'] = 64
+        config['cell']['latent_size'] = 8
         config['cell']["hidden_activation_fn"] = C.RELU
         config['cell']["num_hidden_units"] = 256
-        config['cell']["num_hidden_layers"] = 2
+        config['cell']["num_hidden_layers"] = 1
         config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0.2
+    config['input_layer']['dropout_rate'] = args.input_dropout_rate
     config['input_layer']['num_layers'] = 1
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
@@ -262,18 +265,28 @@ def get_rnn_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
 
+    model_exp_name = ""
     if args.model_type == "rnn":
-        model_cls = models.RNNModel
+        model_cls = models.RNN
+    elif args.model_type == "vrnn":
+        model_cls = models.VRNN
+        kld_weight = config['cell']['kld_weight']
+        kld_txt = str(int(kld_weight)) if isinstance(kld_weight, float) or isinstance(kld_weight, int) else "a"
+        model_exp_name = "-kld_{}-l{}".format(kld_txt, config['cell']['latent_size'])
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}@{}{}-in{}_out{}{}"
+    input_dropout = config['input_layer'].get('dropout_rate', 0)
+
+    experiment_name_format = "{}-{}{}-{}-{}{}-b{}{}-{}@{}{}-in{}_out{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
+                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
+                                                    model_exp_name,
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
                                                     '-residual_vel' if args.residual_velocities else '',
@@ -309,7 +322,7 @@ def get_stcn_config(args):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0.1
+    config['input_layer']['dropout_rate'] = args.input_dropout_rate
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
     config['output_layer']['size'] = 128

@@ -10,6 +10,7 @@ import rnn_cell_extensions  # my extensions of the tf repos
 from constants import Constants as C
 from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
+from tf_rnn_cells import LatentCell
 
 
 class BaseModel(object):
@@ -481,17 +482,15 @@ class Wavenet(BaseModel):
         self.decoder_blocks_no_res = []
 
         # Specific to this code:
-        self.summary_ops = dict()  # A container for summary ops of this model. We use "model_summary" collection name.
         self.inputs_hidden = None
         self.receptive_field_width = None
         self.prediction_representation = None
         self.output_width = None
 
-        with tf.name_scope("inputs"):
-            if self.is_training:
-                self.sequence_length = self.source_seq_len + self.target_seq_len - 1
-            else:
-                self.sequence_length = self.target_seq_len
+        if self.is_training:
+            self.sequence_length = self.source_seq_len + self.target_seq_len - 1
+        else:
+            self.sequence_length = self.target_seq_len
 
         self.prediction_inputs = self.data_inputs[:, :-1, :]
         self.prediction_targets = self.data_inputs[:, 1:, :]
@@ -804,7 +803,7 @@ class STCN(Wavenet):
         self.bw_encoder_blocks_no_res = []
         self.latent_layer = None
         self.latent_samples = None
-        self.kld_weight_summary = None
+        self.latent_cell_loss = dict()
 
         # If it is in evaluation mode, model is fed with the slice [:, 0:-1, :].
         self.prediction_inputs = self.data_placeholders[C.BATCH_INPUT]  # The q and p models require all frames.
@@ -900,24 +899,23 @@ class STCN(Wavenet):
         # KLD Loss.
         if self.is_training:
             loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
-            latent_loss_dict = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
-            for loss_key, loss_op in latent_loss_dict.items():
+            self.latent_cell_loss = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
+            for loss_key, loss_op in self.latent_cell_loss:
                 self.loss += loss_op
-                self.summary_ops[loss_key] = tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode+"/model_summary"])
 
     def summary_routines(self):
-        self.kld_weight_summary = tf.summary.scalar(self.mode + "/kld_weight",
-                                                    self.latent_layer.kld_weight,
-                                                    collections=[self.mode + "/model_summary"])
+        for loss_key, loss_op in self.latent_cell_loss.items():
+            tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode + "/model_summary"])
+        tf.summary.scalar(self.mode + "/kld_weight", self.latent_layer.kld_weight, collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
 
 
-class RNNModel(BaseModel):
+class RNN(BaseModel):
     """
     Autoregressive RNN.
     """
     def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
-        super(RNNModel, self).__init__(config, data_pl, mode, reuse, dtype, **kwargs)
+        super(RNN, self).__init__(config, data_pl, mode, reuse, dtype, **kwargs)
 
         self.cell_config = self.config.get("cell")
         self.input_layer_config = config.get('input_layer', None)
@@ -928,11 +926,10 @@ class RNNModel(BaseModel):
         self.rnn_state = None  # Final state of RNN layer.
         self.inputs_hidden = None
 
-        with tf.name_scope("inputs"):
-            if self.is_training:
-                self.sequence_length = self.source_seq_len + self.target_seq_len - 1
-            else:
-                self.sequence_length = self.target_seq_len
+        if self.is_training:
+            self.sequence_length = self.source_seq_len + self.target_seq_len - 1
+        else:
+            self.sequence_length = self.target_seq_len
 
         self.prediction_inputs = self.data_inputs[:, :-1, :]
         self.prediction_targets = self.data_inputs[:, 1:, :]
@@ -985,7 +982,7 @@ class RNNModel(BaseModel):
         self.build_loss()
 
     def build_loss(self):
-        super(RNNModel, self).build_loss()
+        super(RNN, self).build_loss()
 
     def step(self, session):
         """
@@ -1060,6 +1057,65 @@ class RNNModel(BaseModel):
             predictions.append(prediction)
 
         return np.concatenate(predictions, axis=1)
+
+
+class VRNN(RNN):
+    """
+    Variational RNN.
+    """
+    def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
+        super(VRNN, self).__init__(config, data_pl, mode, reuse, dtype, **kwargs)
+
+        self.latent_cell_loss = dict()  # Loss terms (i.e., kl-divergence) created by the latent cell.
+
+        if self.is_training:
+            self.sequence_length = self.source_seq_len + self.target_seq_len
+        else:
+            self.sequence_length = self.target_seq_len
+        self.prediction_inputs = self.data_inputs
+        self.prediction_targets = self.data_inputs
+        self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
+
+    def create_cell(self):
+        return LatentCell.get(self.cell_config["type"],
+                              self.cell_config,
+                              self.mode,
+                              self.reuse,
+                              global_step=self.global_step)
+
+    def build_network(self):
+        self.cell = self.create_cell()
+        self.initial_states = self.cell.zero_state(batch_size=self.tf_batch_size, dtype=tf.float32)
+        self.inputs_hidden = self.build_input_layer()
+
+        with tf.variable_scope("rnn_layer", reuse=self.reuse):
+            self.rnn_outputs, self.rnn_state = tf.nn.dynamic_rnn(self.cell,
+                                                                 self.inputs_hidden,
+                                                                 sequence_length=self.prediction_seq_len,
+                                                                 initial_state=self.initial_states,
+                                                                 dtype=tf.float32)
+            self.prediction_representation = self.rnn_outputs[-1]
+
+        self.cell.register_sequence_components(self.rnn_outputs)
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_loss(self):
+        super(VRNN, self).build_loss()
+
+        # KLD Loss.
+        if self.is_training:
+            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
+            self.latent_cell_loss = self.cell.build_loss(loss_mask, tf.reduce_mean)
+            for loss_key, loss_op in self.latent_cell_loss.items():
+                self.loss += loss_op
+
+    def summary_routines(self):
+        for loss_key, loss_op in self.latent_cell_loss.items():
+            tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode + "/model_summary"])
+        tf.summary.scalar(self.mode + "/kld_weight", self.cell.kld_weight, collections=[self.mode + "/model_summary"])
+
+        super(VRNN, self).summary_routines()
 
 
 class ASimpleYetEffectiveBaseline(Seq2SeqModel):
