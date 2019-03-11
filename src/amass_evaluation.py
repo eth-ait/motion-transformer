@@ -1,5 +1,4 @@
 import os
-import time
 import glob
 import json
 import argparse
@@ -12,6 +11,7 @@ from amass_tf_data import TFRecordMotionDataset
 from logger import GoogleSheetLogger
 from constants import Constants as C
 from motion_metrics import MetricsEngine
+from visualize import Visualizer
 
 
 def create_and_restore_model(session, experiment_dir, config, args):
@@ -127,7 +127,7 @@ def evaluate(experiment_dir, config, args):
 
                     # Store each test sample and corresponding predictions with the unique sample IDs.
                     for i in range(prediction.shape[0]):
-                        eval_result[data_id[i].decode("utf-8")] = (p, t, s)
+                        eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
             except tf.errors.OutOfRangeError:
                 # finalize the computation of the metrics
@@ -146,8 +146,16 @@ def evaluate(experiment_dir, config, args):
                 g_logger.append_row(glog_data, sheet_name="until_{}".format(t))
 
         if args.visualize:
-            # TODO(kamanuel) do the visualization stuff by using the model predictions stored in eval_result.
-            pass
+            # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
+            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl")
+            n_samples_viz = 10
+            rng = np.random.RandomState(42)
+            idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
+            sample_keys = [list(eval_result.keys())[i] for i in idxs]
+            for k in sample_keys:
+                # TODO(kamanuel) need title for figure and subplots
+                # TODO(kamanuel) only change color in prediction
+                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1])
 
 
 if __name__ == '__main__':

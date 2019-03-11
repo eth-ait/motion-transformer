@@ -423,7 +423,7 @@ class Seq2SeqModel(BaseModel):
         assert self.is_eval, "Only works in sampling mode."
         prediction, targets, seed_sequence, data_id = session.run([self.outputs,
                                                                    self.decoder_outputs,
-                                                                   self.encoder_inputs,
+                                                                   self.data_inputs[:, :self.source_seq_len],
                                                                    self.data_ids])
         return prediction, targets, seed_sequence, data_id
 

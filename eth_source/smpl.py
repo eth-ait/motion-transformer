@@ -434,7 +434,7 @@ def _test_smpl_fk():
     random_pose_rot_mat = np.reshape(random_pose_rot_mat, [-1, SMPL_NR_JOINTS*9])
     positions_rotmat = m.from_rotmat(random_pose_rot_mat)
 
-    from viz import visualize_positions
+    from visualize import visualize_positions
     visualize_positions([positions, positions_quat, positions_rotmat], SMPL_PARENTS, overlay=True)
 
 
@@ -454,7 +454,7 @@ def _test_np_fk():
     positions_np = mnp.from_aa(random_pose)
     print("Numpy: {} seconds".format(time.time() - start))
 
-    from viz import visualize_positions
+    from visualize import visualize_positions
     visualize_positions([positions, positions_np], SMPL_PARENTS, overlay=True)
 
 
@@ -482,7 +482,7 @@ def _test_fk_sparse():
         tf_jointse = sess.run(tf_joints)
         print(np.linalg.norm(smpl_poses - tf_jointse))
 
-    from viz import visualize_positions
+    from visualize import visualize_positions
     visualize_positions([smpl_poses, tf_jointse], SMPL_PARENTS, overlay=True)
 
 
