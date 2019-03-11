@@ -17,6 +17,7 @@ class Constants(object):
     BATCH_SEQ_LEN = "seq_len"
     BATCH_INPUT = "inputs"
     BATCH_TARGET = "targets"
+    BATCH_ID = "id"
 
     # Optimization
     OPTIMIZER_ADAM = "adam"

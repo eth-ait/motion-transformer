@@ -62,7 +62,7 @@ tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_j
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
-tf.app.flags.DEFINE_integer("early_stopping_tolerance", 10, "# of waiting steps until the evaluation loss improves.")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the evaluation loss improves.")
 
 args = tf.app.flags.FLAGS
 
@@ -227,6 +227,7 @@ def load_latest_checkpoint(sess, saver, experiment_dir):
 def get_rnn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
+    config['model_type'] = args.model_type
     config['seed'] = 1234
     config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = 0.98
@@ -299,20 +300,21 @@ def get_rnn_config(args):
 def get_stcn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
+    config['model_type'] = args.model_type
     config['seed'] = 1234
-    config['learning_rate'] = 1e-3
+    config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_steps'] = 1000
     config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
-    config['latent_layer']['kld_weight'] = 1.0  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [128, 64, 32, 16, 8, 4, 2]
+    config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 128
-    config['latent_layer']["num_hidden_layers"] = 1
-    config['latent_layer']['vertical_dilation'] = 3
+    config['latent_layer']["num_hidden_units"] = 64
+    config['latent_layer']["num_hidden_layers"] = 2
+    config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
     config['latent_layer']['use_same_q_sample'] = False
     config['latent_layer']['dynamic_prior'] = True
@@ -325,16 +327,16 @@ def get_stcn_config(args):
     config['input_layer']['dropout_rate'] = args.input_dropout_rate
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 128
+    config['output_layer']['size'] = 64
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
-    config['cnn_layer']['num_encoder_layers'] = 21
+    config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 128
+    config['cnn_layer']['num_filters'] = 64
     config['cnn_layer']['filter_size'] = 2
-    config['cnn_layer']['dilation_size'] = [1, 2, 4]*7
+    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU
     config['cnn_layer']['use_residual'] = True
     config['cnn_layer']['zero_padding'] = True
@@ -395,6 +397,7 @@ def get_seq2seq_config(args):
     """Create translation model and initialize or load parameters in session."""
 
     config = dict()
+    config['model_type'] = args.model_type
     config['seed'] = 1234
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['optimizer'] = args.optimizer
@@ -451,7 +454,7 @@ def get_seq2seq_config(args):
 def train():
     """Train a seq2seq model on human motion"""
     # Limit TF to take a fraction of the GPU memory
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.8)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
     device_count = {"GPU": 0} if args.use_cpu else {"GPU": 1}
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
 
@@ -515,7 +518,7 @@ def train():
                 while True:
                     # TODO(kamanuel) should we compute the validation loss here as well, if so how?
                     # get the predictions and ground truth values
-                    prediction, targets, seed_sequence = _eval_model.sampled_step(sess)
+                    prediction, targets, seed_sequence, data_id = _eval_model.sampled_step(sess)
                     # unnormalize - if normalization is not configured, these calls do nothing
                     p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
                     t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")

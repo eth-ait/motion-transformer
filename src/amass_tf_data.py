@@ -98,7 +98,7 @@ class TFRecordMotionDataset(Dataset):
         # Extract a window. If the sequence is shorter, ignore it.
         self.extract_windows_of = kwargs.get("extract_windows_of", 0)
         self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
-        self.num_parallel_calls = kwargs.get("num_parallel_calls", 8)
+        self.num_parallel_calls = kwargs.get("num_parallel_calls", 16)
         self.normalize = kwargs.get("normalize", True)
 
         super(TFRecordMotionDataset, self).__init__(data_path, meta_data_path, batch_size, shuffle, **kwargs)
@@ -192,7 +192,7 @@ class TFRecordMotionDataset(Dataset):
         model_sample[C.BATCH_SEQ_LEN] = tf_sample_dict["shape"][0]
         model_sample[C.BATCH_INPUT] = tf_sample_dict["poses"]
         model_sample[C.BATCH_TARGET] = tf_sample_dict["poses"]
-        model_sample["file_id"] = tf_sample_dict["file_id"]
+        model_sample[C.BATCH_ID] = tf_sample_dict["sample_id"]
         return model_sample
 
     def __parse_single_tfexample_fn(self, proto):
@@ -205,6 +205,11 @@ class TFRecordMotionDataset(Dataset):
 
         parsed_features = tf.parse_single_example(proto, feature_to_type)
         parsed_features["poses"] = tf.reshape(tf.sparse.to_dense(parsed_features["poses"]), parsed_features["shape"])
+
+        # Remove ".pkl" extension.
+        file_id = tf.strings.substr(parsed_features["file_id"], 0, tf.strings.length(parsed_features["file_id"])-4)
+        parsed_features["sample_id"] = tf.strings.join([parsed_features["db_name"], file_id], separator="/")
+
         return parsed_features
 
 
@@ -220,9 +225,9 @@ if __name__ == '__main__':
     # some tests in eager mode.
     tf.enable_eager_execution()
 
-    tfrecord_pattern = "../data/amass/training/amass-?????-of-?????"
+    tfrecord_pattern = "../data/amass/tfrecords/training/amass-?????-of-?????"
     dataset = TFRecordMotionDataset(data_path=tfrecord_pattern,
-                                    meta_data_path="../data/amass/stats.npz",
+                                    meta_data_path="../data/amass/tfrecords/training/stats.npz",
                                     batch_size=32,
                                     shuffle=False,
                                     extract_windows_of=80)

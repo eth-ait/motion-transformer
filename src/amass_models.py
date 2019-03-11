@@ -39,6 +39,7 @@ class BaseModel(object):
         self.data_inputs = data_pl[C.BATCH_INPUT]
         self.data_targets = data_pl[C.BATCH_TARGET]
         self.data_seq_len = data_pl[C.BATCH_SEQ_LEN]
+        self.data_ids = data_pl[C.BATCH_ID]
 
         # Defines how to employ structured latent variables to make predictions.
         # Options are
@@ -166,7 +167,6 @@ class BaseModel(object):
                 gradients, self.gradient_norms = tf.clip_by_global_norm(gradients, self.config.get('grad_clip_by_norm'))
             else:
                 self.gradient_norms = tf.global_norm(gradients)
-
             self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params),
                                                               global_step=self.global_step)
 
@@ -417,11 +417,15 @@ class Seq2SeqModel(BaseModel):
         Args:
           session: Tensorflow session object.
         Returns:
-          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets and seed sequence.
+          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets, seed sequence and
+          unique sample IDs.
         """
         assert self.is_eval, "Only works in sampling mode."
-        prediction, targets, seed_sequence = session.run([self.outputs, self.decoder_outputs, self.encoder_inputs])
-        return prediction, targets, seed_sequence
+        prediction, targets, seed_sequence, data_id = session.run([self.outputs,
+                                                                   self.decoder_outputs,
+                                                                   self.encoder_inputs,
+                                                                   self.data_ids])
+        return prediction, targets, seed_sequence, data_id
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         """
@@ -654,16 +658,19 @@ class Wavenet(BaseModel):
         Args:
           session: Tensorflow session object.
         Returns:
-          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets and seed sequence.
+          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets, seed sequence and
+          unique sample id.
         """
-        dataset_sample = session.run(self.data_placeholders)[C.BATCH_INPUT]
-        targets = dataset_sample[:, self.source_seq_len:]
+        batch = session.run(self.data_placeholders)
+        data_id = batch[C.BATCH_ID]
+        data_sample = batch[C.BATCH_INPUT]
+        targets = data_sample[:, self.source_seq_len:]
 
-        seed_sequence = dataset_sample[:, :self.source_seq_len]
+        seed_sequence = data_sample[:, :self.source_seq_len]
         prediction = self.sample(session=session,
                                  seed_sequence=seed_sequence,
                                  prediction_steps=self.target_seq_len)
-        return prediction, targets, seed_sequence
+        return prediction, targets, seed_sequence, data_id
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         """
@@ -900,7 +907,7 @@ class STCN(Wavenet):
         if self.is_training:
             loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
             self.latent_cell_loss = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
-            for loss_key, loss_op in self.latent_cell_loss:
+            for loss_key, loss_op in self.latent_cell_loss.items():
                 self.loss += loss_op
 
     def summary_routines(self):
@@ -1014,18 +1021,21 @@ class RNN(BaseModel):
         Args:
           session: Tensorflow session object.
         Returns:
-          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets and seed sequence.
+          Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets, seed sequence and
+          unique sample IDs.
         """
         assert self.is_eval, "Only works in sampling mode."
 
-        dataset_sample = session.run(self.data_placeholders)[C.BATCH_INPUT]
-        targets = dataset_sample[:, self.source_seq_len:]
+        batch = session.run(self.data_placeholders)[C.BATCH_INPUT]
+        data_id = batch[C.BATCH_ID]
+        data_sample = batch[C.BATCH_INPUT]
+        targets = data_sample[:, self.source_seq_len:]
 
         # Get the model state by feeding the seed sequence.
-        seed_sequence = dataset_sample[:, :self.source_seq_len]
+        seed_sequence = data_sample[:, :self.source_seq_len]
         predictions = self.sample(session, seed_sequence, prediction_steps=self.target_seq_len)
 
-        return predictions, targets, seed_sequence
+        return predictions, targets, seed_sequence, data_id
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         """
