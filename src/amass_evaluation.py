@@ -51,7 +51,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
         test_model = model_cls(
             config=config,
             data_pl=test_pl,
-            mode=C.SAMPLE,  # TODO(kamanuel) is this the correct mode?
+            mode=C.SAMPLE,
             reuse=False,
             dtype=tf.float32)
         test_model.build_graph()
@@ -90,10 +90,12 @@ def evaluate(experiment_dir, config, args):
 
         # Create metrics engine including summaries
         # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
-        target_lengths = [x for x in [5, 10, 19, 24, 34, 60] if x <= test_model.target_seq_len]
+        target_lengths = [x for x in C.METRIC_TARGET_LENGTHS if x <= test_model.target_seq_len]
+        pck_threshs = C.METRIC_PCK_THRESHS
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
-                                       force_valid_rot=True)
+                                       force_valid_rot=True,
+                                       pck_threshs=pck_threshs)
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()
         # reset computation of metrics
