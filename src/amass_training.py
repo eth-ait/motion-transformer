@@ -153,7 +153,7 @@ def create_model(session):
         test_model = model_cls(
             config=config,
             data_pl=test_pl,
-            mode=C.SAMPLE,  # TODO(kamanuel) is this the correct mode?
+            mode=C.SAMPLE,
             reuse=True,
             dtype=tf.float32)
         test_model.build_graph()
@@ -463,8 +463,10 @@ def train():
         # Create metrics engine including summaries
         # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
         target_lengths = [x for x in [5, 10, 19, 24, 34, 60] if x <= train_model.target_seq_len]
+        pck_threshs = [0.02, 0.05, 0.1, 0.15, 0.2, 0.3]  # thresholds for pck, in meters
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
+                                       pck_threshs=pck_threshs,
                                        force_valid_rot=True)
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()

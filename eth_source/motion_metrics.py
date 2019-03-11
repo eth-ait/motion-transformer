@@ -139,7 +139,7 @@ def pck(predictions, targets, thresh):
         thresh: radius within which a predicted joint has to lie.
 
     Returns:
-        Percentage of correct keypoints at the given threshold level, stored in a np array of shape (..., )
+        Percentage of correct keypoints at the given threshold level, stored in a np array of shape (..., len(threshs))
 
     """
     dist = np.sqrt(np.sum((predictions - targets) ** 2, axis=-1))
@@ -236,7 +236,7 @@ class MetricsEngine(object):
     Compute and aggregate various motion metrics. It keeps track of the metric values per frame, so that we can
     evaluate them for different sequence lengths.
     """
-    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, which=None, is_sparse=True):
+    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, which=None, pck_threshs=None, is_sparse=True):
         """
         Initializer.
         Args:
@@ -245,6 +245,7 @@ class MetricsEngine(object):
             force_valid_rot: If True, the input rotation matrices might not be valid rotations and so it will find
               the closest rotation before computing the metrics.
             which: Which metrics to compute. Options are [positional, joint_angle, pck, euler], defaults to all.
+            pck_threshs: List of thresholds for PCK evaluations.
             is_sparse:  If True, `n_joints` is assumed to be 15, otherwise the full SMPL skeleton is assumed. If it is
               sparse, the metrics are only calculated on the given joints.
         """
@@ -252,14 +253,21 @@ class MetricsEngine(object):
         self.target_lengths = target_lengths
         self.force_valid_rot = force_valid_rot
         self.smpl_m = SMPLForwardKinematicsNP(smpl_model_path)
+        self.pck_threshs = pck_threshs if pck_threshs is not None else [0.2]
         self.is_sparse = is_sparse
-        self.metrics_agg = {k: None for k in self.which}
-        self.summaries = {k: {t: None for t in target_lengths} for k in self.which}
         self.all_summaries_op = None
         self.n_samples = 0
         self._should_call_reset = False  # a guard to avoid stupid mistakes
         assert is_sparse, "at the moment we expect sparse input; if that changes, " \
                           "the metrics values may not be comparable anymore"
+
+        # treat pck_t as a separate metric
+        if "pck" in self.which:
+            self.which.pop(self.which.index("pck"))
+            for t in self.pck_threshs:
+                self.which.append("pck_{}".format(int(t*100)))
+        self.metrics_agg = {k: None for k in self.which}
+        self.summaries = {k: {t: None for t in target_lengths} for k in self.which}
 
     def reset(self):
         """
@@ -273,12 +281,11 @@ class MetricsEngine(object):
         """
         Create placeholders and summary ops for each metric and target length that we want to evaluate.
         """
-        # TODO(kamanuel) for PCK this must be a bit different as we potentially have several values per frame
         for m in self.summaries:
             for t in self.summaries[m]:
                 assert self.summaries[m][t] is None
                 # placeholder to feed metric value
-                pl = tf.placeholder(tf.float32, name="{}{}_summary_pl".format(m, t))
+                pl = tf.placeholder(tf.float32, name="{}_{}_summary_pl".format(m, t))
                 # summary op to store in tensorboard
                 smry = tf.summary.scalar(name="{}/until_{}".format(m, t),
                                          tensor=pl,
@@ -298,12 +305,11 @@ class MetricsEngine(object):
         Returns:
             The feed dictionary filled with values per summary.
         """
-        # TODO(kamanuel) may be have to adjust for PCK
         feed_dict = dict()
         for m in self.summaries:
             for t in self.summaries[m]:
                 pl = self.summaries[m][t][1]
-                if m == "pck":
+                if m.startswith("pck"):
                     # does not make sense to sum up for pck
                     val = np.mean(final_metrics[m][:t])
                 else:
@@ -374,15 +380,14 @@ class MetricsEngine(object):
         reduce_fn_np = np.mean if reduce_fn == "mean" else np.sum
 
         for metric in self.which:
-            if metric == "positional":
+            if metric.startswith("pck"):
+                thresh = float(metric.split("_")[-1]) / 100.0
+                v = pck(pred_pos[:, select_joints], targ_pos[:, select_joints], thresh=thresh)  # (-1, )
+                metrics[metric] = np.reshape(v, [batch_size, seq_length])
+            elif metric == "positional":
                 v = positional(pred_pos[:, select_joints], targ_pos[:, select_joints])  # (-1, n_joints)
                 v = np.reshape(v, [batch_size, seq_length, n_joints])
                 metrics[metric] = reduce_fn_np(v, axis=-1)
-            elif metric == "pck":
-                # No need for reduce function here
-                # TODO(kamanuel) how to choose threshold?
-                v = pck(pred_pos[:, select_joints], targ_pos[:, select_joints], thresh=0.2)  # (-1, )
-                metrics[metric] = np.reshape(v, [batch_size, seq_length])
             elif metric == "joint_angle":
                 # compute the joint angle diff on the global rotations, not the local ones, which is a harder metric
                 pred_global = smpl_rot_to_global(pred, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
@@ -461,8 +466,18 @@ class MetricsEngine(object):
         seq_length = final_metrics[list(final_metrics.keys())[0]].shape[0]
         s = "metrics until {}:".format(seq_length)
         for m in sorted(final_metrics):
-            val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
+            if m.startswith("pck"):
+                continue
+            val = np.sum(final_metrics[m])
             s += "   {}: {:.3f}".format(m, val)
+
+        # print pcks last
+        pck_threshs = [5, 10, 15]
+        for t in pck_threshs:
+            m_name = "pck_{}".format(t)
+            val = np.mean(final_metrics[m_name])
+            s += "   {}: {:.3f}".format(m_name, val)
+
         return s
 
     @classmethod
@@ -477,11 +492,18 @@ class MetricsEngine(object):
         Returns:
             A dictionary that can be written into glogger
         """
+        pck_thresh = 10  # print this one as "pck"
         t = until if until is not None else final_metrics[list(final_metrics.keys())[0]].shape[0]
         glog_data = dict()
         for m in final_metrics:
+            if m == "pck_{}".format(pck_thresh):
+                # store under "pck"
+                key = "val pck" if is_validation else "test pck"
+                val = np.mean(final_metrics[m][:t])
+                glog_data[key] = [float(val)]
+
             key = "val {}".format(m) if is_validation else "test {}".format(m)
-            val = np.mean(final_metrics[m][:t]) if m == "pck" else np.sum(final_metrics[m][:t])
+            val = np.mean(final_metrics[m][:t]) if m.startswith("pck") else np.sum(final_metrics[m][:t])
             glog_data[key] = [float(val)]
         return glog_data
 
