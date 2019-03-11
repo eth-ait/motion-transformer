@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import quaternion
 import tensorflow as tf
+import copy
 
 from smpl import SMPL_NR_JOINTS, SMPL_MAJOR_JOINTS
 from smpl import smpl_sparse_to_full, smpl_rot_to_global
@@ -444,7 +445,8 @@ class MetricsEngine(object):
         for m in self.metrics_agg:
             self.metrics_agg[m] = self.metrics_agg[m] / self.n_samples
 
-        return self.metrics_agg
+        # return a copy of the metrics so that the class can be re-used again immediately
+        return copy.deepcopy(self.metrics_agg)
 
     @classmethod
     def get_summary_string(cls, final_metrics):
@@ -457,27 +459,29 @@ class MetricsEngine(object):
             A summary string.
         """
         seq_length = final_metrics[list(final_metrics.keys())[0]].shape[0]
-        s = "metrics@{}:".format(seq_length)
+        s = "metrics until {}:".format(seq_length)
         for m in sorted(final_metrics):
             val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
             s += "   {}: {:.3f}".format(m, val)
         return s
 
     @classmethod
-    def get_summary_glogger(cls, final_metrics, is_validation=True):
+    def get_summary_glogger(cls, final_metrics, is_validation=True, until=None):
         """
         Create a summary that can be written into glogger.
         Args:
             final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
             is_validation: If the given metrics are from the validation set, otherwise it's assumed they're from test.
+            until: Until which time step to compute the metrics.
 
         Returns:
             A dictionary that can be written into glogger
         """
+        t = until if until is not None else final_metrics[list(final_metrics.keys())[0]].shape[0]
         glog_data = dict()
         for m in final_metrics:
             key = "val {}".format(m) if is_validation else "test {}".format(m)
-            val = np.mean(final_metrics[m]) if m == "pck" else np.sum(final_metrics[m])
+            val = np.mean(final_metrics[m][:t]) if m == "pck" else np.sum(final_metrics[m][:t])
             glog_data[key] = [float(val)]
         return glog_data
 

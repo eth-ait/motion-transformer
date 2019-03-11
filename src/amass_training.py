@@ -448,8 +448,8 @@ def train():
         train_data, eval_data, test_data = data
 
         # Create metrics engine including summaries
-        # TODO(kamanuel) for now we just evaluate over the entire target sequence
-        target_lengths = [eval_model.target_seq_len]
+        # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
+        target_lengths = [x for x in [5, 10, 19, 24, 34, 60] if x <= train_model.target_seq_len]
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
                                        force_valid_rot=True)
@@ -459,11 +459,11 @@ def train():
         metrics_engine.reset()
 
         # create logger
-        gLogger = GoogleSheetLogger(sheet_name="logs", credential_file=C.LOGGER_MANU,
+        gLogger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
                                     workbook_name="motion_modelling_experiments")
         glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
                      'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
-                     'Comment': ["until {}".format(target_lengths[-1])]}
+                     'Comment': [""]}
 
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
@@ -574,14 +574,18 @@ def train():
 
         print("Evaluating validation set ...")
         eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
-        glog_eval_metrics = metrics_engine.get_summary_glogger(eval_metrics)
 
         print("Evaluating test set ...")
         test_metrics = evaluate_model(test_model, test_iter, metrics_engine)
-        glog_test_metrics = metrics_engine.get_summary_glogger(test_metrics, is_validation=False)
 
-        glog_data = {**glog_data, **glog_eval_metrics, **glog_test_metrics}
-        gLogger.append_row(glog_data)
+        # gather the metrics
+        for t in metrics_engine.target_lengths:
+            glog_eval_metrics = metrics_engine.get_summary_glogger(eval_metrics, until=t)
+            glog_test_metrics = metrics_engine.get_summary_glogger(test_metrics, is_validation=False, until=t)
+
+            glog_data["Comment"] = ["until_{}".format(t)]
+            glog_data = {**glog_data, **glog_eval_metrics, **glog_test_metrics}
+            gLogger.append_row(glog_data, sheet_name="until_{}".format(t))
 
         print("Finished.")
 
