@@ -29,7 +29,7 @@ class BaseModel(object):
         self.joint_prediction_model = config["joint_prediction_model"]
         self.grad_clip_by_norm = config["grad_clip_by_norm"]
         self.loss_on_encoder_outputs = config['loss_on_encoder_outputs']
-        self.force_valid_rot = config['force_valid_rot']
+        self.force_valid_rot = config.get('force_valid_rot', False)
         self.output_layer_config = config.get('output_layer', dict())
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
 

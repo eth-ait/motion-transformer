@@ -159,7 +159,7 @@ def create_model(session):
         test_model.build_graph()
 
     num_param = 0
-    for v in tf.global_variables():
+    for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
     print("# of parameters: " + str(num_param))
     config["num_parameters"] = num_param

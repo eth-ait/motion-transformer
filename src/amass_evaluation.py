@@ -58,10 +58,10 @@ def create_and_restore_model(session, experiment_dir, config, args):
         test_model.summary_routines()
 
     num_param = 0
-    for v in tf.global_variables():
+    for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
     print("# of parameters: " + str(num_param))
-    assert config["num_parameters"]-1 == num_param, "# of parameters doesn't match."
+    assert config["num_parameters"] == num_param, "# of parameters doesn't match."
 
     # Restore model parameters.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
