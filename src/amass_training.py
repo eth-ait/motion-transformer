@@ -41,12 +41,6 @@ tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the dec
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
-# Directories
-tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/tfrecords/training/stats.npz", "Path to meta-data file.")
-tf.app.flags.DEFINE_string("train_data_path", "../data/amass/tfrecords/training/amass-?????-of-?????", "Path to train data folder.")
-tf.app.flags.DEFINE_string("valid_data_path", "../data/amass/tfrecords/validation/amass-?????-of-?????", "Path to valid data folder.")
-tf.app.flags.DEFINE_string("test_data_path", "../data/amass/tfrecords/test/amass-?????-of-?????", "Path to test data folder.")
-tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_amass/"), "Training directory.")
 
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
 tf.app.flags.DEFINE_integer("print_every", 100, "How often to log training error.")
@@ -74,6 +68,12 @@ experiment_timestamp = str(int(time.time()))
 def create_model(session):
     # Global step variable.
     global_step = tf.Variable(1, trainable=False, name='global_step')
+
+    train_data_path = os.path.join(os.environ["AMASS_TRAIN"], "amass-?????-of-?????")
+    valid_data_path = os.path.join(os.environ["AMASS_VALID"], "amass-?????-of-?????")
+    test_data_path = os.path.join(os.environ["AMASS_TEST"], "amass-?????-of-?????")
+    meta_data_path = os.environ["AMASS_META"]
+    train_dir = os.environ["AMASS_EXPERIMENTS"]
 
     if args.force_valid_rot:
         assert args.no_normalization, 'normalization does not make sense when enforcing valid rotations'
@@ -103,8 +103,8 @@ def create_model(session):
 
     with tf.name_scope("training_data"):
         windows_length = args.seq_length_in + args.seq_length_out
-        train_data = TFRecordMotionDataset(data_path=args.train_data_path,
-                                           meta_data_path=args.meta_data_path,
+        train_data = TFRecordMotionDataset(data_path=train_data_path,
+                                           meta_data_path=meta_data_path,
                                            batch_size=args.batch_size,
                                            shuffle=True,
                                            extract_windows_of=windows_length,
@@ -114,8 +114,8 @@ def create_model(session):
 
     assert windows_length == 160, "TFRecords are hardcoded with length of 160."
     with tf.name_scope("validation_data"):
-        eval_data = TFRecordMotionDataset(data_path=args.valid_data_path,
-                                          meta_data_path=args.meta_data_path,
+        eval_data = TFRecordMotionDataset(data_path=valid_data_path,
+                                          meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
                                           extract_windows_of=0,
@@ -124,8 +124,8 @@ def create_model(session):
         eval_pl = eval_data.get_tf_samples()
 
     with tf.name_scope("test_data"):
-        test_data = TFRecordMotionDataset(data_path=args.test_data_path,
-                                          meta_data_path=args.meta_data_path,
+        test_data = TFRecordMotionDataset(data_path=test_data_path,
+                                          meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
                                           extract_windows_of=0,
@@ -167,9 +167,9 @@ def create_model(session):
     config["num_parameters"] = int(num_param)
 
     if args.experiment_id is None:
-        experiment_dir = os.path.normpath(os.path.join(args.train_dir, experiment_name))
+        experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
     else:
-        experiment_dir = glob.glob(os.path.join(args.train_dir, args.experiment_id + "-*"), recursive=False)[0]
+        experiment_dir = glob.glob(os.path.join(train_dir, args.experiment_id + "-*"), recursive=False)[0]
     if not os.path.exists(experiment_dir):
         os.mkdir(experiment_dir)
     json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)

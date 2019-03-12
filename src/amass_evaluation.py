@@ -18,9 +18,13 @@ def create_and_restore_model(session, experiment_dir, config, args):
     # Create dataset.
     windows_length = args.seq_length_in + args.seq_length_out
     assert windows_length == 160, "TFRecords are hardcoded with length of 160."
+
+    test_data_path = os.path.join(os.environ["AMASS_TEST"], "amass-?????-of-?????")
+    meta_data_path = os.environ["AMASS_META"]
+
     with tf.name_scope("test_data"):
-        test_data = TFRecordMotionDataset(data_path=args.test_data_path,
-                                          meta_data_path=args.meta_data_path,
+        test_data = TFRecordMotionDataset(data_path=test_data_path,
+                                          meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
                                           extract_windows_of=0,
