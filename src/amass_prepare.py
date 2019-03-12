@@ -45,6 +45,8 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, create_windo
 
     # save data as tfrecords
     tfrecord_writers = create_tfrecord_writers(os.path.join(output_path, 'amass'), n_shards)
+    if create_windows is not None:
+        tfrecord_writers_dyn = create_tfrecord_writers(os.path.join(output_path + "_dynamic", "amass"), n_shards)
 
     # compute normalization stats online
     n_all, mean_all, var_all, m2_all = 0.0, 0.0, 0.0, 0.0
@@ -73,14 +75,22 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, create_windo
                 meta_stats_per_db[db_name] = {'n_samples': 0, 'n_frames': 0}
 
             if create_windows is not None:
-                # create windows
-                poses = split_into_windows(poses, create_windows[0], create_windows[1])
-                assert poses.shape[1] == create_windows[0]
-            else:
-                poses = poses[np.newaxis, ...]
+                if poses.shape[0] < create_windows[0]:
+                    continue
 
-            for w in range(poses.shape[0]):
-                poses_window = poses[w]
+                # first save it without splitting into windows
+                tfexample = to_tfexample(poses, "{}/{}".format(0, f), db_name)
+                write_tfexample(tfrecord_writers_dyn, tfexample)
+
+                # then split into windows and save later
+                poses_w = split_into_windows(poses, create_windows[0], create_windows[1])
+                assert poses_w.shape[1] == create_windows[0]
+
+            else:
+                poses_w = poses[np.newaxis, ...]
+
+            for w in range(poses_w.shape[0]):
+                poses_window = poses_w[w]
                 tfexample = to_tfexample(poses_window, "{}/{}".format(w, f), db_name)
                 write_tfexample(tfrecord_writers, tfexample)
 
@@ -111,20 +121,9 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, create_windo
                     min_seq_len = seq_len if seq_len < min_seq_len else min_seq_len
                     max_seq_len = seq_len if seq_len > max_seq_len else max_seq_len
 
-    # finalize and save stats
-    if compute_stats:
-        var_all = m2_all / (n_all - 1)
-        var_channel = m2_channel / (n_channel - 1)
-
-        stats = {'mean_all': mean_all, 'mean_channel': mean_channel, 'var_all': var_all,
-                 'var_channel': var_channel, 'min_all': min_all, 'max_all': max_all,
-                 'min_seq_len': min_seq_len, 'max_seq_len': max_seq_len, 'num_samples': len(all_fnames)}
-
-        stats_file = os.path.join(output_path, 'stats.npz')
-        print('saving statistics to {} ...'.format(stats_file))
-        np.savez(stats_file, stats=stats)
-
     close_tfrecord_writers(tfrecord_writers)
+    if create_windows is not None:
+        close_tfrecord_writers(tfrecord_writers_dyn)
 
     # print meta stats
     tot_samples = 0
@@ -136,6 +135,19 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, create_windo
                                                                   meta_stats_per_db[db]['n_frames']))
 
     print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format('Total', tot_samples, tot_frames))
+
+    # finalize and save stats
+    if compute_stats:
+        var_all = m2_all / (n_all - 1)
+        var_channel = m2_channel / (n_channel - 1)
+
+        stats = {'mean_all': mean_all, 'mean_channel': mean_channel, 'var_all': var_all,
+                 'var_channel': var_channel, 'min_all': min_all, 'max_all': max_all,
+                 'min_seq_len': min_seq_len, 'max_seq_len': max_seq_len, 'num_samples': tot_samples}
+
+        stats_file = os.path.join(output_path, 'stats.npz')
+        print('saving statistics to {} ...'.format(stats_file))
+        np.savez(stats_file, stats=stats)
 
     return meta_stats_per_db
 
@@ -169,6 +181,11 @@ if __name__ == '__main__':
                 is_not_train = RNG.binomial(1, valid_split + test_split)
                 if is_not_train:
                     is_valid = RNG.binomial(1, valid_split / (valid_split + test_split))
+                    # check if that file is big enough
+                    with open(os.path.join(root_dir, f), 'rb') as ph:
+                        x = pkl.load(ph, encoding='latin1')
+                        if np.array(x["poses"]).shape[0] < test_window_size:
+                            continue
                     if is_valid:
                         valid_fnames.append((root_dir, f))
                     else:
@@ -184,13 +201,45 @@ if __name__ == '__main__':
     assert len(training_set.intersection(test_set)) == 0
     assert len(validation_set.intersection(test_set)) == 0
 
+    # read filenames from disk to make sure the splits are always the same
+    def _read_fnames(from_):
+        with open(from_, 'r') as fh:
+            lines = fh.readlines()
+            return [line.strip() for line in lines]
+
+    def _assert_split_invariance(fnames_fixed, fnames_split):
+        fnames_proposed = []
+        for root_dir, f in fnames_split:
+            db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
+            if "AMASS" in db_name:
+                db_name = '_'.join(db_name.split('_')[1:])
+            else:
+                db_name = db_name.split('_')[0]
+            fnames_proposed.append("{}/{}".format(db_name, f))
+
+        # make sure strings are encoded the same, otherwise the check might fail although the lists are identical
+        f1 = [f.encode("utf-8") for f in sorted(fnames_proposed)]
+        f2 = [f.encode("utf-8") for f in sorted(fnames_fixed)]
+        assert f1 == f2
+
+    train_fnames_fixed = _read_fnames(os.path.join(output_folder, "training_fnames.txt"))
+    valid_fnames_fixed = _read_fnames(os.path.join(output_folder, "validation_fnames.txt"))
+    test_fnames_fixed = _read_fnames(os.path.join(output_folder, "test_fnames.txt"))
+
+    _assert_split_invariance(train_fnames_fixed, train_fnames)
+    _assert_split_invariance(valid_fnames_fixed, valid_fnames)
+    _assert_split_invariance(test_fnames_fixed, test_fnames)
+
+    raise ValueError("value error")
+
     tot_files = len(train_fnames) + len(valid_fnames) + len(test_fnames)
     print("found {} training files {:.2f} %".format(len(train_fnames), len(train_fnames) / tot_files * 100.0))
     print("found {} validation files {:.2f} %".format(len(valid_fnames), len(valid_fnames) / tot_files * 100.0))
     print("found {} test files {:.2f} %".format(len(test_fnames), len(test_fnames) / tot_files * 100.0))
 
     print("process training data ...")
-    tr_stats = process_split(train_fnames, os.path.join(output_folder, "training"), n_shards, compute_stats=True)
+    tr_stats = process_split(train_fnames, os.path.join(output_folder, "training"), n_shards,
+                             compute_stats=True, create_windows=None)
 
     print("process validation data ...")
     va_stats = process_split(valid_fnames, os.path.join(output_folder, "validation"), n_shards,
