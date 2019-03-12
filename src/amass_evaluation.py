@@ -110,11 +110,12 @@ def evaluate(experiment_dir, config, args):
                          'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                          'Comment'   : [""]}
 
-        def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
+        def evaluate_model(_eval_model, _eval_iter, _metrics_engine, _max_iter=-1):
             # make a full pass on the validation or test dataset and compute the metrics
             eval_result = dict()
             _metrics_engine.reset()
             sess.run(_eval_iter.initializer)
+            counter = 0
             try:
                 while True:
                     # TODO(kamanuel) should we compute the validation loss here as well, if so how?
@@ -130,13 +131,19 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
+                    counter += 1
+                    if counter == _max_iter:
+                        break
+
             except tf.errors.OutOfRangeError:
+                pass
+            finally:
                 # finalize the computation of the metrics
                 final_metrics = _metrics_engine.get_final_metrics()
             return final_metrics, eval_result
 
         print("Evaluating test set ...")
-        test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine)
+        test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine, _max_iter=1)
         print("Test \t {}".format(metrics_engine.get_summary_string(test_metrics)))
 
         # gather the metrics
@@ -155,9 +162,7 @@ def evaluate(experiment_dir, config, args):
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
             sample_keys = [list(eval_result.keys())[i] for i in idxs]
             for k in sample_keys:
-                # TODO(kamanuel) need title for figure and subplots
-                # TODO(kamanuel) only change color in prediction
-                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1])
+                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k)
 
 
 if __name__ == '__main__':
