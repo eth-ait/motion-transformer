@@ -40,6 +40,7 @@ tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into 
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
+tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
 # Directories
 tf.app.flags.DEFINE_string("meta_data_path", "../data/amass/tfrecords/training/stats.npz", "Path to meta-data file.")
 tf.app.flags.DEFINE_string("train_data_path", "../data/amass/tfrecords/training/amass-?????-of-?????", "Path to train data folder.")
@@ -252,7 +253,7 @@ def get_rnn_config(args):
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 1
-    config['output_layer']['size'] = 256
+    config['output_layer']['size'] = args.output_layer_size
     config['output_layer']['activation_fn'] = C.RELU
 
     config['optimizer'] = args.optimizer
@@ -313,7 +314,7 @@ def get_stcn_config(args):
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 64
+    config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
@@ -328,14 +329,14 @@ def get_stcn_config(args):
     config['input_layer']['dropout_rate'] = args.input_dropout_rate
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 64
+    config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU

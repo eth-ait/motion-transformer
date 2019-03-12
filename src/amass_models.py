@@ -1026,7 +1026,7 @@ class RNN(BaseModel):
         """
         assert self.is_eval, "Only works in sampling mode."
 
-        batch = session.run(self.data_placeholders)[C.BATCH_INPUT]
+        batch = session.run(self.data_placeholders)
         data_id = batch[C.BATCH_ID]
         data_sample = batch[C.BATCH_INPUT]
         targets = data_sample[:, self.source_seq_len:]
