@@ -477,13 +477,6 @@ def train():
         # reset computation of metrics
         metrics_engine.reset()
 
-        # create logger
-        gLogger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
-                                    workbook_name="motion_modelling_experiments")
-        glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
-                     'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
-                     'Comment': [""]}
-
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
         train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
@@ -598,6 +591,13 @@ def train():
         print("Evaluating test set ...")
         test_metrics = evaluate_model(test_model, test_iter, metrics_engine)
         print("Test [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(test_metrics)))
+
+        # create logger
+        gLogger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
+                                    workbook_name="motion_modelling_experiments")
+        glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
+                     'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
+                     'Comment': [""]}
 
         # gather the metrics
         for t in metrics_engine.target_lengths:
