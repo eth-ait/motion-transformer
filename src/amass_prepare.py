@@ -33,7 +33,14 @@ def to_tfexample(poses, file_id, db_name):
     return example
 
 
-def process_split(all_fnames, output_path, n_shards, compute_stats):
+def split_into_windows(poses, window_size, stride):
+    """Split (seq_length, dof) array into arrays of shape (window_size, dof) with the given stride."""
+    n_windows = (poses.shape[0] - window_size) // stride + 1
+    windows = poses[stride*np.arange(n_windows)[:, None] + np.arange(window_size)]
+    return windows
+
+
+def process_split(all_fnames, output_path, n_shards, compute_stats, create_windows=None):
     print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
 
     # save data as tfrecords
@@ -51,7 +58,7 @@ def process_split(all_fnames, output_path, n_shards, compute_stats):
     for idx in range(len(all_fnames)):
         root_dir, f = all_fnames[idx]
         with open(os.path.join(root_dir, f), 'rb') as f_handle:
-            print('\rprocessing file {}'.format(f), end='')
+            print('\r [{:0>5d} / {:0>5d}] processing file {}'.format(idx+1, len(all_fnames), f), end='')
             data = pkl.load(f_handle, encoding='latin1')
             poses = np.array(data['poses'])  # shape (seq_length, 135)
             assert len(poses) > 0, 'file is empty'
@@ -65,35 +72,44 @@ def process_split(all_fnames, output_path, n_shards, compute_stats):
             if db_name not in meta_stats_per_db:
                 meta_stats_per_db[db_name] = {'n_samples': 0, 'n_frames': 0}
 
-            tfexample = to_tfexample(poses, f, db_name)
-            write_tfexample(tfrecord_writers, tfexample)
+            if create_windows is not None:
+                # create windows
+                poses = split_into_windows(poses, create_windows[0], create_windows[1])
+                assert poses.shape[1] == create_windows[0]
+            else:
+                poses = poses[np.newaxis, ...]
 
-            meta_stats_per_db[db_name]['n_samples'] += 1
-            meta_stats_per_db[db_name]['n_frames'] += poses.shape[0]
+            for w in range(poses.shape[0]):
+                poses_window = poses[w]
+                tfexample = to_tfexample(poses_window, "{}/{}".format(w, f), db_name)
+                write_tfexample(tfrecord_writers, tfexample)
 
-            # update normalization stats
-            if compute_stats:
-                seq_len, feature_size = poses.shape
+                meta_stats_per_db[db_name]['n_samples'] += 1
+                meta_stats_per_db[db_name]['n_frames'] += poses_window.shape[0]
 
-                # Global mean&variance
-                n_all += seq_len * feature_size
-                delta_all = poses - mean_all
-                mean_all = mean_all + delta_all.sum() / n_all
-                m2_all = m2_all + (delta_all * (poses - mean_all)).sum()
+                # update normalization stats
+                if compute_stats:
+                    seq_len, feature_size = poses_window.shape
 
-                # Channel-wise mean&variance
-                n_channel += seq_len
-                delta_channel = poses - mean_channel
-                mean_channel = mean_channel + delta_channel.sum(axis=0) / n_channel
-                m2_channel = m2_channel + (delta_channel * (poses - mean_channel)).sum(axis=0)
+                    # Global mean&variance
+                    n_all += seq_len * feature_size
+                    delta_all = poses_window - mean_all
+                    mean_all = mean_all + delta_all.sum() / n_all
+                    m2_all = m2_all + (delta_all * (poses_window - mean_all)).sum()
 
-                # Global min&max values.
-                min_all = np.min(poses) if np.min(poses) < min_all else min_all
-                max_all = np.max(poses) if np.max(poses) > max_all else max_all
+                    # Channel-wise mean&variance
+                    n_channel += seq_len
+                    delta_channel = poses_window - mean_channel
+                    mean_channel = mean_channel + delta_channel.sum(axis=0) / n_channel
+                    m2_channel = m2_channel + (delta_channel * (poses_window - mean_channel)).sum(axis=0)
 
-                # Min&max sequence length.
-                min_seq_len = seq_len if seq_len < min_seq_len else min_seq_len
-                max_seq_len = seq_len if seq_len > max_seq_len else max_seq_len
+                    # Global min&max values.
+                    min_all = np.min(poses_window) if np.min(poses_window) < min_all else min_all
+                    max_all = np.max(poses_window) if np.max(poses_window) > max_all else max_all
+
+                    # Min&max sequence length.
+                    min_seq_len = seq_len if seq_len < min_seq_len else min_seq_len
+                    max_seq_len = seq_len if seq_len > max_seq_len else max_seq_len
 
     # finalize and save stats
     if compute_stats:
@@ -111,10 +127,11 @@ def process_split(all_fnames, output_path, n_shards, compute_stats):
     close_tfrecord_writers(tfrecord_writers)
 
     # print meta stats
-    tot_samples = len(all_fnames)
+    tot_samples = 0
     tot_frames = 0
     for db in meta_stats_per_db.keys():
         tot_frames += meta_stats_per_db[db]['n_frames']
+        tot_samples += meta_stats_per_db[db]['n_samples']
         print('{:>20} -> {:>4d} sequences, {:>12d} frames'.format(db, meta_stats_per_db[db]['n_samples'],
                                                                   meta_stats_per_db[db]['n_frames']))
 
@@ -129,6 +146,8 @@ if __name__ == '__main__':
     n_shards = 20  # need to save the data in shards, it's too big otherwise
     valid_split = 0.05  # percentage of files we want to save for validation
     test_split = 0.05  # percentage of files we want to save for test
+    test_window_size = 160
+    test_window_stride = 100
 
     # gather all file names to create the training/val/test splits
     # this assumes the files are not empty
@@ -174,10 +193,12 @@ if __name__ == '__main__':
     tr_stats = process_split(train_fnames, os.path.join(output_folder, "training"), n_shards, compute_stats=True)
 
     print("process validation data ...")
-    va_stats = process_split(valid_fnames, os.path.join(output_folder, "validation"), n_shards, compute_stats=False)
+    va_stats = process_split(valid_fnames, os.path.join(output_folder, "validation"), n_shards,
+                             compute_stats=False, create_windows=(test_window_size, test_window_stride))
 
     print("process test data ...")
-    te_stats = process_split(test_fnames, os.path.join(output_folder, "test"), n_shards, compute_stats=False)
+    te_stats = process_split(test_fnames, os.path.join(output_folder, "test"), n_shards,
+                             compute_stats=False, create_windows=(test_window_size, test_window_stride))
 
     print("Meta stats for all splits combined")
     total_stats = tr_stats
