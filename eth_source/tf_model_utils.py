@@ -237,7 +237,7 @@ def get_rnn_cell(**kwargs):
         rnn_cell_constructor = tf.contrib.rnn.LSTMBlockCell
     elif cell_type.lower() == C.GRU:
         rnn_cell_constructor = tf.contrib.rnn.GRUCell
-    elif cell_type.lower() == C.LayerNormLSTM:
+    elif cell_type.lower() == C.LayerNormLSTM.lower():
         rnn_cell_constructor = tf.contrib.rnn.LayerNormBasicLSTMCell
     else:
         raise Exception("Unsupported RNN Cell.")

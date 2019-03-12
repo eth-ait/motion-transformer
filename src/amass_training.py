@@ -42,6 +42,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
 
+tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
 tf.app.flags.DEFINE_integer("print_every", 100, "How often to log training error.")
 tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
@@ -63,6 +64,10 @@ args = tf.app.flags.FLAGS
 
 # Unique timestamp to distinguish experiments with the same configuration.
 experiment_timestamp = str(int(time.time()))
+if args.new_experiment_id is not None:
+    if len(args.new_experiment_id) != 10:
+        raise Exception("Experiment ID must be 10 digits.")
+    experiment_timestamp = args.new_experiment_id
 
 
 def create_model(session):
@@ -236,7 +241,7 @@ def get_rnn_config(args):
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['cell_type'] = C.GRU
+    config['cell']['cell_type'] = C.LayerNormLSTM
     config['cell']['cell_size'] = 1024
     config['cell']['cell_num_layers'] = 1
     if args.model_type == 'vrnn':
