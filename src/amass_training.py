@@ -111,12 +111,13 @@ def create_model(session):
                                            normalize=not args.no_normalization)
         train_pl = train_data.get_tf_samples()
 
+    assert windows_length == 160, "TFRecords are hardcoded with length of 160."
     with tf.name_scope("validation_data"):
         eval_data = TFRecordMotionDataset(data_path=args.valid_data_path,
                                           meta_data_path=args.meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=windows_length,
+                                          extract_windows_of=0,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
         eval_pl = eval_data.get_tf_samples()
@@ -126,7 +127,7 @@ def create_model(session):
                                           meta_data_path=args.meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=windows_length,
+                                          extract_windows_of=0,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
         test_pl = test_data.get_tf_samples()
@@ -162,7 +163,7 @@ def create_model(session):
     for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
     print("# of parameters: " + str(num_param))
-    config["num_parameters"] = num_param
+    config["num_parameters"] = int(num_param)
 
     if args.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(args.train_dir, experiment_name))
@@ -308,7 +309,7 @@ def get_stcn_config(args):
     config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
+    config['latent_layer']['latent_size'] = [128, 64, 32, 16, 8, 4, 2]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
@@ -592,9 +593,11 @@ def train():
 
         print("Evaluating validation set ...")
         eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
+        print("Validation [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(eval_metrics)))
 
         print("Evaluating test set ...")
         test_metrics = evaluate_model(test_model, test_iter, metrics_engine)
+        print("Test [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(test_metrics)))
 
         # gather the metrics
         for t in metrics_engine.target_lengths:

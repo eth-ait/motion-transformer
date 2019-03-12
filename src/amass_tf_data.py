@@ -170,7 +170,7 @@ class TFRecordMotionDataset(Dataset):
         pass
 
     def __pp_filter(self, sample):
-        return tf.shape(sample["poses"])[0] > self.length_threshold
+        return tf.shape(sample["poses"])[0] >= self.length_threshold
 
     def __pp_get_windows(self, sample):
         start = tf.random_uniform((1, 1), minval=0, maxval=tf.shape(sample["poses"])[0]-self.extract_windows_of+1, dtype=tf.int32)[0][0]
@@ -225,7 +225,7 @@ if __name__ == '__main__':
     # some tests in eager mode.
     tf.enable_eager_execution()
 
-    tfrecord_pattern = "../data/amass/tfrecords/training/amass-?????-of-?????"
+    tfrecord_pattern = "../data/amass/tfrecords/validation/amass-?????-of-?????"
     dataset = TFRecordMotionDataset(data_path=tfrecord_pattern,
                                     meta_data_path="../data/amass/tfrecords/training/stats.npz",
                                     batch_size=32,
@@ -235,6 +235,7 @@ if __name__ == '__main__':
     # log_stats(stats, "OnlineTFRecord")
 
     train_iterator = dataset.get_iterator()
+    sample = train_iterator.get_next()
     import time
     start_time = time.perf_counter()
     i = 0
