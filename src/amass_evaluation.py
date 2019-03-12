@@ -17,12 +17,13 @@ from visualize import Visualizer
 def create_and_restore_model(session, experiment_dir, config, args):
     # Create dataset.
     windows_length = args.seq_length_in + args.seq_length_out
+    assert windows_length == 160, "TFRecords are hardcoded with length of 160."
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=args.test_data_path,
                                           meta_data_path=args.meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=windows_length,
+                                          extract_windows_of=0,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
         test_pl = test_data.get_tf_samples()
@@ -61,7 +62,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
     print("# of parameters: " + str(num_param))
-    assert config["num_parameters"] == num_param, "# of parameters doesn't match."
+    # assert config["num_parameters"] == num_param, "# of parameters doesn't match."
 
     # Restore model parameters.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
@@ -136,6 +137,7 @@ def evaluate(experiment_dir, config, args):
 
         print("Evaluating test set ...")
         test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine)
+        print("Test \t {}".format(metrics_engine.get_summary_string(test_metrics)))
 
         # gather the metrics
         if args.glog_entry:
