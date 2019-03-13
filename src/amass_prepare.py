@@ -2,6 +2,7 @@ import numpy as np
 import os
 import pickle as pkl
 import tensorflow as tf
+import quaternion
 
 RNG = np.random.RandomState(42)
 
@@ -40,7 +41,80 @@ def split_into_windows(poses, window_size, stride):
     return windows
 
 
-def process_split(all_fnames, output_path, n_shards, compute_stats, create_windows=None):
+def correct_antipodal_quaternions(quat):
+    """
+    Removes discontinuities coming from antipodal representation of quaternions. At time step t it checks which
+    representation, q or -q, is closer to time step t-1 and chooses the closest one.
+    Args:
+        quat: numpy array of shape (N, K, 4) where N is the number of frames and K the number of joints. K is optional,
+          i.e. can be 0.
+
+    Returns: numpy array of shape (N, K, 4) with fixed antipodal representation
+    """
+    assert len(quat.shape) == 3 or len(quat.shape) == 2
+    assert quat.shape[-1] == 4
+
+    if len(quat.shape) == 2:
+        quat_r = quat[:, np.newaxis].copy()
+    else:
+        quat_r = quat.copy()
+
+    def dist(x, y):
+        return np.sqrt(np.sum((x-y)**2, axis=-1))
+
+    # naive implementation looping over all time steps sequentially
+    quat_corrected = np.zeros_like(quat_r)
+    quat_corrected[0] = quat_r[0]
+    for t in range(1, quat.shape[0]):
+        diff_to_plus = dist(quat_r[t], quat_corrected[t-1])
+        diff_to_neg = dist(-quat_r[t], quat_corrected[t-1])
+
+        # diffs are vectors
+        qc = quat_r[t]
+        swap_idx = np.where(diff_to_neg < diff_to_plus)
+        qc[swap_idx] = -quat_r[t, swap_idx]
+        quat_corrected[t] = qc
+    quat_corrected = np.squeeze(quat_corrected)
+    return quat_corrected
+
+
+def rotmat2quat(rotmats):
+    """
+    Convert rotation matrices to quaternions. It ensures that there's no switch to the antipodal representation
+    within this sequence of rotations.
+    Args:
+        oris: np array of shape (seq_length, n_joints*9).
+
+    Returns: np array of shape (seq_length, n_joints*4)
+    """
+    seq_length = rotmats.shape[0]
+    assert rotmats.shape[1] % 9 == 0
+    ori = np.reshape(rotmats, [seq_length, -1, 3, 3])
+    ori_q = quaternion.as_float_array(quaternion.from_rotation_matrix(ori))
+    ori_qc = correct_antipodal_quaternions(ori_q)
+
+    # import matplotlib.pyplot as plt
+    # for j in range(15):
+    #     ax = plt.subplot(8, 2, j + 1)
+    #
+    #     l1, = ax.plot(ori_qc[:, j, 0], label='w')
+    #     l2, = ax.plot(ori_qc[:, j, 1], label='x')
+    #     l3, = ax.plot(ori_qc[:, j, 2], label='y')
+    #     l4, = ax.plot(ori_qc[:, j, 3], label='z')
+    #
+    #     l1, = ax.plot(ori_q[:, j, 0], '--r', label='w')
+    #     l2, = ax.plot(ori_q[:, j, 1], '--b', label='x')
+    #     l3, = ax.plot(ori_q[:, j, 2], '--k', label='y')
+    #     l4, = ax.plot(ori_q[:, j, 3], '--g', label='z')
+    #
+    # plt.figlegend((l1, l2, l3, l4), ('w', 'x', 'y', 'z'), 'lower right')
+    # plt.show()
+
+    ori_qc = np.reshape(ori_qc, [seq_length, -1])
+    return ori_qc
+
+
+def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, create_windows=None):
     print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
 
     # save data as tfrecords
@@ -64,6 +138,10 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, create_windo
             data = pkl.load(f_handle, encoding='latin1')
             poses = np.array(data['poses'])  # shape (seq_length, 135)
             assert len(poses) > 0, 'file is empty'
+
+            if as_quat:
+                # convert to quaternions
+                poses = rotmat2quat(poses)
 
             db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
             if "AMASS" in db_name:
@@ -158,6 +236,7 @@ if __name__ == '__main__':
     n_shards = 20  # need to save the data in shards, it's too big otherwise
     valid_split = 0.05  # percentage of files we want to save for validation
     test_split = 0.05  # percentage of files we want to save for test
+    as_quat = True  # converts the data to quaternions
     test_window_size = 160
     test_window_stride = 100
 
@@ -230,7 +309,7 @@ if __name__ == '__main__':
     _assert_split_invariance(valid_fnames_fixed, valid_fnames)
     _assert_split_invariance(test_fnames_fixed, test_fnames)
 
-    raise ValueError("value error")
+    # raise ValueError("value error")
 
     tot_files = len(train_fnames) + len(valid_fnames) + len(test_fnames)
     print("found {} training files {:.2f} %".format(len(train_fnames), len(train_fnames) / tot_files * 100.0))
@@ -238,16 +317,17 @@ if __name__ == '__main__':
     print("found {} test files {:.2f} %".format(len(test_fnames), len(test_fnames) / tot_files * 100.0))
 
     print("process training data ...")
-    tr_stats = process_split(train_fnames, os.path.join(output_folder, "training"), n_shards,
-                             compute_stats=True, create_windows=None)
+    rep = "quat" if as_quat else "rotmat"
+    tr_stats = process_split(train_fnames, os.path.join(output_folder, rep, "training"), n_shards, compute_stats=True,
+                             as_quat=as_quat, create_windows=None)
 
     print("process validation data ...")
-    va_stats = process_split(valid_fnames, os.path.join(output_folder, "validation"), n_shards,
-                             compute_stats=False, create_windows=(test_window_size, test_window_stride))
+    va_stats = process_split(valid_fnames, os.path.join(output_folder, rep, "validation"), n_shards, compute_stats=False,
+                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
 
     print("process test data ...")
-    te_stats = process_split(test_fnames, os.path.join(output_folder, "test"), n_shards,
-                             compute_stats=False, create_windows=(test_window_size, test_window_stride))
+    te_stats = process_split(test_fnames, os.path.join(output_folder, rep, "test"), n_shards, compute_stats=False,
+                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
 
     print("Meta stats for all splits combined")
     total_stats = tr_stats
