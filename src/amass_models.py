@@ -8,7 +8,7 @@ import rnn_cell_extensions  # my extensions of the tf repos
 
 # ETH imports
 from constants import Constants as C
-from tf_model_utils import get_activation_fn, get_rnn_cell
+from tf_model_utils import get_activation_fn, get_rnn_cell, get_decay_variable
 from tf_models import LatentLayer
 from tf_rnn_cells import LatentCell
 
@@ -32,6 +32,9 @@ class BaseModel(object):
         self.force_valid_rot = config.get('force_valid_rot', False)
         self.output_layer_config = config.get('output_layer', dict())
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
+        self.rot_matrix_regularization = config.get('rot_matrix_regularization', False)
+        self.prediction_activation = None if not self.rot_matrix_regularization else tf.nn.tanh
+        self.rot_matrix_loss = None  # Only used if self.rot_matrix_regularization is True.
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -40,6 +43,10 @@ class BaseModel(object):
         self.data_targets = data_pl[C.BATCH_TARGET]
         self.data_seq_len = data_pl[C.BATCH_SEQ_LEN]
         self.data_ids = data_pl[C.BATCH_ID]
+
+        # It is always 1 when we report the loss.
+        if not self.is_training:
+            self.kld_weight = 1.0
 
         # Defines how to employ structured latent variables to make predictions.
         # Options are
@@ -62,8 +69,6 @@ class BaseModel(object):
         self.summary_update = None
 
         self.loss_summary = None
-        self.learning_rate_summary = None  # Only used in training mode.
-        self.gradient_norm_summary = None  # Only used in training mode.
 
         # Hard-coded parameters.
         self.JOINT_SIZE = 9
@@ -108,6 +113,16 @@ class BaseModel(object):
             else:
                 raise Exception("Invalid learning rate type")
 
+        # Annealing input dropout rate or using fixed rate.
+        self.input_dropout_rate = None
+        if config["input_layer"] is not None:
+            if isinstance(config["input_layer"].get("dropout_rate", 0), dict):
+                self.input_dropout_rate = get_decay_variable(global_step=self.global_step,
+                                                             config=config["input_layer"].get("dropout_rate"),
+                                                             name="input_dropout_rate")
+            elif config["input_layer"].get("dropout_rate", 0) > 0:
+                self.input_dropout_rate = config["input_layer"].get("dropout_rate")
+
     def build_graph(self):
         self.build_network()
 
@@ -124,6 +139,7 @@ class BaseModel(object):
             targets = self.prediction_targets
             seq_len = tf.shape(self.outputs_tensor)[1]
 
+        batch_size = tf.shape(predictions)[0]
         targets_pose = targets[:, :, :self.HUMAN_SIZE]
         predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
 
@@ -148,6 +164,18 @@ class BaseModel(object):
                 self.loss = per_joint_loss
             else:
                 raise Exception("Unknown angle loss.")
+
+        if self.rot_matrix_regularization:
+            with tf.name_scope("rot_matrix_regularization"):
+                rot_matrix = tf.reshape(predictions, [-1, self.NUM_JOINTS, 3, 3])
+
+                transposed = tf.matmul(rot_matrix, tf.matrix_transpose(rot_matrix))
+                eyes = tf.reshape(tf.eye(3, 3, [batch_size, seq_len, self.NUM_JOINTS]), [-1, self.NUM_JOINTS, 3, 3])
+
+                rot_loss = tf.norm(transposed - eyes, ord='fro', axis=(-1, -2))
+                rot_loss = tf.reshape(rot_loss, [batch_size, seq_len, self.NUM_JOINTS])
+                self.rot_matrix_loss = tf.reduce_mean(rot_loss)
+                self.loss += self.rot_matrix_loss
 
     def optimization_routines(self):
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
@@ -272,7 +300,7 @@ class BaseModel(object):
                 current_layer = tf.layers.dense(inputs=current_layer, units=hidden_size, activation=self.activation_fn)
 
         with tf.variable_scope('out_dense_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-            prediction = tf.layers.dense(inputs=current_layer, units=output_size, activation=None)
+            prediction = tf.layers.dense(inputs=current_layer, units=output_size, activation=self.prediction_activation)
         return prediction
 
     def summary_routines(self):
@@ -280,10 +308,22 @@ class BaseModel(object):
         # prepended to summary name if needed.
         self.loss_summary = tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
 
-        # Keep track of the learning rate
+        if self.rot_matrix_regularization:
+            tf.summary.scalar(self.mode + "/rot_matrix_reg",
+                              self.rot_matrix_loss,
+                              collections=[self.mode + "/model_summary"])
         if self.is_training:
-            self.learning_rate_summary = tf.summary.scalar(self.mode+"/learning_rate", self.learning_rate, collections=[self.mode+"/model_summary"])
-            self.gradient_norm_summary = tf.summary.scalar(self.mode+"/gradient_norms", self.gradient_norms, collections=[self.mode+"/model_summary"])
+            tf.summary.scalar(self.mode + "/learning_rate",
+                              self.learning_rate,
+                              collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/gradient_norms",
+                              self.gradient_norms,
+                              collections=[self.mode + "/model_summary"])
+
+        if self.input_dropout_rate is not None and self.is_training:
+            tf.summary.scalar(self.mode + "/input_dropout_rate",
+                              self.input_dropout_rate,
+                              collections=[self.mode + "/model_summary"])
 
         self.summary_update = tf.summary.merge_all(self.mode+"/model_summary")
 
@@ -505,10 +545,10 @@ class Wavenet(BaseModel):
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'],
                                                                   self.cnn_layer_config['dilation_size'])
         self.inputs_hidden = self.prediction_inputs
-        if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
+        if self.input_dropout_rate is not None:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 self.inputs_hidden = tf.layers.dropout(self.inputs_hidden,
-                                                       rate=self.input_layer_config.get("dropout_rate"),
+                                                       rate=self.input_dropout_rate,
                                                        seed=self.config["seed"], training=self.is_training)
 
         with tf.variable_scope("encoder", reuse=self.reuse):
@@ -594,8 +634,8 @@ class Wavenet(BaseModel):
                                                      activation=self.activation_fn)
 
             with tf.variable_scope('out_conv1d_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-                prediction = tf.layers.conv1d(inputs=current_layer, kernel_size=1, padding='valid',
-                                              filters=output_size, dilation_rate=1, activation=None)
+                prediction = tf.layers.conv1d(inputs=current_layer, kernel_size=1, padding='valid', filters=output_size,
+                                              dilation_rate=1, activation=self.prediction_activation)
 
         elif out_layer_type == C.LAYER_TCN:
             kernel_size = self.output_layer_config.get('filter_size', 0)
@@ -618,7 +658,7 @@ class Wavenet(BaseModel):
                                                            num_filters=output_size,
                                                            kernel_size=kernel_size,
                                                            dilation=1,
-                                                           activation_fn=None,
+                                                           activation_fn=self.prediction_activation,
                                                            num_extra_conv=0,
                                                            use_gate=self.use_gate,
                                                            use_residual=self.use_residual,
@@ -827,10 +867,10 @@ class STCN(Wavenet):
         self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'],
                                                                   self.cnn_layer_config['dilation_size'])
         self.inputs_hidden = self.prediction_inputs
-        if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
+        if self.input_dropout_rate is not None:
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 self.inputs_hidden = tf.layers.dropout(self.inputs_hidden,
-                                                       rate=self.input_layer_config.get("dropout_rate"),
+                                                       rate=self.input_dropout_rate,
                                                        seed=self.config["seed"],
                                                        training=self.is_training)
 
@@ -949,11 +989,10 @@ class RNN(BaseModel):
     def build_input_layer(self):
         current_layer = self.prediction_inputs
         if self.input_layer_config is not None:
-            dropout_rate = self.input_layer_config.get("dropout_rate", 0)
-            if dropout_rate > 0:
+            if self.input_dropout_rate is not None:
                 with tf.variable_scope('input_dropout', reuse=self.reuse):
                     current_layer = tf.layers.dropout(current_layer,
-                                                      rate=self.input_layer_config.get("dropout_rate"),
+                                                      rate=self.input_dropout_rate,
                                                       seed=self.config["seed"],
                                                       training=self.is_training)
             hidden_size = self.input_layer_config.get('size', 0)

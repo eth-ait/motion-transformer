@@ -140,8 +140,12 @@ class TFRecordMotionDataset(Dataset):
     def tf_data_normalization(self):
         # Applies normalization.
         if self.normalize:
-            self.tf_data = self.tf_data.map(functools.partial(self.normalize_zero_mean_unit_variance_channel,
-                                                              key="poses"), num_parallel_calls=self.num_parallel_calls)
+            self.tf_data = self.tf_data.map(
+                functools.partial(self.normalize_zero_mean_unit_variance_channel, key="poses"),
+                num_parallel_calls=self.num_parallel_calls)
+        else:  # Some models require the feature size.
+            self.tf_data = self.tf_data.map(functools.partial(self.__pp_set_feature_size),
+                                            num_parallel_calls=self.num_parallel_calls)
 
     def unnormalize_zero_mean_unit_variance_all(self, sample_dict, key):
         if self.normalize:
@@ -168,6 +172,11 @@ class TFRecordMotionDataset(Dataset):
 
     def data_summary(self):
         pass
+
+    def __pp_set_feature_size(self, sample):
+        seq_len = sample["poses"].get_shape().as_list()[0]
+        sample["poses"].set_shape([seq_len, self.mean_channel.shape[0]])
+        return sample
 
     def __pp_filter(self, sample):
         return tf.shape(sample["poses"])[0] >= self.length_threshold
