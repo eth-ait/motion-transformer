@@ -240,6 +240,8 @@ if __name__ == '__main__':
     test_window_size = 160
     test_window_stride = 100
 
+    raise ValueError("are you sure you want to start the prepare script?? This might take some time.")
+
     # gather all file names to create the training/val/test splits
     # this assumes the files are not empty
     # we're sorthing so that the order is not dependent on the OS

@@ -11,6 +11,8 @@ from constants import Constants as C
 from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
 from tf_rnn_cells import LatentCell
+from tf_loss_quat import quaternion_norm
+from tf_loss_quat import quaternion_loss
 
 
 class BaseModel(object):
@@ -32,6 +34,7 @@ class BaseModel(object):
         self.force_valid_rot = config.get('force_valid_rot', False)
         self.output_layer_config = config.get('output_layer', dict())
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
+        self.use_quat = config.get('use_quat', False)
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -66,7 +69,7 @@ class BaseModel(object):
         self.gradient_norm_summary = None  # Only used in training mode.
 
         # Hard-coded parameters.
-        self.JOINT_SIZE = 9
+        self.JOINT_SIZE = 4 if self.use_quat else 9
         self.NUM_JOINTS = 15
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE
@@ -128,26 +131,35 @@ class BaseModel(object):
         predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
 
         with tf.name_scope("loss_angles"):
-            diff = targets_pose - predictions_pose
-            if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                pose_loss = tf.reduce_mean(tf.square(diff))
-                tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
-                self.loss = pose_loss
-            elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_joint_loss = tf.reduce_mean(per_joint_loss)
-                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
-                self.loss = per_joint_loss
-            elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-                per_joint_loss = tf.reduce_mean(per_joint_loss)
-                tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
-                self.loss = per_joint_loss
+            if self.use_quat:
+                # TODO(kamanuel) for now use the loss that is equivalent to log(R*R^T)
+                loss_type = "quat_dev_identity"
+                loss_per_frame = quaternion_loss(targets_pose, predictions_pose, loss_type)
+                loss_per_sample = tf.reduce_sum(loss_per_frame, axis=-1)
+                loss_per_batch = tf.reduce_mean(loss_per_sample)
+                tf.summary.scalar(self.mode + "/pose_loss" + loss_type, loss_per_batch, collections=[self.mode + "/model_summary"])
+                self.loss = loss_per_batch
             else:
-                raise Exception("Unknown angle loss.")
+                diff = targets_pose - predictions_pose
+                if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
+                    pose_loss = tf.reduce_mean(tf.square(diff))
+                    tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
+                    self.loss = pose_loss
+                elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
+                    per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                    per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                    per_joint_loss = tf.reduce_mean(per_joint_loss)
+                    tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                    self.loss = per_joint_loss
+                elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
+                    per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                    per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                    per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                    per_joint_loss = tf.reduce_mean(per_joint_loss)
+                    tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
+                    self.loss = per_joint_loss
+                else:
+                    raise Exception("Unknown angle loss.")
 
     def optimization_routines(self):
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
@@ -220,16 +232,20 @@ class BaseModel(object):
             self.outputs_tensor = pose_prediction
             self.outputs = self.outputs_tensor
 
-    def build_valid_rot_layer(self, rotmats):
+    def get_closest_rotmats(self, rotmats):
         """
-        Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
+         Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
         it computes the SVD as R = USV' and sets R_closest = UV'.
+
+        WARNING: tf.svd is very slow - use at your own peril.
+
         Args:
             rotmats: A tensor of shape (N, seq_length, n_joints*9) containing the candidate rotation matrices.
 
         Returns:
             A tensor of the same shape as `rotmats` containing the closest rotation matrices.
         """
+        assert not self.use_quat
         if self.force_valid_rot:
             # reshape to (N, seq_len, n_joints, 3, 3)
             seq_length = tf.shape(rotmats)[1]
@@ -251,6 +267,52 @@ class BaseModel(object):
             # return tf.reshape(closest_rot, [-1, seq_length, dof])
         else:
             return rotmats
+
+    def normalize_quaternions(self, quats):
+        """
+        Normalizes the input quaternions to have unit length.
+        Args:
+            quats: A tensor of shape (..., k*4) or (..., 4).
+
+        Returns:
+            A tensor of the same shape as the input but with unit length quaternions.
+        """
+        assert self.use_quat
+        last_dim = quats.get_shape()[-1].value
+        ori_shape = tf.shape(quats)
+        if last_dim != 4:
+            assert last_dim % 4 == 0
+            new_shape = tf.concat([ori_shape[:-1], [last_dim // 4, 4]], axis=0)
+            quats = tf.reshape(quats, new_shape)
+        else:
+            quats = quats
+
+        quats_normalized = tf.linalg.l2_normalize(quats, axis=-1)
+        quats_normalized = tf.reshape(quats_normalized, ori_shape)
+        return quats_normalized
+
+    def build_valid_rot_layer(self, input_):
+        """
+        Ensures that the given rotations are valid. Can handle quaternion and rotation matrix input.
+        Args:
+            input_: A tensor of shape (N, seq_length, n_joints*dof) containing the candidate orientations. For
+              quaternions `dof` is expected to be 4, otherwise it's expected to be 3*3.
+
+        Returns:
+            A tensor of the same shape as `input_` containing valid rotations.
+        """
+        if self.use_quat:
+            # activation function to map to [-1, 1]
+            input_t = tf.tanh(input_)
+
+            # monitor the average norm of the quaternions in tensorboard
+            qn = tf.reduce_mean(quaternion_norm(input_t))
+            tf.summary.scalar(self.mode + "/quat_norm_before", qn, collections=[self.mode + "/model_summary"])
+
+            # now normalize
+            return self.normalize_quaternions(input_t)
+        else:
+            return self.get_closest_rotmats(input_)
 
     def build_predictions(self, inputs, output_size, name):
         """

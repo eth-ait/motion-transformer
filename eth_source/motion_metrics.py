@@ -236,7 +236,7 @@ class MetricsEngine(object):
     Compute and aggregate various motion metrics. It keeps track of the metric values per frame, so that we can
     evaluate them for different sequence lengths.
     """
-    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, which=None, pck_threshs=None, is_sparse=True):
+    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, rep, which=None, pck_threshs=None, is_sparse=True):
         """
         Initializer.
         Args:
@@ -244,6 +244,7 @@ class MetricsEngine(object):
             target_lengths: List of target sequence lengths that should be evaluated.
             force_valid_rot: If True, the input rotation matrices might not be valid rotations and so it will find
               the closest rotation before computing the metrics.
+            rep: Which representation to use, "quat" or "rot_mat".
             which: Which metrics to compute. Options are [positional, joint_angle, pck, euler], defaults to all.
             pck_threshs: List of thresholds for PCK evaluations.
             is_sparse:  If True, `n_joints` is assumed to be 15, otherwise the full SMPL skeleton is assumed. If it is
@@ -258,6 +259,8 @@ class MetricsEngine(object):
         self.all_summaries_op = None
         self.n_samples = 0
         self._should_call_reset = False  # a guard to avoid stupid mistakes
+        self.rep = rep
+        assert self.rep in ["rot_mat", "quat"]
         assert is_sparse, "at the moment we expect sparse input; if that changes, " \
                           "the metrics values may not be comparable anymore"
 
@@ -317,7 +320,7 @@ class MetricsEngine(object):
                 feed_dict[pl] = val
         return feed_dict
 
-    def compute(self, predictions, targets, reduce_fn="mean"):
+    def compute_rotmat(self, predictions, targets, reduce_fn="mean"):
         """
         Compute the chosen metrics. Predictions and targets are assumed to be in rotation matrix format.
         Args:
@@ -330,8 +333,8 @@ class MetricsEngine(object):
             of shape (n, seq_length). `reduce_fn` is only applied to metrics where it makes sense, i.e. not to PCK
             and euler angle differences.
         """
-        assert predictions.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
-        assert targets.shape[-1] % 9 == 0, "currently we can only handle rotation matrices"
+        assert predictions.shape[-1] % 9 == 0, "predictions are not rotation matrices"
+        assert targets.shape[-1] % 9 == 0, "targets are not rotation matrices"
         assert reduce_fn in ["mean", "sum"]
         assert not self._should_call_reset, "you should reset the state of this class after calling `finalize`"
         dof = 9
@@ -406,6 +409,55 @@ class MetricsEngine(object):
 
         return metrics
 
+    def compute_quat(self, predictions, targets, reduce_fn="mean"):
+        """
+        Compute the chosen metrics. Predictions and targets are assumed to be quaternions.
+        Args:
+            predictions: An np array of shape (n, seq_length, n_joints*4)
+            targets: An np array of the same shape as `predictions`
+            reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
+
+        Returns:
+            A dictionary {metric_name -> values} where the values are given per batch entry and frame as an np array
+            of shape (n, seq_length). `reduce_fn` is only applied to metrics where it makes sense, i.e. not to PCK
+            and euler angle differences.
+        """
+        assert predictions.shape[-1] % 4 == 0, "predictions are not quaternions"
+        assert targets.shape[-1] % 4 == 0, "targets are not quaternions"
+        assert reduce_fn in ["mean", "sum"]
+        assert not self._should_call_reset, "you should reset the state of this class after calling `finalize`"
+        dof = 4
+        batch_size = predictions.shape[0]
+        seq_length = predictions.shape[1]
+
+        # for simplicity we just convert quaternions to rotation matrices
+        pred_q = quaternion.from_float_array(np.reshape(predictions, [batch_size, seq_length, -1, dof]))
+        targ_q = quaternion.from_float_array(np.reshape(targets, [batch_size, seq_length, -1, dof]))
+        pred_rots = quaternion.as_rotation_matrix(pred_q)
+        targ_rots = quaternion.as_rotation_matrix(targ_q)
+
+        preds = np.reshape(pred_rots, [batch_size, seq_length, -1])
+        targs = np.reshape(targ_rots, [batch_size, seq_length, -1])
+        return self.compute_rotmat(preds, targs, reduce_fn)
+
+    def compute(self, predictions, targets, reduce_fn="mean"):
+        """
+        Compute the chosen metrics. Predictions and targets can be in rotation matrix or quaternion format.
+        Args:
+            predictions: An np array of shape (n, seq_length, n_joints*dof)
+            targets: An np array of the same shape as `predictions`
+            reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
+
+        Returns:
+            A dictionary {metric_name -> values} where the values are given per batch entry and frame as an np array
+            of shape (n, seq_length). `reduce_fn` is only applied to metrics where it makes sense, i.e. not to PCK
+            and euler angle differences.
+        """
+        if self.rep == "rot_mat":
+            return self.compute_rotmat(predictions, targets, reduce_fn)
+        else:
+            return self.compute_quat(predictions, targets, reduce_fn)
+
     def aggregate(self, new_metrics):
         """
         Aggregate the metrics.
@@ -431,7 +483,7 @@ class MetricsEngine(object):
         """
         Computes the metric values and aggregates them directly.
         Args:
-            predictions: An np array of shape (n, seq_length, n_joints*9)
+            predictions: An np array of shape (n, seq_length, n_joints*dof)
             targets: An np array of the same shape as `predictions`
             reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
         """

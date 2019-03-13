@@ -45,7 +45,7 @@ tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the ou
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
 tf.app.flags.DEFINE_integer("print_every", 100, "How often to log training error.")
-tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the test set.")
+tf.app.flags.DEFINE_integer("test_every", 1000, "How often to compute error on the validation set.")
 tf.app.flags.DEFINE_boolean("sample", False, "Set to True for sampling.")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
@@ -59,6 +59,7 @@ tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or 
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the evaluation loss improves.")
+tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
 
 args = tf.app.flags.FLAGS
 
@@ -74,13 +75,19 @@ def create_model(session):
     # Global step variable.
     global_step = tf.Variable(1, trainable=False, name='global_step')
 
-    train_data_path = os.path.join(os.environ["AMASS_TRAIN"], "amass-?????-of-?????")
-    valid_data_path = os.path.join(os.environ["AMASS_VALID"], "amass-?????-of-?????")
-    test_data_path = os.path.join(os.environ["AMASS_TEST"], "amass-?????-of-?????")
-    meta_data_path = os.environ["AMASS_META"]
+    use_quat = args.use_quat
+    if use_quat:
+        assert args.no_normalization, 'we normalize quaternions on the output, so it does not make sense ' \
+                                      'to use normalization'
+
+    rep = "quat" if use_quat else "rotmat"
+    train_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "amass-?????-of-?????")
+    valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation", "amass-?????-of-?????")
+    test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
+    meta_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "stats.npz")
     train_dir = os.environ["AMASS_EXPERIMENTS"]
 
-    if args.force_valid_rot:
+    if args.force_valid_rot:  # this is only used when using rotation matrices
         assert args.no_normalization, 'normalization does not make sense when enforcing valid rotations'
 
     if args.model_type == "seq2seq":
@@ -272,6 +279,7 @@ def get_rnn_config(args):
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
+    config['use_quat'] = args.use_quat
 
     model_exp_name = ""
     if args.model_type == "rnn":
@@ -286,10 +294,11 @@ def get_rnn_config(args):
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
 
-    experiment_name_format = "{}-{}{}-{}-{}{}-b{}{}-{}@{}{}-in{}_out{}{}"
+    experiment_name_format = "{}-{}{}-{}-{}-{}{}-b{}{}-{}@{}{}-in{}_out{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
+                                                    "quat" if args.use_quat else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
@@ -363,6 +372,7 @@ def get_stcn_config(args):
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
+    config['use_quat'] = args.use_quat
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -381,10 +391,11 @@ def get_stcn_config(args):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}{}{}-b{}-{}x{}@{}{}-in{}_out{}"
+    experiment_name_format = "{}-{}{}-{}-{}-{}{}{}-b{}-{}x{}@{}{}-in{}_out{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
+                                                    "quat" if args.use_quat else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     model_exp_name,
@@ -429,6 +440,7 @@ def get_seq2seq_config(args):
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
+    config['use_quat'] = args.use_quat
 
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
@@ -440,10 +452,11 @@ def get_seq2seq_config(args):
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
-    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
+                                                    "quat" if args.use_quat else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['batch_size'],
                                                     args.seq_length_in,
@@ -477,6 +490,7 @@ def train():
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
                                        pck_threshs=pck_threshs,
+                                       rep="quat" if train_model.use_quat else "rot_mat",
                                        force_valid_rot=True)
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()
