@@ -34,13 +34,14 @@ tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
 tf.app.flags.DEFINE_string("optimizer", "adam", "Optimization algorithm: adam or sgd.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
-tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
-tf.app.flags.DEFINE_integer("num_layers", 1, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder. 25 fps")
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
+tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
+tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
+tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
 
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -57,9 +58,11 @@ tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire join
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
+tf.app.flags.DEFINE_boolean("rot_matrix_regularization", False, "If set, apply regularization term.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
-tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the evaluation loss improves.")
 tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
+tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
 
 args = tf.app.flags.FLAGS
 
@@ -82,13 +85,18 @@ def create_model(session):
 
     rep = "quat" if use_quat else "rotmat"
     train_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "amass-?????-of-?????")
-    valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation", "amass-?????-of-?????")
+    if args.dynamic_validation_split:
+        valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation_dynamic", "amass-?????-of-?????")
+    else:
+        valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation", "amass-?????-of-?????")
     test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
     meta_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "stats.npz")
     train_dir = os.environ["AMASS_EXPERIMENTS"]
 
-    if args.force_valid_rot:  # this is only used when using rotation matrices
-        assert args.no_normalization, 'normalization does not make sense when enforcing valid rotations'
+    if args.force_valid_rot:
+        assert args.no_normalization, 'Normalization does not make sense when enforcing valid rotations.'
+    if not args.no_normalization:
+        assert not args.rot_matrix_regularization, "The inputs and outputs must be between -1 and 1."
 
     if args.model_type == "seq2seq":
         model_cls, config, experiment_name = get_seq2seq_config(args)
@@ -111,7 +119,10 @@ def create_model(session):
     else:
         raise Exception("Unknown model type.")
 
-    experiment_name += '{}-norm'.format('-no' if args.no_normalization else '')
+    # Naming.
+    experiment_name += '{}_norm'.format('-no' if args.no_normalization else '')
+    if args.rot_matrix_regularization:
+        experiment_name += "rot_loss"
 
     with tf.name_scope("training_data"):
         windows_length = args.seq_length_in + args.seq_length_out
@@ -125,15 +136,17 @@ def create_model(session):
         train_pl = train_data.get_tf_samples()
 
     assert windows_length == 160, "TFRecords are hardcoded with length of 160."
+    if not args.dynamic_validation_split:
+        windows_length = 0
     with tf.name_scope("validation_data"):
-        eval_data = TFRecordMotionDataset(data_path=valid_data_path,
-                                          meta_data_path=meta_data_path,
-                                          batch_size=args.batch_size,
-                                          shuffle=False,
-                                          extract_windows_of=0,
-                                          num_parallel_calls=16,
-                                          normalize=not args.no_normalization)
-        eval_pl = eval_data.get_tf_samples()
+        valid_data = TFRecordMotionDataset(data_path=valid_data_path,
+                                           meta_data_path=meta_data_path,
+                                           batch_size=args.batch_size*2,
+                                           shuffle=False,
+                                           extract_windows_of=windows_length,
+                                           num_parallel_calls=16,
+                                           normalize=not args.no_normalization)
+        valid_pl = valid_data.get_tf_samples()
 
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
@@ -155,13 +168,13 @@ def create_model(session):
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
-        eval_model = model_cls(
+        valid_model = model_cls(
             config=config,
-            data_pl=eval_pl,
+            data_pl=valid_pl,
             mode=C.SAMPLE,
             reuse=True,
             dtype=tf.float32)
-        eval_model.build_graph()
+        valid_model.build_graph()
 
     with tf.name_scope(C.TEST):
         test_model = model_cls(
@@ -189,13 +202,13 @@ def create_model(session):
 
     train_model.optimization_routines()
     train_model.summary_routines()
-    eval_model.summary_routines()
+    valid_model.summary_routines()
 
     # Create saver.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
 
-    models = (train_model, eval_model, test_model)
-    data = (train_data, eval_data, test_data)
+    models = (train_model, valid_model, test_model)
+    data = (train_data, valid_data, test_data)
 
     if args.experiment_id is None:
         print("Creating model with fresh parameters.")
@@ -248,9 +261,9 @@ def get_rnn_config(args):
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['cell_type'] = C.LayerNormLSTM
-    config['cell']['cell_size'] = 1024
-    config['cell']['cell_num_layers'] = 1
+    config['cell']['cell_type'] = args.cell_type
+    config['cell']['cell_size'] = args.cell_size
+    config['cell']['cell_num_layers'] = args.cell_layers
     if args.model_type == 'vrnn':
         config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
         config['cell']['type'] = C.LATENT_GAUSSIAN
@@ -279,6 +292,7 @@ def get_rnn_config(args):
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
+    config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['use_quat'] = args.use_quat
 
     model_exp_name = ""
@@ -324,11 +338,11 @@ def get_stcn_config(args):
     config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [128, 64, 32, 16, 8, 4, 2]
+    config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_units"] = 64
     config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
@@ -340,17 +354,17 @@ def get_stcn_config(args):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = args.input_dropout_rate
+    config['input_layer']['dropout_rate'] = args.input_dropout_rate  # dict(values=[0.1, 0.5, 0.1], step=5e3, type=C.DECAY_PC)
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 128
+    config['output_layer']['size'] = 64
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 128
+    config['cnn_layer']['num_filters'] = 64
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU
@@ -373,6 +387,7 @@ def get_stcn_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
     config['use_quat'] = args.use_quat
+    config['rot_matrix_regularization'] = args.rot_matrix_regularization
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -399,7 +414,7 @@ def get_stcn_config(args):
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     model_exp_name,
-                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
+                                                    "-idrop_" + str(input_dropout) if not isinstance(input_dropout, dict) and input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cnn_layer']['num_encoder_layers'],
                                                     config['cnn_layer']['num_filters'],
@@ -424,8 +439,8 @@ def get_seq2seq_config(args):
     config['architecture'] = args.architecture
     config['source_seq_len'] = args.seq_length_in
     config['target_seq_len'] = args.seq_length_out
-    config['rnn_size'] = args.size
-    config['num_layers'] = args.num_layers
+    config['rnn_size'] = args.cell_size
+    config['num_layers'] = args.cell_layers
     config['grad_clip_by_norm'] = args.max_gradient_norm
     config['batch_size'] = args.batch_size
     config['learning_rate'] = args.learning_rate
@@ -440,6 +455,7 @@ def get_seq2seq_config(args):
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
+    config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['use_quat'] = args.use_quat
 
     if args.model_type == "seq2seq":
@@ -464,8 +480,8 @@ def get_seq2seq_config(args):
                                                     args.architecture,
                                                     '' if args.feed_error_to_encoder else 'no',
                                                     config['autoregressive_input'],
-                                                    args.num_layers,
-                                                    args.size,
+                                                    args.cell_layers,
+                                                    args.cell_size,
                                                     'residual_vel' if args.residual_velocities else 'not_residual_vel',
                                                     '-force_rot' if args.force_valid_rot else '')
     return model_cls, config, experiment_name
@@ -480,8 +496,8 @@ def train():
 
         # Create the model
         models, data, saver, global_step, experiment_dir = create_model(sess)
-        train_model, eval_model, test_model = models
-        train_data, eval_data, test_data = data
+        train_model, valid_model, test_model = models
+        train_data, valid_data, test_data = data
 
         # Create metrics engine including summaries
         # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
@@ -506,7 +522,7 @@ def train():
         # Early stopping configuration.
         early_stopping_metric_key = C.METRIC_JOINT_ANGLE
         improvement_ratio = 0.01
-        best_eval_loss = np.inf
+        best_valid_loss = np.inf
         num_steps_wo_improvement = 0
         stop_signal = False
 
@@ -516,16 +532,17 @@ def train():
         epoch = 0
         train_loss = 0.0
         train_iter = train_data.get_iterator()
-        eval_iter = eval_data.get_iterator()
+        valid_iter = valid_data.get_iterator()
         test_iter = test_data.get_iterator()
 
         print("Running Training Loop.")
         # Assuming that we use initializable iterators.
         sess.run(train_iter.initializer)
-        sess.run(eval_iter.initializer)
+        sess.run(valid_iter.initializer)
 
         def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
             # make a full pass on the validation or test dataset and compute the metrics
+            _start_time = time.perf_counter()
             _metrics_engine.reset()
             sess.run(_eval_iter.initializer)
             try:
@@ -540,7 +557,7 @@ def train():
             except tf.errors.OutOfRangeError:
                 # finalize the computation of the metrics
                 final_metrics = _metrics_engine.get_final_metrics()
-            return final_metrics
+            return final_metrics, time.perf_counter() - _start_time
 
         while not stop_signal:
             # Training.
@@ -558,7 +575,7 @@ def train():
                         train_loss_avg = train_loss / args.print_every
                         time_elapsed = time_counter/args.print_every
                         train_loss, time_counter = 0., 0.
-                        print("Train [{:04d}] \t Loss: {:.3f} \t time/batch = {:.3f}".format(step,
+                        print("Train [{:04d}] \t Loss: {:.3f} \t time/batch: {:.3f}".format(step,
                                                                                              train_loss_avg,
                                                                                              time_elapsed))
                     # Learning rate decay
@@ -572,32 +589,34 @@ def train():
                         stop_signal = True
                         break
 
-            # Evaluation: make a full pass on the evaluation data.
-            eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
+            # Evaluation: make a full pass on the validation split.
+            valid_metrics, valid_time = evaluate_model(valid_model, valid_iter, metrics_engine)
             # print an informative string to the console
-            print("Eval [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(eval_metrics)))
+            print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
+                                                                      metrics_engine.get_summary_string(valid_metrics),
+                                                                      valid_time))
             # get the summary feed dict
-            summary_feed = metrics_engine.get_summary_feed_dict(eval_metrics)
+            summary_feed = metrics_engine.get_summary_feed_dict(valid_metrics)
             # get the writable summaries
             summaries = sess.run(metrics_engine.all_summaries_op, feed_dict=summary_feed)
             # write to log
             test_writer.add_summary(summaries, step)
             # reset the computation of the metrics
             metrics_engine.reset()
-            # reset the evaluation iterator
-            sess.run(eval_iter.initializer)
+            # reset the validation iterator
+            sess.run(valid_iter.initializer)
 
             # Early stopping check.
-            eval_loss = eval_metrics[early_stopping_metric_key].sum()
-            if (best_eval_loss - eval_loss) > np.abs(best_eval_loss*improvement_ratio):
+            valid_loss = valid_metrics[early_stopping_metric_key].sum()
+            if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
                 num_steps_wo_improvement = 0
             else:
                 num_steps_wo_improvement += 1
             if num_steps_wo_improvement == args.early_stopping_tolerance:
                 stop_signal = True
 
-            if eval_loss <= best_eval_loss:
-                best_eval_loss = eval_loss
+            if valid_loss <= best_valid_loss:
+                best_valid_loss = valid_loss
                 print("Saving the model to {}".format(experiment_dir))
                 saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step-1)
 
@@ -605,13 +624,16 @@ def train():
         load_latest_checkpoint(sess, saver, experiment_dir)
 
         print("Evaluating validation set ...")
-        eval_metrics = evaluate_model(eval_model, eval_iter, metrics_engine)
-        print("Validation [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(eval_metrics)))
+        valid_metrics, valid_time = evaluate_model(valid_model, valid_iter, metrics_engine)
+        print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
+                                                                  metrics_engine.get_summary_string(valid_metrics),
+                                                                  valid_time))
 
         print("Evaluating test set ...")
-        test_metrics = evaluate_model(test_model, test_iter, metrics_engine)
-        print("Test [{:04d}] \t {}".format(step - 1, metrics_engine.get_summary_string(test_metrics)))
-
+        test_metrics, test_time = evaluate_model(test_model, test_iter, metrics_engine)
+        print("Test [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
+                                                                 metrics_engine.get_summary_string(test_metrics),
+                                                                 test_time))
         # create logger
         gLogger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
                                     workbook_name="motion_modelling_experiments")
@@ -621,11 +643,11 @@ def train():
 
         # gather the metrics
         for t in metrics_engine.target_lengths:
-            glog_eval_metrics = metrics_engine.get_summary_glogger(eval_metrics, until=t)
+            glog_valid_metrics = metrics_engine.get_summary_glogger(valid_metrics, until=t)
             glog_test_metrics = metrics_engine.get_summary_glogger(test_metrics, is_validation=False, until=t)
 
             glog_data["Comment"] = ["until_{}".format(t)]
-            glog_data = {**glog_data, **glog_eval_metrics, **glog_test_metrics}
+            glog_data = {**glog_data, **glog_valid_metrics, **glog_test_metrics}
             gLogger.append_row(glog_data, sheet_name="until_{}".format(t))
 
         print("Finished.")

@@ -280,8 +280,8 @@ def get_decay_variable(global_step, config, name=None):
     Returns:
     """
     if config["type"] == C.DECAY_PC:
-        boundaries = (np.int32(np.arange(*config["borders"])[1:])).tolist()
         values = np.arange(*config["values"]).tolist()
+        boundaries = np.int32(np.arange(0, config["step"]*len(values), config["step"])[1:]).tolist()
         return tf.train.piecewise_constant(global_step, boundaries, values, name)
     elif config["type"] == C.DECAY_LINEAR:
         start, end, increment = config["values"]
