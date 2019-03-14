@@ -46,7 +46,7 @@ experiment_list = [
     '--angle_loss joint_sum --output_layer_size 64 --cell_type lstm --cell_size 1024 --cell_layers 1 '
     '--joint_prediction_model fk_joints --residual_velocities --batch_size 64 --model_type rnn '
     '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
-    '--use_quat --no_normalization --dynamic_validation_split']
+    '--use_quat --no_normalization --dynamic_validation_split',
 
 
     'python amass_training.py --dynamic_validation_split '

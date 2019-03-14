@@ -21,6 +21,7 @@ from constants import Constants as C
 import glob
 import json
 from motion_metrics import MetricsEngine
+from visualize import Visualizer
 
 
 # Learning
@@ -365,8 +366,8 @@ def get_stcn_config(args):
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
     config['output_layer']['size'] = 64
-    config['output_layer']['type'] = C.LAYER_CONV1
-    config['output_layer']['filter_size'] = 1
+    config['output_layer']['type'] = C.LAYER_TCN
+    config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
@@ -550,8 +551,9 @@ def train():
         sess.run(train_iter.initializer)
         sess.run(valid_iter.initializer)
 
-        def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
+        def evaluate_model(_eval_model, _eval_iter, _metrics_engine, _return_results=False):
             # make a full pass on the validation or test dataset and compute the metrics
+            _eval_result = dict()
             _start_time = time.perf_counter()
             _metrics_engine.reset()
             sess.run(_eval_iter.initializer)
@@ -560,14 +562,22 @@ def train():
                     # TODO(kamanuel) should we compute the validation loss here as well, if so how?
                     # get the predictions and ground truth values
                     prediction, targets, seed_sequence, data_id = _eval_model.sampled_step(sess)
+
                     # unnormalize - if normalization is not configured, these calls do nothing
                     p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
                     t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
                     _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+
+                    if _return_results:
+                        s = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": seed_sequence}, "poses")
+                        # Store each test sample and corresponding predictions with the unique sample IDs.
+                        for k in range(prediction.shape[0]):
+                            _eval_result[data_id[k].decode("utf-8")] = (p["poses"][k], t["poses"][k], s["poses"][k])
+
             except tf.errors.OutOfRangeError:
                 # finalize the computation of the metrics
                 final_metrics = _metrics_engine.get_final_metrics()
-            return final_metrics, time.perf_counter() - _start_time
+            return final_metrics, time.perf_counter() - _start_time, _eval_result
 
         while not stop_signal:
             # Training.
@@ -600,7 +610,7 @@ def train():
                         break
 
             # Evaluation: make a full pass on the validation split.
-            valid_metrics, valid_time = evaluate_model(valid_model, valid_iter, metrics_engine)
+            valid_metrics, valid_time, _ = evaluate_model(valid_model, valid_iter, metrics_engine)
             # print an informative string to the console
             print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
                                                                       metrics_engine.get_summary_string(valid_metrics),
@@ -634,13 +644,13 @@ def train():
         load_latest_checkpoint(sess, saver, experiment_dir)
 
         print("Evaluating validation set ...")
-        valid_metrics, valid_time = evaluate_model(valid_model, valid_iter, metrics_engine)
+        valid_metrics, valid_time, _ = evaluate_model(valid_model, valid_iter, metrics_engine)
         print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
                                                                   metrics_engine.get_summary_string(valid_metrics),
                                                                   valid_time))
 
         print("Evaluating test set ...")
-        test_metrics, test_time = evaluate_model(test_model, test_iter, metrics_engine)
+        test_metrics, test_time, _ = evaluate_model(test_model, test_iter, metrics_engine)
         print("Test [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
                                                                  metrics_engine.get_summary_string(test_metrics),
                                                                  test_time))
@@ -651,7 +661,7 @@ def train():
                      'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                      'Comment': [""]}
 
-        # gather the metrics
+        # gather the metrics and store them in the Google Sheet
         for t in metrics_engine.target_lengths:
             glog_valid_metrics = metrics_engine.get_summary_glogger(valid_metrics, until=t)
             glog_test_metrics = metrics_engine.get_summary_glogger(test_metrics, is_validation=False, until=t)
@@ -659,6 +669,16 @@ def train():
             glog_data["Comment"] = ["until_{}".format(t)]
             glog_data = {**glog_data, **glog_valid_metrics, **glog_test_metrics}
             gLogger.append_row(glog_data, sheet_name="until_{}".format(t))
+
+        # save some sample videos to the experiment folder
+        # TODO(kamanuel) this does not work on Leonhard for some stupid reason
+        # visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", experiment_dir)
+        # n_samples_viz = 5
+        # rng = np.random.RandomState(42)
+        # idxs = rng.randint(0, len(test_res), size=n_samples_viz)
+        # sample_keys = [list(sorted(test_res.keys()))[i] for i in idxs]
+        # for k in sample_keys:
+        #     visualizer.visualize(test_res[k][2], test_res[k][0], test_res[k][1], title=k)
 
         print("Finished.")
 

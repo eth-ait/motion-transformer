@@ -117,12 +117,11 @@ def evaluate(experiment_dir, config, args):
                          'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                          'Comment'   : [""]}
 
-        def evaluate_model(_eval_model, _eval_iter, _metrics_engine, _max_iter=-1):
+        def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
             # make a full pass on the validation or test dataset and compute the metrics
             eval_result = dict()
             _metrics_engine.reset()
             sess.run(_eval_iter.initializer)
-            counter = 0
             try:
                 while True:
                     # TODO(kamanuel) should we compute the validation loss here as well, if so how?
@@ -137,11 +136,6 @@ def evaluate(experiment_dir, config, args):
                     # Store each test sample and corresponding predictions with the unique sample IDs.
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
-
-                    counter += 1
-                    if counter == _max_iter:
-                        break
-
             except tf.errors.OutOfRangeError:
                 pass
             finally:
@@ -150,7 +144,7 @@ def evaluate(experiment_dir, config, args):
             return final_metrics, eval_result
 
         print("Evaluating test set ...")
-        test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine, _max_iter=1)
+        test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine)
         print("Test \t {}".format(metrics_engine.get_summary_string(test_metrics)))
 
         # gather the metrics
