@@ -4,3 +4,7 @@ data/
 experiments/
 experiments_archived/
 .idea/
+amass_to_temp/
+experiments_amass/
+experiment-logger-*
+selected_experiments_amass/*
