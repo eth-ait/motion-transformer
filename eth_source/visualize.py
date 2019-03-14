@@ -1,5 +1,6 @@
 import numpy as np
 from matplotlib import pyplot as plt, animation as animation
+from matplotlib.animation import writers
 from mpl_toolkits.mplot3d import Axes3D
 
 from smpl import SMPLForwardKinematicsNP
@@ -169,7 +170,10 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                                        interval=int(round(1000.0 / 60.0)), blit=False)
 
     if out_file is not None:
-        save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]], 0, None, out_file, keep_frames, fps)
+        w = writers['ffmpeg']
+        writer = w(fps=fps, metadata={}, bitrate=100)
+        line_ani.save(out_file, writer=writer)
+        # save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]], 0, None, out_file, keep_frames, fps)
     else:
         plt.show()
     plt.close()
