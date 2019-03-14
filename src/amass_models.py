@@ -28,6 +28,7 @@ class BaseModel(object):
         self.autoregressive_input = config["autoregressive_input"]
         self.residual_velocities = config["residual_velocities"]
         self.residual_velocities_type = config["residual_velocities_type"]
+        self.residual_velocities_reg = None  # a regularizer in the residual velocity to be added to the loss
         self.angle_loss_type = config["angle_loss_type"]
         self.joint_prediction_model = config["joint_prediction_model"]
         self.grad_clip_by_norm = config["grad_clip_by_norm"]
@@ -37,7 +38,6 @@ class BaseModel(object):
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
         self.rot_matrix_regularization = config.get('rot_matrix_regularization', False)
         self.prediction_activation = None if not self.rot_matrix_regularization else tf.nn.tanh
-        self.rot_matrix_loss = None  # Only used if self.rot_matrix_regularization is True.
         self.use_quat = config.get('use_quat', False)
 
         self.is_eval = self.mode == C.SAMPLE
@@ -178,17 +178,13 @@ class BaseModel(object):
                 else:
                     raise Exception("Unknown angle loss.")
 
+        if self.residual_velocities_reg is not None:
+            self.loss += self.residual_velocities_reg
+
         if self.rot_matrix_regularization:
-            with tf.name_scope("rot_matrix_regularization"):
-                rot_matrix = tf.reshape(predictions, [-1, self.NUM_JOINTS, 3, 3])
-
-                transposed = tf.matmul(rot_matrix, tf.matrix_transpose(rot_matrix))
-                eyes = tf.reshape(tf.eye(3, 3, [batch_size, seq_len, self.NUM_JOINTS]), [-1, self.NUM_JOINTS, 3, 3])
-
-                rot_loss = tf.norm(transposed - eyes, ord='fro', axis=(-1, -2))
-                rot_loss = tf.reshape(rot_loss, [batch_size, seq_len, self.NUM_JOINTS])
-                self.rot_matrix_loss = tf.reduce_mean(rot_loss)
-                self.loss += self.rot_matrix_loss
+            with tf.name_scope("output_rot_mat_regularization"):
+                rot_matrix_loss = self.rot_mat_regularization(predictions, summary_name="rot_matrix_reg")
+                self.loss += rot_matrix_loss
 
     def optimization_routines(self):
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
@@ -255,6 +251,10 @@ class BaseModel(object):
                 if self.residual_velocities_type == "plus":
                     pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
                 elif self.residual_velocities_type == "matmul":
+                    # add regularizer to the predicted rotations
+                    self.residual_velocities_reg = self.rot_mat_regularization(pose_prediction,
+                                                                               summary_name="velocity_rot_mat_reg")
+                    # now perform the multiplication
                     preds = tf.reshape(pose_prediction, [-1, 3, 3])
                     inputs = tf.reshape(self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE], [-1, 3, 3])
                     preds = tf.matmul(inputs, preds, transpose_b=True)
@@ -267,6 +267,26 @@ class BaseModel(object):
 
             self.outputs_tensor = pose_prediction
             self.outputs = self.outputs_tensor
+
+    def rot_mat_regularization(self, rotmats, summary_name="rot_matrix_reg"):
+        """
+        Computes || R * R^T - I ||_F and averages this over all joints, frames, and batch entries. Note that we
+        do not enforce det(R) == 1.0 for now. The average is added to tensorboard as a summary.
+        Args:
+            rotmats: A tensor of shape (..., k*3*3)
+            summary_name: Name for the summary
+
+        Returns:
+            The average deviation of all rotation matrices from being orthogonal.
+        """
+        rot_matrix = tf.reshape(rotmats, [-1, 3, 3])
+        n = tf.shape(rot_matrix)[0]
+        rrt = tf.matmul(rot_matrix, rot_matrix, transpose_b=True)
+        eye = tf.eye(3, batch_shape=[n])
+        rot_reg = tf.norm(rrt - eye, ord='fro', axis=(-1, -2))
+        rot_reg = tf.reduce_mean(rot_reg)
+        tf.summary.scalar(self.mode + "/" + summary_name, rot_reg, collections=[self.mode + "/model_summary"])
+        return rot_reg
 
     def get_closest_rotmats(self, rotmats):
         """
@@ -378,10 +398,6 @@ class BaseModel(object):
         # prepended to summary name if needed.
         self.loss_summary = tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
 
-        if self.rot_matrix_regularization:
-            tf.summary.scalar(self.mode + "/rot_matrix_reg",
-                              self.rot_matrix_loss,
-                              collections=[self.mode + "/model_summary"])
         if self.is_training:
             tf.summary.scalar(self.mode + "/learning_rate",
                               self.learning_rate,
@@ -457,7 +473,7 @@ class Seq2SeqModel(BaseModel):
 
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
-                cell = rnn_cell_extensions.ResidualWrapper(cell, connection_type=self.residual_velocities_type)
+                cell = rnn_cell_extensions.ResidualWrapper(cell)
 
             # Define the loss function
             if self.is_eval:

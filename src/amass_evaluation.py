@@ -100,7 +100,8 @@ def evaluate(experiment_dir, config, args):
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
                                        force_valid_rot=True,
-                                       pck_threshs=pck_threshs)
+                                       pck_threshs=pck_threshs,
+                                       rep="quat" if test_model.use_quat else "rot_mat")
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()
         # reset computation of metrics

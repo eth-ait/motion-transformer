@@ -99,6 +99,10 @@ def create_model(session):
     if not args.no_normalization:
         assert not args.rot_matrix_regularization, "The inputs and outputs must be between -1 and 1."
 
+    if args.residual_velocities_type == "matmul":
+        # this makes only sense if we use rotation matrices
+        assert rep == "rotmat"
+
     if args.model_type == "seq2seq":
         model_cls, config, experiment_name = get_seq2seq_config(args)
     elif args.model_type == "simple_baseline":
