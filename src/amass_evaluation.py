@@ -163,7 +163,8 @@ def evaluate(experiment_dir, config, args):
 
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl")
+            video_dir = experiment_dir if args.visualize_save else None
+            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", video_dir)
             n_samples_viz = 10
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
@@ -184,6 +185,7 @@ if __name__ == '__main__':
     parser.add_argument('--no_normalization', required=False, action="store_true", help='If set, do not use zero-mean unit-variance normalization.')
     parser.add_argument('--glog_entry', required=False, action="store_true", help='Write to the Google sheet.')
     parser.add_argument('--visualize', required=False, action="store_true", help='Visualize model predictions.')
+    parser.add_argument('--visualize_save', required=False, action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
 
     args = parser.parse_args()
     try:

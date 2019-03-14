@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from matplotlib import pyplot as plt, animation as animation
 from matplotlib.animation import writers
@@ -8,15 +9,15 @@ from smpl import SMPL_MAJOR_JOINTS
 from smpl import SMPL_PARENTS
 from motion_metrics import get_closest_rotmat
 from motion_metrics import is_valid_rotmat
-from viz import save_animation
 
 
 class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
     """
-    def __init__(self, smpl_model_path):
+    def __init__(self, smpl_model_path, video_dir=None):
         self.smpl_fk = SMPLForwardKinematicsNP(smpl_model_path)
+        self.video_dir = video_dir
 
     def visualize(self, seed, prediction, target, title):
         """
@@ -56,16 +57,23 @@ class Visualizer(object):
         _swap_yz(pred_pos)
         _swap_yz(targ_pos)
 
+        if self.video_dir is not None:
+            # save output animation to mp4
+            f_name = title.replace('/', '.') + '.mp4'
+            out_name = os.path.join(self.video_dir, f_name)
+        else:
+            out_name = None
         visualize_positions(positions=[pred_pos, targ_pos],
                             colors=['b', 'b'],
                             titles=['prediction', 'target'],
                             fig_title=title,
                             parents=SMPL_PARENTS,
-                            change_color_after_frame=(seed.shape[0], None))
+                            change_color_after_frame=(seed.shape[0], None),
+                            out_file=out_name)
 
 
-def visualize_positions(positions, colors, titles, fig_title, parents, change_color_after_frame=None,
-                        out_file=None, keep_frames=False, fps=60.0, overlay=False):
+def visualize_positions(positions, colors, titles, fig_title, parents, change_color_after_frame=None, overlay=False,
+                        out_file=None, fps=60):
     """
     Visualize motion given 3D positions. Can visualize several motions side by side. If the sequence lengths don't
     match, all animations are displayed until the shortest sequence length.
@@ -75,8 +83,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         titles: list of titles for each entry in `positions`
         fig_title: title for the entire figure
         parents: skeleton structure
-        out_file: output file path if the visualization is saved as video.
-        keep_frames:  boolean whether to save video frames or not.
+        out_file: output file path if the visualization is to be saved as video.
         fps: frames per second
         change_color_after_frame: after this frame id, the color of the plot is changed (for each entry in `positions`)
         overlay: if true, all entries in `positions` are plotted into the same subplot
@@ -86,7 +93,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
     pos = positions
 
     # create figure with as many subplots as we have skeletons
-    fig = plt.figure()
+    fig = plt.figure(figsize=(10, 5))
     plt.clf()
     n_axes = 1 if overlay else len(pos)
     axes = [fig.add_subplot(1, n_axes, i + 1, projection='3d') for i in range(n_axes)]
@@ -165,17 +172,16 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         time_passed = '{:>.2f} seconds passed'.format(1/60.0*num)
         fig_text.set_text(time_passed)
 
-
     # create the animation object, for animation to work reference to this object must be kept
     line_ani = animation.FuncAnimation(fig, update_frame, seq_length,
                                        fargs=(pos, all_lines, parents, colors + [colors[0]]),
-                                       interval=int(round(1000.0 / 10.0)), blit=False)
+                                       interval=1000/fps)
 
     if out_file is not None:
         w = writers['ffmpeg']
-        writer = w(fps=fps, metadata={}, bitrate=100)
+        writer = w(fps=fps, metadata={}, bitrate=1000)  # increase bitrate for higher quality
         line_ani.save(out_file, writer=writer)
-        # save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]], 0, None, out_file, keep_frames, fps)
     else:
+        # interactive
         plt.show()
     plt.close()
