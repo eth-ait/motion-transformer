@@ -51,7 +51,7 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or vrnn")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or rnn")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
@@ -78,7 +78,7 @@ def create_model(session, actions, sampling=False):
         model_cls, config, experiment_name = create_seq2seq_model(actions, sampling)
     elif FLAGS.model_type == "structured_stcn":
         model_cls, config, experiment_name = create_stcn_model(actions, sampling)
-    elif FLAGS.model_type == "vrnn":
+    elif FLAGS.model_type == "rnn":
         model_cls, config, experiment_name = create_rnn_model(actions, sampling)
     else:
         raise Exception("Unknown model type.")
@@ -154,28 +154,29 @@ def create_rnn_model(actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['seed'] = 1234
-    config['learning_rate'] = 5e-4
+    config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['cell']['type'] = C.LATENT_GAUSSIAN
-    config['cell']['latent_size'] = 64
-    config['cell']["hidden_activation_fn"] = C.RELU
-    config['cell']["num_hidden_units"] = 256
-    config['cell']["num_hidden_layers"] = 2
-    config['cell']['latent_sigma_threshold'] = 5.0
     config['cell']['cell_type'] = C.LSTM
-    config['cell']['cell_size'] = 512
+    config['cell']['cell_size'] = 1024
     config['cell']['cell_num_layers'] = 1
+    if FLAGS.model_type == 'vrnn':
+        config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+        config['cell']['type'] = C.LATENT_GAUSSIAN
+        config['cell']['latent_size'] = 64
+        config['cell']["hidden_activation_fn"] = C.RELU
+        config['cell']["num_hidden_units"] = 256
+        config['cell']["num_hidden_layers"] = 1
+        config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
     config['input_layer']['dropout_rate'] = 0
     config['input_layer']['num_layers'] = 1
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 256
+    config['output_layer']['num_layers'] = 1
+    config['output_layer']['size'] = 64
     config['output_layer']['activation_fn'] = C.RELU
 
     config['grad_clip_by_norm'] = 1
@@ -191,19 +192,18 @@ def create_rnn_model(actions, sampling=False):
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
 
-    if FLAGS.model_type == "vrnn":
-        model_cls = models.RNNLatentCellModel
+    if FLAGS.model_type == "rnn":
+        model_cls = models.RNN
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}-{}-{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     config['batch_size'],
-                                                    config['cell']['latent_size'],
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
                                                     '-residual_vel' if FLAGS.residual_velocities else '',
@@ -224,12 +224,12 @@ def create_stcn_model(actions, sampling=False):
     config['learning_rate_decay_steps'] = 1000
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [256, 128, 64, 32, 16, 8, 4]
+    config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 100
-    config['latent_layer']["num_hidden_layers"] = 1
+    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 4
     config['latent_layer']['use_fixed_pz1'] = False
     config['latent_layer']['use_same_q_sample'] = False
@@ -240,17 +240,17 @@ def create_stcn_model(actions, sampling=False):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.1
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
-    config['output_layer']['size'] = 64
+    config['output_layer']['num_layers'] = 2
+    config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 28
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*7
     config['cnn_layer']['activation_fn'] = C.RELU
