@@ -22,6 +22,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     test_data_path = os.path.join(os.environ["AMASS_TEST"], "amass-?????-of-?????")
     meta_data_path = os.environ["AMASS_META"]
 
+    data_normalization = not (args.no_normalization or config.get("no_normalization", False))
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
@@ -29,7 +30,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
                                           shuffle=False,
                                           extract_windows_of=0,
                                           num_parallel_calls=16,
-                                          normalize=not args.no_normalization)
+                                          normalize=data_normalization)
         test_pl = test_data.get_tf_samples()
 
     if config['model_type'] == "seq2seq":
@@ -69,7 +70,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     # assert config["num_parameters"] == num_param, "# of parameters doesn't match."
 
     # Restore model parameters.
-    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
 
     """Restore the latest checkpoint found in `experiment_dir`."""
     ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
@@ -165,7 +166,7 @@ def evaluate(experiment_dir, config, args):
             n_samples_viz = 10
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
-            sample_keys = [list(eval_result.keys())[i] for i in idxs]
+            sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for k in sample_keys:
                 visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k)
 

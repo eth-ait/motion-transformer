@@ -86,6 +86,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
 
     # create figure with as many subplots as we have skeletons
     fig = plt.figure()
+    plt.clf()
     n_axes = 1 if overlay else len(pos)
     axes = [fig.add_subplot(1, n_axes, i + 1, projection='3d') for i in range(n_axes)]
     fig.suptitle(fig_title)
@@ -163,10 +164,11 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         time_passed = '{:>.2f} seconds passed'.format(1/60.0*num)
         fig_text.set_text(time_passed)
 
+
     # create the animation object, for animation to work reference to this object must be kept
     line_ani = animation.FuncAnimation(fig, update_frame, seq_length,
                                        fargs=(pos, all_lines, parents, colors + [colors[0]]),
-                                       interval=int(round(1000.0 / 60.0)), blit=False)
+                                       interval=int(round(1000.0 / 10.0)), blit=False)
 
     if out_file is not None:
         save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]], 0, None, out_file, keep_frames, fps)
