@@ -37,6 +37,7 @@ tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use:
 tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder. 25 fps")
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
+tf.app.flags.DEFINE_string("residual_velocities_type", "plus", "How to combine inputs with model prediction")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
 tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
@@ -289,6 +290,7 @@ def get_rnn_config(args):
     config['batch_size'] = args.batch_size
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
+    config['residual_velocities_type'] = args.residual_velocities_type
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
@@ -320,7 +322,7 @@ def get_rnn_config(args):
                                                     model_exp_name,
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
-                                                    '-residual_vel' if args.residual_velocities else '',
+                                                    '-residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else '',
                                                     args.seq_length_in,
                                                     args.seq_length_out,
                                                     '-force_rot' if args.force_valid_rot else '')
@@ -383,6 +385,7 @@ def get_stcn_config(args):
     config['batch_size'] = args.batch_size
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
+    config['residual_velocities_type'] = args.residual_velocities
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
@@ -419,7 +422,7 @@ def get_stcn_config(args):
                                                     config['cnn_layer']['num_encoder_layers'],
                                                     config['cnn_layer']['num_filters'],
                                                     config['cnn_layer']['filter_size'],
-                                                    '-residual_vel' if args.residual_velocities else '',
+                                                    '-residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else '',
                                                     args.seq_length_in,
                                                     args.seq_length_out,
                                                     '-force_rot' if args.force_valid_rot else '')
@@ -434,7 +437,6 @@ def get_seq2seq_config(args):
     config['seed'] = 1234
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['optimizer'] = args.optimizer
-    config['residual_velocities'] = args.residual_velocities
     config['joint_prediction_model'] = args.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
     config['architecture'] = args.architecture
     config['source_seq_len'] = args.seq_length_in
@@ -448,6 +450,7 @@ def get_seq2seq_config(args):
     config['learning_rate_decay_type'] = args.learning_rate_decay_type
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
+    config['residual_velocities_type'] = args.residual_velocities_type
     config['joint_prediction_model'] = args.joint_prediction_model  # currently ignored by seq2seq models
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 0
@@ -482,7 +485,7 @@ def get_seq2seq_config(args):
                                                     config['autoregressive_input'],
                                                     args.cell_layers,
                                                     args.cell_size,
-                                                    'residual_vel' if args.residual_velocities else 'not_residual_vel',
+                                                    'residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else 'not_residual_vel',
                                                     '-force_rot' if args.force_valid_rot else '')
     return model_cls, config, experiment_name
 

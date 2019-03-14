@@ -26,12 +26,13 @@ import math
 class ResidualWrapper(RNNCell):
     """Operator adding residual connections to a given cell."""
 
-    def __init__(self, cell, error_signal_size=0):
+    def __init__(self, cell, error_signal_size=0, connection_type="plus"):
         """Create a cell with added residual connection.
 
         Args:
           cell: an RNNCell. The input is added to the output.
           error_signal_size: dimensionality of error feedback that is appended to the input of the cell
+          connection_type: how to implement the connection, "plus" or "matmul"
 
         Raises:
           TypeError: if cell is not an RNNCell.
@@ -41,6 +42,8 @@ class ResidualWrapper(RNNCell):
 
         self._cell = cell
         self._error_signal_size = error_signal_size
+        self._connection_type = connection_type
+        assert connection_type in ["plus", "matmul"]
 
     @property
     def state_size(self):
@@ -59,7 +62,15 @@ class ResidualWrapper(RNNCell):
         # Add the residual connection ignoring the potential error signal at the end of the input
         error_signal_start = inputs.get_shape()[-1].value - self._error_signal_size
         input_pose = inputs[:, :error_signal_start]
-        output = tf.add(output, input_pose)
+
+        if self._connection_type == "plus":
+            output = tf.add(output, input_pose)
+        else:
+            # matmul
+            preds = tf.reshape(output, [-1, 3, 3])
+            inputs = tf.reshape(input_pose, [-1, 3, 3])
+            preds = tf.matmul(inputs, preds, transpose_b=True)
+            output = tf.reshape(preds, tf.shape(output))
 
         return output, new_state
 

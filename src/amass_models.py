@@ -27,6 +27,7 @@ class BaseModel(object):
         self.batch_size = config["batch_size"]
         self.autoregressive_input = config["autoregressive_input"]
         self.residual_velocities = config["residual_velocities"]
+        self.residual_velocities_type = config["residual_velocities_type"]
         self.angle_loss_type = config["angle_loss_type"]
         self.joint_prediction_model = config["joint_prediction_model"]
         self.grad_clip_by_norm = config["grad_clip_by_norm"]
@@ -118,7 +119,7 @@ class BaseModel(object):
 
         # Annealing input dropout rate or using fixed rate.
         self.input_dropout_rate = None
-        if config["input_layer"] is not None:
+        if config.get("input_layer", None) is not None:
             if isinstance(config["input_layer"].get("dropout_rate", 0), dict):
                 self.input_dropout_rate = get_decay_variable(global_step=self.global_step,
                                                              config=config["input_layer"].get("dropout_rate"),
@@ -251,10 +252,17 @@ class BaseModel(object):
 
             # Apply residual connection on the pose only.
             if self.residual_velocities:
-                pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
+                if self.residual_velocities_type == "plus":
+                    pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
+                elif self.residual_velocities_type == "matmul":
+                    preds = tf.reshape(pose_prediction, [-1, 3, 3])
+                    inputs = tf.reshape(self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE], [-1, 3, 3])
+                    preds = tf.matmul(inputs, preds, transpose_b=True)
+                    pose_prediction = tf.reshape(preds, tf.shape(pose_prediction))
+                else:
+                    raise ValueError("residual velocity type {} unknown".format(self.residual_velocities_type))
 
-            # Enforce valid rotations as the very last step
-            # TODO(kamanuel) discuss if this makes sense when residual connections are used
+            # Enforce valid rotations as the very last step, this currently doesn't do anything with rotation matrices
             pose_prediction = self.build_valid_rot_layer(pose_prediction)
 
             self.outputs_tensor = pose_prediction
@@ -449,7 +457,7 @@ class Seq2SeqModel(BaseModel):
 
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
-                cell = rnn_cell_extensions.ResidualWrapper(cell)
+                cell = rnn_cell_extensions.ResidualWrapper(cell, connection_type=self.residual_velocities_type)
 
             # Define the loss function
             if self.is_eval:
