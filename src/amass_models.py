@@ -27,7 +27,7 @@ class BaseModel(object):
         self.batch_size = config["batch_size"]
         self.autoregressive_input = config["autoregressive_input"]
         self.residual_velocities = config["residual_velocities"]
-        self.residual_velocities_type = config["residual_velocities_type"]
+        self.residual_velocities_type = config.get("residual_velocities_type", "plus")
         self.residual_velocities_reg = None  # a regularizer in the residual velocity to be added to the loss
         self.angle_loss_type = config["angle_loss_type"]
         self.joint_prediction_model = config["joint_prediction_model"]
