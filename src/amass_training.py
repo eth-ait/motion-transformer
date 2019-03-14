@@ -210,7 +210,7 @@ def create_model(session):
     valid_model.summary_routines()
 
     # Create saver.
-    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1)
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
 
     models = (train_model, valid_model, test_model)
     data = (train_data, valid_data, test_data)
@@ -272,7 +272,7 @@ def get_rnn_config(args):
     if args.model_type == 'vrnn':
         config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
         config['cell']['type'] = C.LATENT_GAUSSIAN
-        config['cell']['latent_size'] = 8
+        config['cell']['latent_size'] = 64
         config['cell']["hidden_activation_fn"] = C.RELU
         config['cell']["num_hidden_units"] = 256
         config['cell']["num_hidden_layers"] = 1
@@ -300,6 +300,7 @@ def get_rnn_config(args):
     config['force_valid_rot'] = args.force_valid_rot
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['use_quat'] = args.use_quat
+    config['no_normalization'] = args.no_normalization
 
     model_exp_name = ""
     if args.model_type == "rnn":
@@ -348,7 +349,7 @@ def get_stcn_config(args):
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 64
+    config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
@@ -364,13 +365,13 @@ def get_stcn_config(args):
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
     config['output_layer']['size'] = 64
-    config['output_layer']['type'] = C.LAYER_TCN
-    config['output_layer']['filter_size'] = 2
+    config['output_layer']['type'] = C.LAYER_CONV1
+    config['output_layer']['filter_size'] = 1
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU
@@ -395,6 +396,7 @@ def get_stcn_config(args):
     config['force_valid_rot'] = args.force_valid_rot
     config['use_quat'] = args.use_quat
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
+    config['no_normalization'] = args.no_normalization
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -463,6 +465,7 @@ def get_seq2seq_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
+    config['no_normalization'] = args.no_normalization
     config['use_quat'] = args.use_quat
 
     if args.model_type == "seq2seq":
