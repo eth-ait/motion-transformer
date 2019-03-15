@@ -15,6 +15,7 @@ import numpy as np
 import tensorflow as tf
 
 import data_utils
+import cv2
 import models
 
 # ETH imports
@@ -58,7 +59,7 @@ tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_j
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
 tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
-tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")
+tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")  # TODO(kamanuel) implement this for all models
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -412,7 +413,6 @@ def train():
 
         step_time, loss = 0, 0
 
-
         for _ in range(FLAGS.iterations):
 
             start_time = time.time()
@@ -473,29 +473,25 @@ def train():
                     # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-247769197
                     N_SEQUENCE_TEST = 8
                     for i in np.arange(N_SEQUENCE_TEST):
-                        eulerchannels_pred = np.zeros([srnn_pred_expmap[i].shape[0], 99])  # srnn_pred_expmap[i]
+                        eulerchannels_pred = np.zeros([srnn_pred_expmap[i].shape[0], 99])
 
                         # Convert from exponential map to Euler angles
                         for j in np.arange(eulerchannels_pred.shape[0]):
                             if FLAGS.use_rotmat:
                                 n_joints = eulerchannels_pred.shape[-1] // 9
                                 for joint in range(n_joints):
-                                    if joint == 0:
-                                        # this is global translation, does not make sense to use here
-                                        eulerchannels_pred[j, 0:3] = 0.0
-                                    elif joint == 1:
-                                        # ignore global rotation
-                                        eulerchannels_pred[j, 3:6] = 0.0
+                                    if joint == 0 or joint == 1:
+                                        # this is global translation or global rotation, ignore
+                                        continue
                                     else:
-                                        init_rot = np.reshape(eulerchannels_pred[j, joint*9:(joint+1)*9], [3, 3])
-                                        if FLAGS.force_valid_rot:
-                                            # make sure rotation matrix is valid
-                                            init_rot = data_utils.get_closest_rotmat(init_rot)
+                                        init_rot = np.reshape(srnn_pred_expmap[i][j, joint*9:(joint+1)*9], [3, 3])
+                                        # make sure rotation matrix is valid
+                                        init_rot = data_utils.get_closest_rotmat(init_rot)
                                         eulerchannels_pred[j, joint*3:(joint+1)*3] = data_utils.rotmat2euler(init_rot)
                             else:
                                 for k in np.arange(3, 97, 3):
                                     eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
-                                        data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
+                                        data_utils.expmap2rotmat(srnn_pred_expmap[i][j, k:k + 3]))
 
                         # The global translation (first 3 entries) and global rotation
                         # (next 3 entries) are also not considered in the error, so they are set to zero.
@@ -835,9 +831,8 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
                                 continue
                             else:
                                 init_rot = np.reshape(denormed[j, joint * 9:(joint + 1) * 9], [3, 3])
-                                if FLAGS.force_valid_rot:
-                                    # make sure rotation matrix is valid
-                                    init_rot = data_utils.get_closest_rotmat(init_rot)
+                                # make sure rotation matrix is valid
+                                init_rot = data_utils.get_closest_rotmat(init_rot)
                                 euler_rep[j, joint * 3:(joint + 1) * 3] = data_utils.rotmat2euler(init_rot)
                 else:
                     euler_rep = denormed.copy()
@@ -847,7 +842,7 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
 
                 srnn_gt_euler.append(euler_rep)
             else:
-                srnn_gts_euler.append(denormed)
+                srnn_gt_euler.append(denormed)
 
         # Put back in the dictionary
         srnn_gts_euler[action] = srnn_gt_euler
@@ -859,7 +854,7 @@ def sample():
     """Sample predictions for srnn's seeds"""
 
     if FLAGS.experiment_id is None:
-        raise (ValueError, "Must give an experiment id to read parameters from")
+        raise ValueError("Must give an experiment id to read parameters from")
 
     actions = define_actions(FLAGS.action)
 
@@ -872,6 +867,8 @@ def sample():
         train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions, sampling)
         print("Model created")
 
+        rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
         # Load all the data
         train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(
             actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
@@ -880,9 +877,9 @@ def sample():
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
         srnn_gts_expmap = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
-                                       not FLAGS.omit_one_hot, to_euler=False)
+                                       not FLAGS.omit_one_hot, rep, to_euler=False)
         srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
-                                      not FLAGS.omit_one_hot)
+                                      not FLAGS.omit_one_hot, rep, to_euler=True)
 
         # Clean and create a new h5 file of samples
         SAMPLES_FNAME = os.path.join(experiment_dir, 'samples.h5')
@@ -900,9 +897,20 @@ def sample():
 
             # denormalizes too
             srnn_pred_expmap = data_utils.revert_output_format(srnn_poses, data_mean, data_std, dim_to_ignore, actions,
-                                                               not FLAGS.omit_one_hot)
+                                                               not FLAGS.omit_one_hot, rep)
 
             # Save the conditioning seeds
+            if rep == "rot_mat":
+                # convert back to exponential map
+                expmap_out = []
+                for the_sample in srnn_pred_expmap:  # the_sample is(seq_len, n_joints*3*3)
+                    seq_len = the_sample.shape[0]
+                    rots = np.reshape(the_sample, [-1, 3, 3])
+                    aas = np.zeros([rots.shape[0], 3])
+                    for r in range(rots.shape[0]):
+                        aas[r] = np.squeeze(cv2.Rodrigues(rots[r])[0])
+                    expmap_out.append(np.reshape(aas, [seq_len, 99]))
+                srnn_pred_expmap = expmap_out
 
             # Save the samples
             with h5py.File(SAMPLES_FNAME, 'a') as hf:
@@ -917,32 +925,33 @@ def sample():
             # Compute and save the errors here
             mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
 
-            for i in np.arange(8):
-
-                eulerchannels_pred = srnn_pred_expmap[i]
-
-                for j in np.arange(eulerchannels_pred.shape[0]):
-                    for k in np.arange(3, 97, 3):
-                        eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
-                            data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
-
-                eulerchannels_pred[:, 0:6] = 0
-
-                # Pick only the dimensions with sufficient standard deviation. Others are ignored.
-                idx_to_use = np.where(np.std(eulerchannels_pred, 0) > 1e-4)[0]
-
-                euc_error = np.power(srnn_gts_euler[action][i][:, idx_to_use] - eulerchannels_pred[:, idx_to_use], 2)
-                euc_error = np.sum(euc_error, 1)
-                euc_error = np.sqrt(euc_error)
-                mean_errors[i, :] = euc_error
-
-            mean_mean_errors = np.mean(mean_errors, 0)
-            # print(action)
-            # print(','.join(map(str, mean_mean_errors.tolist())))
-
-            with h5py.File(SAMPLES_FNAME, 'a') as hf:
-                node_name = 'mean_{0}_error'.format(action)
-                hf.create_dataset(node_name, data=mean_mean_errors)
+            # Not interested in this for the moment
+            # for i in np.arange(8):
+            #
+            #     eulerchannels_pred = srnn_pred_expmap[i]
+            #
+            #     for j in np.arange(eulerchannels_pred.shape[0]):
+            #         for k in np.arange(3, 97, 3):
+            #             eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
+            #                 data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
+            #
+            #     eulerchannels_pred[:, 0:6] = 0
+            #
+            #     # Pick only the dimensions with sufficient standard deviation. Others are ignored.
+            #     idx_to_use = np.where(np.std(eulerchannels_pred, 0) > 1e-4)[0]
+            #
+            #     euc_error = np.power(srnn_gts_euler[action][i][:, idx_to_use] - eulerchannels_pred[:, idx_to_use], 2)
+            #     euc_error = np.sum(euc_error, 1)
+            #     euc_error = np.sqrt(euc_error)
+            #     mean_errors[i, :] = euc_error
+            #
+            # mean_mean_errors = np.mean(mean_errors, 0)
+            # # print(action)
+            # # print(','.join(map(str, mean_mean_errors.tolist())))
+            #
+            # with h5py.File(SAMPLES_FNAME, 'a') as hf:
+            #     node_name = 'mean_{0}_error'.format(action)
+            #     hf.create_dataset(node_name, data=mean_mean_errors)
 
     return
 
