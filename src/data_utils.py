@@ -282,7 +282,7 @@ def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
     return trainData, completeData
 
 
-def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot):
+def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot, rep):
     """
     Normalize input data by removing unused dimensions, subtracting the mean and
     dividing by the standard deviation
@@ -297,6 +297,7 @@ def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot):
     Returns
       data_out: the passed data matrix, but normalized
     """
+    assert rep in ["aa", "rot_mat"]
     data_out = {}
     nactions = len(actions)
 
@@ -309,14 +310,14 @@ def normalize_data(data, data_mean, data_std, dim_to_use, actions, one_hot):
     else:
         # TODO hard-coding 99 dimensions for un-normalized human poses
         for key in data.keys():
-            data_out[key] = np.divide((data[key][:, 0:99] - data_mean), data_std)
+            data_out[key] = np.divide((data[key][:, :-nactions] - data_mean), data_std)
             data_out[key] = data_out[key][:, dim_to_use]
             data_out[key] = np.hstack((data_out[key], data[key][:, -nactions:]))
 
     return data_out
 
 
-def normalization_stats(completeData, ignore_entire_joints=True):
+def normalization_stats(completeData, rep, ignore_entire_joints=True):
     """"
     Also borrowed for SRNN code. Computes mean, stdev and dimensions to ignore.
     https://github.com/asheshjain399/RNNexp/blob/srnn/structural_rnn/CRFProblems/H3.6m/processdata.py#L33
@@ -330,12 +331,13 @@ def normalization_stats(completeData, ignore_entire_joints=True):
       dimensions_to_ignore: vector with dimensions not used by the model
       dimensions_to_use: vector with dimensions used by the model
     """
+    assert rep in ["aa", "rot_mat"]
     data_mean = np.mean(completeData, axis=0)
     data_std = np.std(completeData, axis=0)
 
-    # TODO make this work for rotation matrices
     # Manuel way.
     if ignore_entire_joints:
+        assert rep != "rot_mat", "this currently doesn't work for rotation matrices"
         joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
         joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # always ignore first entry (root translation)
         dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
@@ -345,9 +347,14 @@ def normalization_stats(completeData, ignore_entire_joints=True):
     else:
         # Martinez way.
         dimensions_to_ignore = []
-        dimensions_to_use = []
         dimensions_to_ignore.extend(list(np.where(data_std < 1e-4)[0]))
-        dimensions_to_use.extend(list(np.where(data_std >= 1e-4)[0]))
+        if rep == "rot_mat":
+            # add first 9 dimensions manually, as they encode position
+            dimensions_to_ignore.extend(list(range(9)))
+
+        n_dims = completeData.shape[-1]
+        dimensions_to_use = [i for i in range(n_dims) if i not in dimensions_to_ignore]
+        assert len(set(dimensions_to_use).intersection(set(dimensions_to_ignore))) == 0
 
     data_std[np.where(data_std < 1e-4)] = 1.0
 

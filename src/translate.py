@@ -192,6 +192,7 @@ def create_rnn_model(actions, sampling=False):
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
     if FLAGS.model_type == "rnn":
         model_cls = models.RNN
@@ -274,6 +275,7 @@ def create_stcn_model(actions, sampling=False):
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
     if FLAGS.model_type == "stcn":
         model_cls = models.STCN
@@ -333,6 +335,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['output_layer']['size'] = 128
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = FLAGS.angle_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
     config['action_loss_type'] = C.LOSS_ACTION_L2
     if FLAGS.action_loss != C.LOSS_ACTION_L2:
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
@@ -959,15 +962,17 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot, new
     # train_subject_ids = [1]
     test_subject_ids = [5]
 
+    rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
     train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot, FLAGS.use_rotmat)
     test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot, FLAGS.use_rotmat)
 
     # Compute normalization stats
-    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, new_pp)
+    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, rep, new_pp)
 
     # Normalize -- subtract mean, divide by stdev
-    train_set = data_utils.normalize_data(train_set, data_mean, data_std, dim_to_use, actions, one_hot)
-    test_set = data_utils.normalize_data(test_set, data_mean, data_std, dim_to_use, actions, one_hot)
+    train_set = data_utils.normalize_data(train_set, data_mean, data_std, dim_to_use, actions, one_hot, rep)
+    test_set = data_utils.normalize_data(test_set, data_mean, data_std, dim_to_use, actions, one_hot, rep)
     print("done reading data.")
 
     return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
