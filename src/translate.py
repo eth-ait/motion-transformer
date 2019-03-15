@@ -177,9 +177,9 @@ def create_rnn_model(actions, sampling=False):
         config['cell']["num_hidden_layers"] = 1
         config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.1
     config['input_layer']['num_layers'] = 1
-    config['input_layer']['size'] = 256
+    config['input_layer']['size'] = 512
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 1
     config['output_layer']['size'] = 64
@@ -881,6 +881,24 @@ def sample():
         srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
                                       not FLAGS.omit_one_hot, rep, to_euler=True)
 
+        def _to_expmap(_list_of_samples):
+            """list of samples expected in shape (seq_len, n_joints*3*3)"""
+            _converted = []
+            for _the_sample in _list_of_samples:
+                _seq_len = _the_sample.shape[0]
+                _rots = np.reshape(_the_sample, [-1, 3, 3])
+                _aas = np.zeros([_rots.shape[0], 3])
+                for _r in range(_rots.shape[0]):
+                    _aas[_r] = np.squeeze(cv2.Rodrigues(_rots[_r])[0])
+                _converted.append(np.reshape(_aas, [_seq_len, 99]))
+            return _converted
+
+        if rep == "rot_mat":
+            srnn_gts_expmap_c = dict()
+            for action in srnn_gts_expmap:
+                srnn_gts_expmap_c[action] = _to_expmap(srnn_gts_expmap[action])
+            srnn_gts_expmap = srnn_gts_expmap_c
+
         # Clean and create a new h5 file of samples
         SAMPLES_FNAME = os.path.join(experiment_dir, 'samples.h5')
         try:
@@ -902,15 +920,7 @@ def sample():
             # Save the conditioning seeds
             if rep == "rot_mat":
                 # convert back to exponential map
-                expmap_out = []
-                for the_sample in srnn_pred_expmap:  # the_sample is(seq_len, n_joints*3*3)
-                    seq_len = the_sample.shape[0]
-                    rots = np.reshape(the_sample, [-1, 3, 3])
-                    aas = np.zeros([rots.shape[0], 3])
-                    for r in range(rots.shape[0]):
-                        aas[r] = np.squeeze(cv2.Rodrigues(rots[r])[0])
-                    expmap_out.append(np.reshape(aas, [seq_len, 99]))
-                srnn_pred_expmap = expmap_out
+                srnn_pred_expmap = _to_expmap(srnn_pred_expmap)
 
             # Save the samples
             with h5py.File(SAMPLES_FNAME, 'a') as hf:
