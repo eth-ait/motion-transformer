@@ -166,7 +166,7 @@ def unNormalizeData(normalizedData, data_mean, data_std, dimensions_to_ignore, a
     return origData
 
 
-def revert_output_format(poses, data_mean, data_std, dim_to_ignore, actions, one_hot):
+def revert_output_format(poses, data_mean, data_std, dim_to_ignore, actions, one_hot, rep):
     """
     Converts the output of the neural network to a format that is more easy to
     manipulate for, e.g. conversion to other format or visualization
@@ -178,6 +178,7 @@ def revert_output_format(poses, data_mean, data_std, dim_to_ignore, actions, one
       poses_out: A tensor of size (batch_size, seq_length, dim) output. Each
       batch is an n-by-d sequence of poses.
     """
+    assert rep in ["aa", "rot_mat"]
     seq_len = len(poses)
     if seq_len == 0:
         return []
@@ -194,6 +195,27 @@ def revert_output_format(poses, data_mean, data_std, dim_to_ignore, actions, one
             unNormalizeData(poses_out[i, :, :], data_mean, data_std, dim_to_ignore, actions, one_hot))
 
     return poses_out_list
+
+
+def get_closest_rotmat(rotmat):
+    """
+    Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
+    it computes the SVD as R = USV' and sets R_closest = UV'. Additionally, it is made sure that det(R_closest) == 1.
+    Args:
+        rotmat: np array of shape (3, 3).
+
+    Returns:
+        A numpy array of the same shape as the inputs.
+    """
+    u, s, vh = np.linalg.svd(rotmat)
+    r_closest = np.matmul(u, vh)
+
+    # if the determinant of UV' is -1, we must flip the sign of the last column of u
+    det = np.linalg.det(r_closest)  # (..., )
+    iden = np.eye(3)
+    iden[2, 2] = np.sign(det)
+    r_closest = np.matmul(np.matmul(u, iden), vh)
+    return r_closest
 
 
 def readCSVasFloat(filename):
@@ -337,12 +359,12 @@ def normalization_stats(completeData, rep, ignore_entire_joints=True):
 
     # Manuel way.
     if ignore_entire_joints:
-        assert rep != "rot_mat", "this currently doesn't work for rotation matrices"
-        joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
-        joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # always ignore first entry (root translation)
-        dimensions_to_ignore = np.concatenate([joints_to_ignore*3,
-                                               joints_to_ignore*3+1,
-                                               joints_to_ignore*3+2])
+        # joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
+        # joints_to_ignore = np.insert(joints_to_ignore, 0, 0)  # always ignore first entry (root translation)
+        # hard coded, but this is equivalent to doing the above with angle-axis representation
+        joints_to_ignore = np.array([0, 6, 11, 16, 21, 22, 23, 24, 29, 30, 31, 32])
+        dof = 9 if rep == "rot_mat" else 3
+        dimensions_to_ignore = np.concatenate([joints_to_ignore*dof + i for i in range(dof)])
         dimensions_to_use = np.array([x for x in range(data_std.shape[0]) if x not in dimensions_to_ignore])
     else:
         # Martinez way.

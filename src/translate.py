@@ -58,6 +58,7 @@ tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_j
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
 tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
+tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -101,6 +102,9 @@ def create_model(session, actions, sampling=False):
             reuse=True,
             dtype=tf.float32)
         eval_model.build_graph()
+
+    experiment_name += "{}{}".format("-rotmat" if FLAGS.use_rotmat else "",
+                                     "-force_mat" if FLAGS.force_valid_rot else "")
 
     num_param = 0
     for v in tf.global_variables():
@@ -395,9 +399,11 @@ def train():
         test_writer = train_writer
         print("Model created")
 
+        rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
-        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore, not FLAGS.omit_one_hot)
+        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore, not FLAGS.omit_one_hot, rep)
 
         # === This is the training loop ===
         step_time, loss, val_loss = 0.0, 0.0, 0.0
@@ -405,6 +411,7 @@ def train():
         previous_losses = []
 
         step_time, loss = 0, 0
+
 
         for _ in range(FLAGS.iterations):
 
@@ -455,7 +462,8 @@ def train():
                     # Denormalize the output
                     srnn_pred_expmap = data_utils.revert_output_format(srnn_poses,
                                                                        data_mean, data_std, dim_to_ignore, actions,
-                                                                       not FLAGS.omit_one_hot)
+                                                                       not FLAGS.omit_one_hot,
+                                                                       rep=rep)
 
                     # Save the errors here
                     mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
@@ -465,17 +473,32 @@ def train():
                     # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-247769197
                     N_SEQUENCE_TEST = 8
                     for i in np.arange(N_SEQUENCE_TEST):
-                        eulerchannels_pred = srnn_pred_expmap[i]
+                        eulerchannels_pred = np.zeros([srnn_pred_expmap[i].shape[0], 99])  # srnn_pred_expmap[i]
 
                         # Convert from exponential map to Euler angles
                         for j in np.arange(eulerchannels_pred.shape[0]):
-                            for k in np.arange(3, 97, 3):
-                                eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
-                                    data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
+                            if FLAGS.use_rotmat:
+                                n_joints = eulerchannels_pred.shape[-1] // 9
+                                for joint in range(n_joints):
+                                    if joint == 0:
+                                        # this is global translation, does not make sense to use here
+                                        eulerchannels_pred[j, 0:3] = 0.0
+                                    elif joint == 1:
+                                        # ignore global rotation
+                                        eulerchannels_pred[j, 3:6] = 0.0
+                                    else:
+                                        init_rot = np.reshape(eulerchannels_pred[j, joint*9:(joint+1)*9], [3, 3])
+                                        if FLAGS.force_valid_rot:
+                                            # make sure rotation matrix is valid
+                                            init_rot = data_utils.get_closest_rotmat(init_rot)
+                                        eulerchannels_pred[j, joint*3:(joint+1)*3] = data_utils.rotmat2euler(init_rot)
+                            else:
+                                for k in np.arange(3, 97, 3):
+                                    eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
+                                        data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
 
                         # The global translation (first 3 entries) and global rotation
-                        # (next 3 entries) are also not considered in the error, so the_key
-                        # are set to zero.
+                        # (next 3 entries) are also not considered in the error, so they are set to zero.
                         # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-249404882
                         gt_i = np.copy(srnn_gts_euler[action][i])
                         gt_i[:, 0:6] = 0
@@ -769,7 +792,7 @@ def train():
                 sys.stdout.flush()
 
 
-def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, one_hot, to_euler=True):
+def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, one_hot, rep, to_euler=True):
     """
     Get the ground truths for srnn's sequences, and convert to Euler angles.
     (the error is always computed in Euler angles).
@@ -788,6 +811,7 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
       srnn_gts_euler: a dictionary where the keys are actions, and the values
         are the ground_truth, denormalized expected outputs of srnns's seeds.
     """
+    assert rep in ["rot_mat", "aa"]
     srnn_gts_euler = {}
 
     for action in actions:
@@ -801,11 +825,29 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
                                                   one_hot)
 
             if to_euler:
-                for j in np.arange(denormed.shape[0]):
-                    for k in np.arange(3, 97, 3):
-                        denormed[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
+                if rep == "rot_mat":
+                    euler_rep = np.zeros([denormed.shape[0], 99])
+                    for j in np.arange(denormed.shape[0]):
+                        n_joints = denormed.shape[1] // 9
+                        for joint in range(n_joints):
+                            if joint == 0 or joint == 1:
+                                # this is global translation or rotation, ignore
+                                continue
+                            else:
+                                init_rot = np.reshape(denormed[j, joint * 9:(joint + 1) * 9], [3, 3])
+                                if FLAGS.force_valid_rot:
+                                    # make sure rotation matrix is valid
+                                    init_rot = data_utils.get_closest_rotmat(init_rot)
+                                euler_rep[j, joint * 3:(joint + 1) * 3] = data_utils.rotmat2euler(init_rot)
+                else:
+                    euler_rep = denormed.copy()
+                    for j in np.arange(denormed.shape[0]):
+                        for k in np.arange(3, 97, 3):
+                            euler_rep[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
 
-            srnn_gt_euler.append(denormed)
+                srnn_gt_euler.append(euler_rep)
+            else:
+                srnn_gts_euler.append(denormed)
 
         # Put back in the dictionary
         srnn_gts_euler[action] = srnn_gt_euler

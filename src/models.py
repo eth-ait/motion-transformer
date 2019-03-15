@@ -65,8 +65,8 @@ class BaseModel(object):
         # Hard-coded parameters.
         self.ACTION_SIZE = self.number_of_actions  # 15
         self.JOINT_SIZE = 3 if self.rep == "aa" else 9
-        self.NUM_JOINTS = 21 if self.rep == "aa" else None
-        self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE if self.rep == "aa" else 159  # TODO(kamanuel) hard-coded for now, experimental
+        self.NUM_JOINTS = 21
+        self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE  # 159 if rot_mat and not using new preprocessing
         self.input_size = self.HUMAN_SIZE + self.ACTION_SIZE if self.one_hot else self.HUMAN_SIZE
         # self.HUMAN_SIZE = 54
 
