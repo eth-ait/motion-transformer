@@ -57,6 +57,7 @@ tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire join
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
+tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -958,8 +959,8 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot, new
     # train_subject_ids = [1]
     test_subject_ids = [5]
 
-    train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot)
-    test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot)
+    train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot, FLAGS.use_rotmat)
+    test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot, FLAGS.use_rotmat)
 
     # Compute normalization stats
     data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, new_pp)

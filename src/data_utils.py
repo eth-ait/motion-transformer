@@ -7,6 +7,7 @@ from __future__ import print_function
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import copy
+import cv2
 
 
 def rotmat2euler(R):
@@ -216,7 +217,7 @@ def readCSVasFloat(filename):
     return returnArray
 
 
-def load_data(path_to_dataset, subjects, actions, one_hot):
+def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
     """
     Borrowed from SRNN code. This is how the SRNN code reads the provided .txt files
     https://github.com/asheshjain399/RNNexp/blob/srnn/structural_rnn/CRFProblems/H3.6m/processdata.py#L270
@@ -226,6 +227,7 @@ def load_data(path_to_dataset, subjects, actions, one_hot):
       subjects: list of numbers. The subjects to load
       actions: list of string. The actions to load
       one_hot: Whether to add a one-hot encoding to the data
+      as_rotmat: Whether to convert the data to rotation matrices
     Returns
       trainData: dictionary with k:v
         k=(subject, action, subaction, 'even'), v=(nxd) un-normalized data
@@ -247,14 +249,27 @@ def load_data(path_to_dataset, subjects, actions, one_hot):
                 filename = '{0}/S{1}/{2}_{3}.txt'.format(path_to_dataset, subj, action, subact)
                 action_sequence = readCSVasFloat(filename)
 
-                n, d = action_sequence.shape
-                even_list = range(0, n, 2)
+                n_samples, dof = action_sequence.shape
+                n_joints = dof // 3
+
+                if as_rotmat:
+                    expmap = np.reshape(action_sequence, [n_samples*n_joints, 3])
+                    # first three values are positions, so technically it's meaningless to convert them,
+                    # but we do it anyway because later we discard this values anywho
+                    rotmats = np.zeros([n_samples*n_joints, 3, 3])
+                    for i in range(rotmats.shape[0]):
+                        rotmats[i] = cv2.Rodrigues(expmap[i])[0]
+                    rotmats = np.reshape(rotmats, [n_samples, n_joints*3*3])
+                    action_sequence = rotmats
+                    dof = rotmats.shape[-1]
+
+                even_list = range(0, n_samples, 2)
 
                 if one_hot:
                     # Add a one-hot encoding at the end of the representation
-                    the_sequence = np.zeros((len(even_list), d + nactions), dtype=float)
-                    the_sequence[:, 0:d] = action_sequence[even_list, :]
-                    the_sequence[:, d + action_idx] = 1
+                    the_sequence = np.zeros((len(even_list), dof + nactions), dtype=float)
+                    the_sequence[:, 0:dof] = action_sequence[even_list, :]
+                    the_sequence[:, dof + action_idx] = 1
                     trainData[(subj, action, subact, 'even')] = the_sequence
                 else:
                     trainData[(subj, action, subact, 'even')] = action_sequence[even_list, :]
@@ -318,6 +333,7 @@ def normalization_stats(completeData, ignore_entire_joints=True):
     data_mean = np.mean(completeData, axis=0)
     data_std = np.std(completeData, axis=0)
 
+    # TODO make this work for rotation matrices
     # Manuel way.
     if ignore_entire_joints:
         joints_to_ignore = np.where(np.all(np.reshape(data_std, [-1, 3]) < 1e-4, axis=-1))[0]
