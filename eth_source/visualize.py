@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import quaternion
 from matplotlib import pyplot as plt, animation as animation
 from matplotlib.animation import writers
 from mpl_toolkits.mplot3d import Axes3D
@@ -15,20 +16,41 @@ class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
     """
-    def __init__(self, smpl_model_path, video_dir=None):
+    def __init__(self, smpl_model_path, video_dir=None, rep="rot_mat"):
         self.smpl_fk = SMPLForwardKinematicsNP(smpl_model_path)
         self.video_dir = video_dir
+        self.rep = rep
+        assert rep in ["rot_mat", "quat"]
 
     def visualize(self, seed, prediction, target, title):
         """
         Visualize prediction and ground truth side by side. At the moment only supports sparse pose input in rotation
-        matrix format.
+        matrix or quaternion format.
         Args:
             seed: A np array of shape (seed_seq_length, n_joints*dof)
             prediction: A np array of shape (target_seq_length, n_joints*dof)
             target: A np array of shape (target_seq_length, n_joints*dof)
             title: Title of the plot
         """
+        if self.rep == "quat":
+            self.visualize_quat(seed, prediction, target, title)
+        else:
+            self.visualize_rotmat(seed, prediction, target, title)
+
+    def visualize_quat(self, seed, prediction, target, title):
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 4
+        assert prediction.shape[0] == target.shape[0]
+        dof = 4
+
+        def _to_rotmat(x):
+            b = x.shape[0]
+            xq = quaternion.from_float_array(np.reshape(x, [b, -1, dof]))
+            xr = quaternion.as_rotation_matrix(xq)
+            return np.reshape(xr, [b, -1])
+
+        self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
+
+    def visualize_rotmat(self, seed, prediction, target, title):
         assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 9
         assert prediction.shape[0] == target.shape[0]
         n_joints = len(SMPL_MAJOR_JOINTS)

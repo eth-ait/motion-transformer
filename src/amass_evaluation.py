@@ -17,10 +17,16 @@ from visualize import Visualizer
 def create_and_restore_model(session, experiment_dir, config, args):
     # Create dataset.
     windows_length = args.seq_length_in + args.seq_length_out
-    assert windows_length == 160, "TFRecords are hardcoded with length of 160."
-
     rep = "quat" if config.get('use_quat', False) else "rotmat"
-    test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
+
+    if args.dynamic_test_split:
+        config['target_seq_len'] = args.seq_length_out
+        test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test_dynamic", "amass-?????-of-?????")
+    else:
+        test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
+        assert windows_length == 160, "TFRecords are hardcoded with length of 160."
+        windows_length = 0  # set to 0 so that dataset class works as intended
+
     meta_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "stats.npz")
 
     data_normalization = not (args.no_normalization or config.get("no_normalization", False))
@@ -29,7 +35,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
                                           meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=0,
+                                          extract_windows_of=windows_length,
                                           num_parallel_calls=16,
                                           normalize=data_normalization)
         test_pl = test_data.get_tf_samples()
@@ -158,8 +164,9 @@ def evaluate(experiment_dir, config, args):
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
             video_dir = experiment_dir if args.visualize_save else None
-            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", video_dir)
-            n_samples_viz = 10
+            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", video_dir,
+                                    rep="quat" if test_model.use_quat else "rot_mat")
+            n_samples_viz = 20
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
@@ -173,13 +180,12 @@ if __name__ == '__main__':
     parser.add_argument('--model_id', required=True, default=None, type=str, help='Experiment ID (experiment timestamp).')
     parser.add_argument('--seq_length_in', required=False, default=100, type=int, help='Seed sequence length')
     parser.add_argument('--seq_length_out', required=False, default=60, type=int, help='Target sequence length')
-    parser.add_argument('--test_data_path', required=False, default="../data/amass/tfrecords/test/amass-?????-of-?????", type=str, help='Path to test data.')
-    parser.add_argument('--meta_data_path', required=False, default="../data/amass/tfrecords/training/stats.npz", type=str, help='Path to meta-data file.')
     parser.add_argument('--batch_size', required=False, default=64, type=int, help='Batch size')
     parser.add_argument('--no_normalization', required=False, action="store_true", help='If set, do not use zero-mean unit-variance normalization.')
     parser.add_argument('--glog_entry', required=False, action="store_true", help='Write to the Google sheet.')
     parser.add_argument('--visualize', required=False, action="store_true", help='Visualize model predictions.')
     parser.add_argument('--visualize_save', required=False, action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
+    parser.add_argument('--dynamic_test_split', required=False, action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
     try:
