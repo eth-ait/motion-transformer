@@ -10,7 +10,7 @@ import rnn_cell_extensions  # my extensions of the tf repos
 
 # ETH imports
 from constants import Constants as C
-from tf_model_utils import get_activation_fn
+from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
 from tf_rnn_cells import LatentCell, GaussianLatentCell
 from data_utils import softmax
@@ -37,6 +37,7 @@ class BaseModel(object):
         self.loss_on_encoder_outputs = config['loss_on_encoder_outputs']
         self.output_layer_config = config.get('output_layer', dict())
         self.activation_fn = get_activation_fn(self.output_layer_config.get('activation_fn', None))
+        self.rep = config["rep"]
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -63,9 +64,9 @@ class BaseModel(object):
 
         # Hard-coded parameters.
         self.ACTION_SIZE = self.number_of_actions  # 15
-        self.JOINT_SIZE = 3
+        self.JOINT_SIZE = 3 if self.rep == "aa" else 9
         self.NUM_JOINTS = 21
-        self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
+        self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE  # 159 if rot_mat and not using new preprocessing
         self.input_size = self.HUMAN_SIZE + self.ACTION_SIZE if self.one_hot else self.HUMAN_SIZE
         # self.HUMAN_SIZE = 54
 
@@ -1521,12 +1522,12 @@ class StructuredSTCN(STCN):
         super(StructuredSTCN, self).build_loss()
 
 
-class RNNLatentCellModel(BaseModel):
+class RNN(BaseModel):
     """
-    Variational RNN model.
+    Autoregressive RNN.
     """
     def __init__(self, config, session, mode, reuse, dtype, **kwargs):
-        super(RNNLatentCellModel, self).__init__(config, session, mode, reuse, dtype, **kwargs)
+        super(RNN, self).__init__(config, session, mode, reuse, dtype, **kwargs)
         self.cell_config = self.config.get("cell")
         self.input_layer_config = config.get('input_layer', None)
 
@@ -1546,7 +1547,7 @@ class RNNLatentCellModel(BaseModel):
             # [9,10,11,12,13]
             if self.is_training:
                 self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, self.target_seq_len, self.input_size], name="dec_in")
-                self.sequence_length = self.source_seq_len + self.target_seq_len
+                self.sequence_length = self.source_seq_len + self.target_seq_len - 1
             else:
                 self.decoder_inputs = tf.placeholder(self.dtype, shape=[None, None, self.input_size], name="dec_in")
                 self.sequence_length = tf.shape(self.decoder_inputs)[1]
@@ -1556,8 +1557,8 @@ class RNNLatentCellModel(BaseModel):
         # Get the last frame of decoder_outputs in order to use in approximate inference.
         last_frame = self.decoder_outputs[:, -1:, :]
         all_frames = tf.concat([self.encoder_inputs, self.decoder_inputs, last_frame], axis=1)
-        self.prediction_inputs = all_frames  # [:, :-1, :]
-        self.prediction_targets = all_frames  # [:, 1:, :]
+        self.prediction_inputs = all_frames[:, :-1, :]
+        self.prediction_targets = all_frames[:, 1:, :]
         self.prediction_seq_len = tf.ones((tf.shape(self.prediction_targets)[0]), dtype=tf.int32)*self.sequence_length
 
         self.tf_batch_size = self.prediction_inputs.shape.as_list()[0]
@@ -1584,8 +1585,11 @@ class RNNLatentCellModel(BaseModel):
         return self.inputs_hidden
 
     def create_cell(self):
-        return LatentCell.get(self.cell_config["type"], self.cell_config, self.mode, self.reuse,
-                              global_step=self.global_step)
+        return get_rnn_cell(cell_type=self.cell_config["cell_type"],
+                            size=self.cell_config["cell_size"],
+                            num_layers=self.cell_config["cell_num_layers"],
+                            mode=self.mode,
+                            reuse=self.reuse)
 
     def build_network(self):
         self.cell = self.create_cell()
@@ -1599,30 +1603,12 @@ class RNNLatentCellModel(BaseModel):
                                                                  sequence_length=self.prediction_seq_len,
                                                                  initial_state=self.initial_states,
                                                                  dtype=tf.float32)
-            self.prediction_representation = self.rnn_outputs[-1]
-
-        self.cell.register_sequence_components(self.rnn_outputs)
+            self.prediction_representation = self.rnn_outputs
         self.build_output_layer()
         self.build_loss()
 
     def build_loss(self):
-        super(RNNLatentCellModel, self).build_loss()
-
-        # KLD Loss.
-        if self.is_training:
-            loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
-            latent_loss_dict = self.cell.build_loss(loss_mask, tf.reduce_mean)
-            for loss_key, loss_op in latent_loss_dict.items():
-                self.loss += loss_op
-                self.summary_ops[loss_key] = tf.summary.scalar(str(loss_key),
-                                                               loss_op,
-                                                               collections=[self.mode + "/model_summary"])
-
-    def summary_routines(self):
-        self.kld_weight_summary = tf.summary.scalar(self.mode + "/kld_weight",
-                                                    self.cell.kld_weight,
-                                                    collections=[self.mode + "/model_summary"])
-        super(RNNLatentCellModel, self).summary_routines()
+        super(RNN, self).build_loss()
 
     def optimization_routines(self):
         # Gradients and update operation for training the model.
@@ -1637,7 +1623,8 @@ class RNNLatentCellModel(BaseModel):
             else:
                 self.gradient_norms = tf.global_norm(gradients)
 
-            self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params), global_step=self.global_step)
+            self.parameter_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, params),
+                                                              global_step=self.global_step)
 
     def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
         """Run a step of the model feeding the given inputs.
@@ -1685,15 +1672,15 @@ class RNNLatentCellModel(BaseModel):
         num_samples = encoder_inputs.shape[0]
         input_sequence = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1, :]], axis=1)
         # Get the model state by feeding the seed sequence.
-        feed_dict = {self.prediction_inputs: input_sequence,
+        feed_dict = {self.prediction_inputs : input_sequence,
                      self.prediction_seq_len: np.ones(input_sequence.shape[0])*input_sequence.shape[1]}
         state, prediction = self.session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
 
         predictions = [prediction[:, -1]]
         for step in range(self.target_seq_len - 1):
             # get the prediction
-            feed_dict = {self.prediction_inputs: prediction,
-                         self.initial_states: state,
+            feed_dict = {self.prediction_inputs : prediction,
+                         self.initial_states    : state,
                          self.prediction_seq_len: np.ones(num_samples)}
             state, prediction = self.session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
             predictions.append(prediction[:, -1])

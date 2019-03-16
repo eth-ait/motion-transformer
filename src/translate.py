@@ -15,6 +15,7 @@ import numpy as np
 import tensorflow as tf
 
 import data_utils
+import cv2
 import models
 
 # ETH imports
@@ -51,12 +52,14 @@ tf.app.flags.DEFINE_boolean("use_cpu", False, "Whether to use the CPU")
 tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
-tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or vrnn")
+tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2seq_feedback, wavenet, stcn, structured_stcn or rnn")
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
+tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
+tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")  # TODO(kamanuel) implement this for all models
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -78,7 +81,7 @@ def create_model(session, actions, sampling=False):
         model_cls, config, experiment_name = create_seq2seq_model(actions, sampling)
     elif FLAGS.model_type == "structured_stcn":
         model_cls, config, experiment_name = create_stcn_model(actions, sampling)
-    elif FLAGS.model_type == "vrnn":
+    elif FLAGS.model_type == "rnn":
         model_cls, config, experiment_name = create_rnn_model(actions, sampling)
     else:
         raise Exception("Unknown model type.")
@@ -100,6 +103,9 @@ def create_model(session, actions, sampling=False):
             reuse=True,
             dtype=tf.float32)
         eval_model.build_graph()
+
+    experiment_name += "{}{}".format("-rotmat" if FLAGS.use_rotmat else "",
+                                     "-force_mat" if FLAGS.force_valid_rot else "")
 
     num_param = 0
     for v in tf.global_variables():
@@ -154,28 +160,29 @@ def create_rnn_model(actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['seed'] = 1234
-    config['learning_rate'] = 5e-4
+    config['learning_rate'] = 1e-3
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['cell']['type'] = C.LATENT_GAUSSIAN
-    config['cell']['latent_size'] = 64
-    config['cell']["hidden_activation_fn"] = C.RELU
-    config['cell']["num_hidden_units"] = 256
-    config['cell']["num_hidden_layers"] = 2
-    config['cell']['latent_sigma_threshold'] = 5.0
     config['cell']['cell_type'] = C.LSTM
-    config['cell']['cell_size'] = 512
+    config['cell']['cell_size'] = 1024
     config['cell']['cell_num_layers'] = 1
+    if FLAGS.model_type == 'vrnn':
+        config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+        config['cell']['type'] = C.LATENT_GAUSSIAN
+        config['cell']['latent_size'] = 64
+        config['cell']["hidden_activation_fn"] = C.RELU
+        config['cell']["num_hidden_units"] = 256
+        config['cell']["num_hidden_layers"] = 1
+        config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.1
     config['input_layer']['num_layers'] = 1
-    config['input_layer']['size'] = 256
+    config['input_layer']['size'] = 512
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 256
+    config['output_layer']['num_layers'] = 1
+    config['output_layer']['size'] = 64
     config['output_layer']['activation_fn'] = C.RELU
 
     config['grad_clip_by_norm'] = 1
@@ -190,20 +197,20 @@ def create_rnn_model(actions, sampling=False):
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
-    if FLAGS.model_type == "vrnn":
-        model_cls = models.RNNLatentCellModel
+    if FLAGS.model_type == "rnn":
+        model_cls = models.RNN
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-l{}_{}@{}{}-in{}_out{}-{}-{}"
+    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     config['batch_size'],
-                                                    config['cell']['latent_size'],
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
                                                     '-residual_vel' if FLAGS.residual_velocities else '',
@@ -224,12 +231,12 @@ def create_stcn_model(actions, sampling=False):
     config['learning_rate_decay_steps'] = 1000
     config['latent_layer'] = dict()
     config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
-    config['latent_layer']['latent_size'] = [256, 128, 64, 32, 16, 8, 4]
+    config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 100
-    config['latent_layer']["num_hidden_layers"] = 1
+    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 4
     config['latent_layer']['use_fixed_pz1'] = False
     config['latent_layer']['use_same_q_sample'] = False
@@ -240,17 +247,17 @@ def create_stcn_model(actions, sampling=False):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0
+    config['input_layer']['dropout_rate'] = 0.1
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
-    config['output_layer']['size'] = 64
+    config['output_layer']['num_layers'] = 2
+    config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 28
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*7
     config['cnn_layer']['activation_fn'] = C.RELU
@@ -273,6 +280,7 @@ def create_stcn_model(actions, sampling=False):
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
     if FLAGS.model_type == "stcn":
         model_cls = models.STCN
@@ -332,6 +340,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['output_layer']['size'] = 128
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = FLAGS.angle_loss
+    config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
     config['action_loss_type'] = C.LOSS_ACTION_L2
     if FLAGS.action_loss != C.LOSS_ACTION_L2:
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
@@ -391,9 +400,11 @@ def train():
         test_writer = train_writer
         print("Model created")
 
+        rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
-        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore, not FLAGS.omit_one_hot)
+        srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore, not FLAGS.omit_one_hot, rep)
 
         # === This is the training loop ===
         step_time, loss, val_loss = 0.0, 0.0, 0.0
@@ -451,7 +462,8 @@ def train():
                     # Denormalize the output
                     srnn_pred_expmap = data_utils.revert_output_format(srnn_poses,
                                                                        data_mean, data_std, dim_to_ignore, actions,
-                                                                       not FLAGS.omit_one_hot)
+                                                                       not FLAGS.omit_one_hot,
+                                                                       rep=rep)
 
                     # Save the errors here
                     mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
@@ -461,17 +473,28 @@ def train():
                     # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-247769197
                     N_SEQUENCE_TEST = 8
                     for i in np.arange(N_SEQUENCE_TEST):
-                        eulerchannels_pred = srnn_pred_expmap[i]
+                        eulerchannels_pred = np.zeros([srnn_pred_expmap[i].shape[0], 99])
 
                         # Convert from exponential map to Euler angles
                         for j in np.arange(eulerchannels_pred.shape[0]):
-                            for k in np.arange(3, 97, 3):
-                                eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
-                                    data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
+                            if FLAGS.use_rotmat:
+                                n_joints = eulerchannels_pred.shape[-1] // 9
+                                for joint in range(n_joints):
+                                    if joint == 0 or joint == 1:
+                                        # this is global translation or global rotation, ignore
+                                        continue
+                                    else:
+                                        init_rot = np.reshape(srnn_pred_expmap[i][j, joint*9:(joint+1)*9], [3, 3])
+                                        # make sure rotation matrix is valid
+                                        init_rot = data_utils.get_closest_rotmat(init_rot)
+                                        eulerchannels_pred[j, joint*3:(joint+1)*3] = data_utils.rotmat2euler(init_rot)
+                            else:
+                                for k in np.arange(3, 97, 3):
+                                    eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
+                                        data_utils.expmap2rotmat(srnn_pred_expmap[i][j, k:k + 3]))
 
                         # The global translation (first 3 entries) and global rotation
-                        # (next 3 entries) are also not considered in the error, so the_key
-                        # are set to zero.
+                        # (next 3 entries) are also not considered in the error, so they are set to zero.
                         # See https://github.com/asheshjain399/RNNexp/issues/6#issuecomment-249404882
                         gt_i = np.copy(srnn_gts_euler[action][i])
                         gt_i[:, 0:6] = 0
@@ -765,7 +788,7 @@ def train():
                 sys.stdout.flush()
 
 
-def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, one_hot, to_euler=True):
+def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, one_hot, rep, to_euler=True):
     """
     Get the ground truths for srnn's sequences, and convert to Euler angles.
     (the error is always computed in Euler angles).
@@ -784,6 +807,7 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
       srnn_gts_euler: a dictionary where the keys are actions, and the values
         are the ground_truth, denormalized expected outputs of srnns's seeds.
     """
+    assert rep in ["rot_mat", "aa"]
     srnn_gts_euler = {}
 
     for action in actions:
@@ -797,11 +821,28 @@ def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, o
                                                   one_hot)
 
             if to_euler:
-                for j in np.arange(denormed.shape[0]):
-                    for k in np.arange(3, 97, 3):
-                        denormed[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
+                if rep == "rot_mat":
+                    euler_rep = np.zeros([denormed.shape[0], 99])
+                    for j in np.arange(denormed.shape[0]):
+                        n_joints = denormed.shape[1] // 9
+                        for joint in range(n_joints):
+                            if joint == 0 or joint == 1:
+                                # this is global translation or rotation, ignore
+                                continue
+                            else:
+                                init_rot = np.reshape(denormed[j, joint * 9:(joint + 1) * 9], [3, 3])
+                                # make sure rotation matrix is valid
+                                init_rot = data_utils.get_closest_rotmat(init_rot)
+                                euler_rep[j, joint * 3:(joint + 1) * 3] = data_utils.rotmat2euler(init_rot)
+                else:
+                    euler_rep = denormed.copy()
+                    for j in np.arange(denormed.shape[0]):
+                        for k in np.arange(3, 97, 3):
+                            euler_rep[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
 
-            srnn_gt_euler.append(denormed)
+                srnn_gt_euler.append(euler_rep)
+            else:
+                srnn_gt_euler.append(denormed)
 
         # Put back in the dictionary
         srnn_gts_euler[action] = srnn_gt_euler
@@ -813,7 +854,7 @@ def sample():
     """Sample predictions for srnn's seeds"""
 
     if FLAGS.experiment_id is None:
-        raise (ValueError, "Must give an experiment id to read parameters from")
+        raise ValueError("Must give an experiment id to read parameters from")
 
     actions = define_actions(FLAGS.action)
 
@@ -826,6 +867,8 @@ def sample():
         train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions, sampling)
         print("Model created")
 
+        rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
         # Load all the data
         train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(
             actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
@@ -834,9 +877,27 @@ def sample():
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
         srnn_gts_expmap = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
-                                       not FLAGS.omit_one_hot, to_euler=False)
+                                       not FLAGS.omit_one_hot, rep, to_euler=False)
         srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
-                                      not FLAGS.omit_one_hot)
+                                      not FLAGS.omit_one_hot, rep, to_euler=True)
+
+        def _to_expmap(_list_of_samples):
+            """list of samples expected in shape (seq_len, n_joints*3*3)"""
+            _converted = []
+            for _the_sample in _list_of_samples:
+                _seq_len = _the_sample.shape[0]
+                _rots = np.reshape(_the_sample, [-1, 3, 3])
+                _aas = np.zeros([_rots.shape[0], 3])
+                for _r in range(_rots.shape[0]):
+                    _aas[_r] = np.squeeze(cv2.Rodrigues(_rots[_r])[0])
+                _converted.append(np.reshape(_aas, [_seq_len, 99]))
+            return _converted
+
+        if rep == "rot_mat":
+            srnn_gts_expmap_c = dict()
+            for action in srnn_gts_expmap:
+                srnn_gts_expmap_c[action] = _to_expmap(srnn_gts_expmap[action])
+            srnn_gts_expmap = srnn_gts_expmap_c
 
         # Clean and create a new h5 file of samples
         SAMPLES_FNAME = os.path.join(experiment_dir, 'samples.h5')
@@ -854,9 +915,12 @@ def sample():
 
             # denormalizes too
             srnn_pred_expmap = data_utils.revert_output_format(srnn_poses, data_mean, data_std, dim_to_ignore, actions,
-                                                               not FLAGS.omit_one_hot)
+                                                               not FLAGS.omit_one_hot, rep)
 
             # Save the conditioning seeds
+            if rep == "rot_mat":
+                # convert back to exponential map
+                srnn_pred_expmap = _to_expmap(srnn_pred_expmap)
 
             # Save the samples
             with h5py.File(SAMPLES_FNAME, 'a') as hf:
@@ -871,32 +935,33 @@ def sample():
             # Compute and save the errors here
             mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
 
-            for i in np.arange(8):
-
-                eulerchannels_pred = srnn_pred_expmap[i]
-
-                for j in np.arange(eulerchannels_pred.shape[0]):
-                    for k in np.arange(3, 97, 3):
-                        eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
-                            data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
-
-                eulerchannels_pred[:, 0:6] = 0
-
-                # Pick only the dimensions with sufficient standard deviation. Others are ignored.
-                idx_to_use = np.where(np.std(eulerchannels_pred, 0) > 1e-4)[0]
-
-                euc_error = np.power(srnn_gts_euler[action][i][:, idx_to_use] - eulerchannels_pred[:, idx_to_use], 2)
-                euc_error = np.sum(euc_error, 1)
-                euc_error = np.sqrt(euc_error)
-                mean_errors[i, :] = euc_error
-
-            mean_mean_errors = np.mean(mean_errors, 0)
-            # print(action)
-            # print(','.join(map(str, mean_mean_errors.tolist())))
-
-            with h5py.File(SAMPLES_FNAME, 'a') as hf:
-                node_name = 'mean_{0}_error'.format(action)
-                hf.create_dataset(node_name, data=mean_mean_errors)
+            # Not interested in this for the moment
+            # for i in np.arange(8):
+            #
+            #     eulerchannels_pred = srnn_pred_expmap[i]
+            #
+            #     for j in np.arange(eulerchannels_pred.shape[0]):
+            #         for k in np.arange(3, 97, 3):
+            #             eulerchannels_pred[j, k:k + 3] = data_utils.rotmat2euler(
+            #                 data_utils.expmap2rotmat(eulerchannels_pred[j, k:k + 3]))
+            #
+            #     eulerchannels_pred[:, 0:6] = 0
+            #
+            #     # Pick only the dimensions with sufficient standard deviation. Others are ignored.
+            #     idx_to_use = np.where(np.std(eulerchannels_pred, 0) > 1e-4)[0]
+            #
+            #     euc_error = np.power(srnn_gts_euler[action][i][:, idx_to_use] - eulerchannels_pred[:, idx_to_use], 2)
+            #     euc_error = np.sum(euc_error, 1)
+            #     euc_error = np.sqrt(euc_error)
+            #     mean_errors[i, :] = euc_error
+            #
+            # mean_mean_errors = np.mean(mean_errors, 0)
+            # # print(action)
+            # # print(','.join(map(str, mean_mean_errors.tolist())))
+            #
+            # with h5py.File(SAMPLES_FNAME, 'a') as hf:
+            #     node_name = 'mean_{0}_error'.format(action)
+            #     hf.create_dataset(node_name, data=mean_mean_errors)
 
     return
 
@@ -958,15 +1023,17 @@ def read_all_data(actions, seq_length_in, seq_length_out, data_dir, one_hot, new
     # train_subject_ids = [1]
     test_subject_ids = [5]
 
-    train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot)
-    test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot)
+    rep = "rot_mat" if FLAGS.use_rotmat else "aa"
+
+    train_set, complete_train = data_utils.load_data(data_dir, train_subject_ids, actions, one_hot, FLAGS.use_rotmat)
+    test_set, complete_test = data_utils.load_data(data_dir, test_subject_ids, actions, one_hot, FLAGS.use_rotmat)
 
     # Compute normalization stats
-    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, new_pp)
+    data_mean, data_std, dim_to_ignore, dim_to_use = data_utils.normalization_stats(complete_train, rep, new_pp)
 
     # Normalize -- subtract mean, divide by stdev
-    train_set = data_utils.normalize_data(train_set, data_mean, data_std, dim_to_use, actions, one_hot)
-    test_set = data_utils.normalize_data(test_set, data_mean, data_std, dim_to_use, actions, one_hot)
+    train_set = data_utils.normalize_data(train_set, data_mean, data_std, dim_to_use, actions, one_hot, rep)
+    test_set = data_utils.normalize_data(test_set, data_mean, data_std, dim_to_use, actions, one_hot, rep)
     print("done reading data.")
 
     return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
