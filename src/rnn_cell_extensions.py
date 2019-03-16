@@ -36,8 +36,8 @@ class ResidualWrapper(RNNCell):
 
         self._cell = cell
         self._error_signal_size = error_signal_size
-        self._connection_type = connection_type
-        assert connection_type in ["plus", "matmul"]
+        # self._connection_type = connection_type
+        # assert connection_type in ["plus", "matmul"]
 
     @property
     def state_size(self):

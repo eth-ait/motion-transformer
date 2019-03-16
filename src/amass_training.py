@@ -44,6 +44,9 @@ tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the ou
 tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
 tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
+tf.app.flags.DEFINE_boolean("wavenet_enc_skip", False, "Wavenet model using skip connections.")
+tf.app.flags.DEFINE_boolean("wavenet_enc_last", False, "Wavenet model using the last layer.")
+tf.app.flags.DEFINE_boolean("wavenet_enc_raw", False, "Wavenet model using the inputs.")
 
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -147,7 +150,7 @@ def create_model(session):
     with tf.name_scope("validation_data"):
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
                                            meta_data_path=meta_data_path,
-                                           batch_size=args.batch_size*2,
+                                           batch_size=args.batch_size,
                                            shuffle=False,
                                            extract_windows_of=windows_length,
                                            num_parallel_calls=16,
@@ -365,7 +368,7 @@ def get_stcn_config(args):
     config['input_layer']['dropout_rate'] = args.input_dropout_rate  # dict(values=[0.1, 0.5, 0.1], step=5e3, type=C.DECAY_PC)
     config['output_layer'] = dict()
     config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 64
+    config['output_layer']['size'] = 128
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
@@ -378,9 +381,9 @@ def get_stcn_config(args):
     config['cnn_layer']['activation_fn'] = C.RELU
     config['cnn_layer']['use_residual'] = True
     config['cnn_layer']['zero_padding'] = True
-    config['decoder_use_enc_skip'] = False
-    config['decoder_use_enc_last'] = False
-    config['decoder_use_raw_inputs'] = False
+    config['decoder_use_enc_skip'] = args.wavenet_enc_skip
+    config['decoder_use_enc_last'] = args.wavenet_enc_last
+    config['decoder_use_raw_inputs'] = args.wavenet_enc_raw
     config['grad_clip_by_norm'] = 1
     config['use_future_steps_in_q'] = False
     config['loss_on_encoder_outputs'] = True
@@ -391,7 +394,7 @@ def get_stcn_config(args):
     config['batch_size'] = args.batch_size
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
-    config['residual_velocities_type'] = args.residual_velocities
+    config['residual_velocities_type'] = args.residual_velocities_type
     config['joint_prediction_model'] = args.joint_prediction_model
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
@@ -410,6 +413,13 @@ def get_stcn_config(args):
         model_cls = models.Wavenet
         if not(config['decoder_use_enc_skip'] or config['decoder_use_enc_last'] or config['decoder_use_raw_inputs']):
             config['decoder_use_enc_last'] = True
+        model_exp_name = "-use"
+        if config['decoder_use_enc_skip']:
+            model_exp_name += "_skip"
+        if config['decoder_use_enc_last']:
+            model_exp_name += "_last"
+        if config['decoder_use_raw_inputs']:
+            model_exp_name += "_raw"
         del config["latent_layer"]
     elif args.model_type == "structured_stcn":
         model_cls = models.StructuredSTCN

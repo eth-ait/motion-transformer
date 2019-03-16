@@ -13,6 +13,7 @@ from tf_models import LatentLayer
 from tf_rnn_cells import LatentCell
 from tf_loss_quat import quaternion_norm
 from tf_loss_quat import quaternion_loss
+from motion_metrics import get_closest_rotmat
 
 
 class BaseModel(object):
@@ -150,7 +151,7 @@ class BaseModel(object):
         with tf.name_scope("loss_angles"):
             if self.use_quat:
                 # TODO(kamanuel) for now use the loss that is equivalent to log(R*R^T)
-                loss_type = "quat_dev_identity"
+                loss_type = "quat_l2"
                 loss_per_frame = quaternion_loss(targets_pose, predictions_pose, loss_type)
                 loss_per_sample = tf.reduce_sum(loss_per_frame, axis=-1)
                 loss_per_batch = tf.reduce_mean(loss_per_sample)
@@ -821,8 +822,9 @@ class Wavenet(BaseModel):
             model_inputs = np.concatenate([input_sequence[:, -end_idx:], dummy_frame], axis=1)
 
             model_outputs = session.run(self.outputs_tensor, feed_dict={self.data_inputs: model_inputs})
-
-            predictions.append(model_outputs[:, -1:, :])
+            prediction = model_outputs[:, -1:, :]
+            # prediction = np.reshape(get_closest_rotmat(np.reshape(prediction, [-1, 3, 3])), prediction.shape)
+            predictions.append(prediction)
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)
 
         return np.concatenate(predictions, axis=1)
@@ -837,8 +839,7 @@ class Wavenet(BaseModel):
         # Applies padding at the start of the sequence with (kernel_size-1)*dilation zeros.
         padding_steps = (kernel_size - 1)*dilation
         if zero_padding and padding_steps > 0:
-            padded_input_layer = tf.pad(input_layer, tf.constant([(0, 0,), (1, 0), (0, 0)])*padding_steps,
-                                        mode='CONSTANT')
+            padded_input_layer = tf.pad(input_layer, tf.constant([(0, 0,), (1, 0), (0, 0)])*padding_steps, mode='CONSTANT')
             input_shape = input_layer.shape.as_list()
             if input_shape[1] is not None:
                 input_shape[1] += padding_steps
@@ -1183,12 +1184,14 @@ class RNN(BaseModel):
 
         prediction = prediction[:, -1:]
         predictions = [prediction]
+        orig_shape = prediction.shape
         for step in range(prediction_steps-1):
             # get the prediction
             feed_dict = {self.prediction_inputs: prediction,
                          self.initial_states: state,
                          self.prediction_seq_len: one_step_seq_len}
             state, prediction = session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+            # prediction = np.reshape(get_closest_rotmat(np.reshape(prediction, [-1, 3, 3])), orig_shape)
             predictions.append(prediction)
 
         return np.concatenate(predictions, axis=1)
