@@ -40,33 +40,52 @@ best_configuration = [
     ]
 
 experiment_list = [
-    # lstm 1024x1
+    # H3.6M only seq2seq aa
     'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --residual_velocities --batch_size 64 --model_type rnn '
-    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
-    '--use_quat --no_normalization --dynamic_validation_split',
-
-
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --cell_type gru --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --residual_velocities --batch_size 64 --model_type rnn '
-    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60',
-
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 128 --cell_type lstm --cell_size 512 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --residual_velocities --batch_size 64 --model_type rnn '
-    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60',
-
-
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
     '--angle_loss joint_sum --output_layer_size 128 --cell_type gru --cell_size 512 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --residual_velocities --batch_size 64 --model_type rnn '
-    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60',
+    '--joint_prediction_model plain --residual_velocities --batch_size 32 --model_type seq2seq '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_h36m_only --test_every 200  --use_aa',
+
+    # H3.6M only seq2seq no velocity aa
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 128 --cell_type gru --cell_size 512 --cell_layers 1 '
+    '--joint_prediction_model plain --batch_size 32 --model_type seq2seq '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_h36m_only --test_every 200 --use_aa',
+
+    # H3.6M only seq2seq
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 128 --cell_type gru --cell_size 512 --cell_layers 1 '
+    '--joint_prediction_model plain --residual_velocities --batch_size 32 --model_type seq2seq '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_h36m_only --test_every 200 --use_aa',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss all_mean --output_layer_size 128 --cell_type gru --cell_size 512 --cell_layers 1 '
+    '--joint_prediction_model plain --residual_velocities --batch_size 32 --model_type seq2seq '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_h36m_only --test_every 200 --use_aa',
+
+    # H3.6M only seq2seq no velocity
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 128 --cell_type gru --cell_size 512 --cell_layers 1 '
+    '--joint_prediction_model plain --batch_size 32 --model_type seq2seq '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_h36m_only --test_every 200 --use_aa',
+
+    # H3.6M only RNN
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 64 --cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--joint_prediction_model fk_joints --batch_size 64 --model_type rnn '
+    '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60 '
+    '--use_aa --use_h36m_only --test_every 200'
     ]
 
 for experiment in experiment_list:

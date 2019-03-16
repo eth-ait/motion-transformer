@@ -39,6 +39,7 @@ class BaseModel(object):
         self.rot_matrix_regularization = config.get('rot_matrix_regularization', False)
         self.prediction_activation = None if not self.rot_matrix_regularization else tf.nn.tanh
         self.use_quat = config.get('use_quat', False)
+        self.use_aa = config.get('use_aa', False)
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -75,7 +76,7 @@ class BaseModel(object):
         self.loss_summary = None
 
         # Hard-coded parameters.
-        self.JOINT_SIZE = 4 if self.use_quat else 9
+        self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa else 9
         self.NUM_JOINTS = 15
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE
@@ -301,7 +302,7 @@ class BaseModel(object):
         Returns:
             A tensor of the same shape as `rotmats` containing the closest rotation matrices.
         """
-        assert not self.use_quat
+        assert not self.use_quat and not self.use_aa
         if self.force_valid_rot:
             # reshape to (N, seq_len, n_joints, 3, 3)
             seq_length = tf.shape(rotmats)[1]
@@ -367,6 +368,8 @@ class BaseModel(object):
 
             # now normalize
             return self.normalize_quaternions(input_t)
+        elif self.use_aa:
+            return input_
         else:
             return self.get_closest_rotmats(input_)
 

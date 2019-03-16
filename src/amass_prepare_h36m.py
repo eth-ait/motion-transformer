@@ -3,6 +3,8 @@ import os
 import pickle as pkl
 import tensorflow as tf
 import quaternion
+import cv2
+
 
 RNG = np.random.RandomState(42)
 
@@ -114,7 +116,24 @@ def rotmat2quat(rotmats):
     return ori_qc
 
 
-def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, create_windows=None):
+def rotmat2aa(rotmats):
+    """
+    Convert rotation matrices to angle-axis.
+    Args:
+        oris: np array of shape (seq_length, n_joints*9).
+
+    Returns: np array of shape (seq_length, n_joints*3)
+    """
+    n_joints = rotmats.shape[-1]//9
+    rots = np.reshape(rotmats, [-1, 3, 3])
+    aas = np.zeros([rots.shape[0], 3])
+    for i in range(rots.shape[0]):
+        aas[i] = np.squeeze(cv2.Rodrigues(rots[i])[0])
+    return np.reshape(aas, [-1, n_joints*3])
+
+
+def process_split(all_fnames, output_path, n_shards, compute_stats, rep, create_windows=None):
+    assert rep in ["rot_mat", "quat", "aa"]
     print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
 
     if not os.path.exists(output_path):
@@ -144,9 +163,12 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, cre
             poses = np.array(data['poses'])  # shape (seq_length, 135)
             assert len(poses) > 0, 'file is empty'
 
-            if as_quat:
+            if rep == "quat":
                 # convert to quaternions
                 poses = rotmat2quat(poses)
+            elif rep == "aa":
+                # convert to angle-axis
+                poses = rotmat2aa(poses)
 
             db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
             if "AMASS" in db_name:
@@ -242,9 +264,12 @@ if __name__ == '__main__':
     n_shards = 1  # need to save the data in shards, it's too big otherwise
     train_subjects = [1, 6, 7, 8, 9, 11]  # for h3.6m this is fixed
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
-    as_quat = True  # converts the data to quaternions
+    as_quat = False  # converts the data to quaternions
+    as_aa = True  # converts tha data to angle_axis
     test_window_size = 160
     test_window_stride = 100
+
+    assert not (as_quat and as_aa), 'must choose between quat or aa'
 
     train_fnames = []
     valid_fnames = []
@@ -273,16 +298,17 @@ if __name__ == '__main__':
 
     print("process training data ...")
     rep = "quat" if as_quat else "rotmat"
+    rep = "aa" if as_aa else "rotmat"
     tr_stats = process_split(train_fnames, os.path.join(output_folder, rep, "training"), n_shards, compute_stats=True,
-                             as_quat=as_quat, create_windows=None)
+                             rep=rep, create_windows=None)
 
     print("process validation data ...")
     va_stats = process_split(valid_fnames, os.path.join(output_folder, rep, "validation"), n_shards, compute_stats=False,
-                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
+                             rep=rep, create_windows=(test_window_size, test_window_stride))
 
     print("process test data ...")
     te_stats = process_split(test_fnames, os.path.join(output_folder, rep, "test"), n_shards, compute_stats=False,
-                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
+                             rep=rep, create_windows=(test_window_size, test_window_stride))
 
     print("Meta stats for all splits combined")
     total_stats = tr_stats

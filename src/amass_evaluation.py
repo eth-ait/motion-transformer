@@ -17,7 +17,7 @@ from visualize import Visualizer
 def create_and_restore_model(session, experiment_dir, config, args):
     # Create dataset.
     windows_length = args.seq_length_in + args.seq_length_out
-    rep = "quat" if config.get('use_quat', False) else "rotmat"
+    rep = "quat" if config.get('use_quat', False) else "aa" if config.get('use_aa') else "rotmat"
 
     data_path = os.environ["AMASS_DATA"]
     if config.get('use_h36m_only', False):
@@ -113,7 +113,7 @@ def evaluate(experiment_dir, config, args):
                                        target_lengths,
                                        force_valid_rot=True,
                                        pck_threshs=pck_threshs,
-                                       rep="quat" if test_model.use_quat else "rot_mat")
+                                       rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()
         # reset computation of metrics
@@ -169,7 +169,7 @@ def evaluate(experiment_dir, config, args):
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
             video_dir = experiment_dir if args.visualize_save else None
             visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", video_dir,
-                                    rep="quat" if test_model.use_quat else "rot_mat")
+                                    rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             n_samples_viz = 20
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)

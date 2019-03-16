@@ -63,6 +63,7 @@ tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-
 tf.app.flags.DEFINE_boolean("rot_matrix_regularization", False, "If set, apply regularization term.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
 tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
+tf.app.flags.DEFINE_boolean("use_aa", False, "Use angle-axis instead of rotation matrices")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
@@ -82,11 +83,19 @@ def create_model(session):
     global_step = tf.Variable(1, trainable=False, name='global_step')
 
     use_quat = args.use_quat
+    use_aa = args.use_aa
+
+    assert not (use_quat and use_quat), 'must choose between quat or aa'
+
     if use_quat:
         assert args.no_normalization, 'we normalize quaternions on the output, so it does not make sense ' \
                                       'to use normalization'
 
+    if use_aa:
+        assert args.use_h36m_only, 'currently only H3.6M is in angle-axis format'
+
     rep = "quat" if use_quat else "rotmat"
+    rep = "aa" if use_aa else rep
 
     data_path = os.environ["AMASS_DATA"]
     if args.use_h36m_only:
@@ -309,6 +318,7 @@ def get_rnn_config(args):
     config['force_valid_rot'] = args.force_valid_rot
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['use_quat'] = args.use_quat
+    config['use_aa'] = args.use_aa
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
 
@@ -329,7 +339,7 @@ def get_rnn_config(args):
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
-                                                    "quat" if args.use_quat else "rotmat",
+                                                    "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
@@ -405,6 +415,7 @@ def get_stcn_config(args):
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
     config['use_quat'] = args.use_quat
+    config['use_aa'] = args.use_aa
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
@@ -430,7 +441,7 @@ def get_stcn_config(args):
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
-                                                    "quat" if args.use_quat else "rotmat",
+                                                    "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
                                                     model_exp_name,
@@ -478,6 +489,7 @@ def get_seq2seq_config(args):
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['no_normalization'] = args.no_normalization
     config['use_quat'] = args.use_quat
+    config['use_aa'] = args.use_aa
     config['use_h36m_only'] = args.use_h36m_only
 
     if args.model_type == "seq2seq":
@@ -494,7 +506,7 @@ def get_seq2seq_config(args):
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
-                                                    "quat" if args.use_quat else "rotmat",
+                                                    "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['angle_loss_type'],
                                                     config['batch_size'],
                                                     args.seq_length_in,
@@ -528,7 +540,7 @@ def train():
         metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
                                        target_lengths,
                                        pck_threshs=pck_threshs,
-                                       rep="quat" if train_model.use_quat else "rot_mat",
+                                       rep="quat" if train_model.use_quat else "aa" if train_model.use_aa else "rot_mat",
                                        force_valid_rot=True)
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()

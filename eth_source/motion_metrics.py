@@ -109,6 +109,23 @@ def rotmat2euler(rotmats):
     return eul
 
 
+def aa2rotmat(angle_axes):
+    """
+    Convert angle-axis to rotation matrices using opencv's Rodrigues formula.
+    Args:
+        angle_axes: A np array of shape (..., 3)
+
+    Returns:
+        A np array of shape (..., 3, 3)
+    """
+    orig_shape = angle_axes.shape[:-1]
+    aas = np.reshape(angle_axes, [-1, 3])
+    rots = np.zeros([aas.shape[0], 3, 3])
+    for i in range(aas.shape[0]):
+        rots[i] = cv2.Rodrigues(aas[i])[0]
+    return np.reshape(rots, orig_shape + (3, 3))
+
+
 def get_closest_rotmat(rotmats):
     """
     Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
@@ -260,7 +277,7 @@ class MetricsEngine(object):
         self.n_samples = 0
         self._should_call_reset = False  # a guard to avoid stupid mistakes
         self.rep = rep
-        assert self.rep in ["rot_mat", "quat"]
+        assert self.rep in ["rot_mat", "quat", "aa"]
         assert is_sparse, "at the moment we expect sparse input; if that changes, " \
                           "the metrics values may not be comparable anymore"
 
@@ -440,6 +457,36 @@ class MetricsEngine(object):
         targs = np.reshape(targ_rots, [batch_size, seq_length, -1])
         return self.compute_rotmat(preds, targs, reduce_fn)
 
+    def compute_aa(self, predictions, targets, reduce_fn="mean"):
+        """
+        Compute the chosen metrics. Predictions and targets are assumed to be in angle-axis format.
+        Args:
+            predictions: An np array of shape (n, seq_length, n_joints*3)
+            targets: An np array of the same shape as `predictions`
+            reduce_fn: Which reduce function to apply to the joint dimension, if applicable. Choices are [mean, sum].
+
+        Returns:
+            A dictionary {metric_name -> values} where the values are given per batch entry and frame as an np array
+            of shape (n, seq_length). `reduce_fn` is only applied to metrics where it makes sense, i.e. not to PCK
+            and euler angle differences.
+        """
+        assert predictions.shape[-1] % 3 == 0, "predictions are not quaternions"
+        assert targets.shape[-1] % 3 == 0, "targets are not quaternions"
+        assert reduce_fn in ["mean", "sum"]
+        assert not self._should_call_reset, "you should reset the state of this class after calling `finalize`"
+        dof = 3
+        batch_size = predictions.shape[0]
+        seq_length = predictions.shape[1]
+
+        # for simplicity we just convert angle-axis to rotation matrices
+        pred_aa = np.reshape(predictions, [batch_size, seq_length, -1, dof])
+        targ_aa = np.reshape(targets, [batch_size, seq_length, -1, dof])
+        pred_rots = aa2rotmat(pred_aa)
+        targ_rots = aa2rotmat(targ_aa)
+        preds = np.reshape(pred_rots, [batch_size, seq_length, -1])
+        targs = np.reshape(targ_rots, [batch_size, seq_length, -1])
+        return self.compute_rotmat(preds, targs, reduce_fn)
+
     def compute(self, predictions, targets, reduce_fn="mean"):
         """
         Compute the chosen metrics. Predictions and targets can be in rotation matrix or quaternion format.
@@ -455,8 +502,10 @@ class MetricsEngine(object):
         """
         if self.rep == "rot_mat":
             return self.compute_rotmat(predictions, targets, reduce_fn)
-        else:
+        elif self.rep == "quat":
             return self.compute_quat(predictions, targets, reduce_fn)
+        else:
+            return self.compute_aa(predictions, targets, reduce_fn)
 
     def aggregate(self, new_metrics):
         """

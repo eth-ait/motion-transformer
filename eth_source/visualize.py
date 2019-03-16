@@ -10,6 +10,7 @@ from smpl import SMPL_MAJOR_JOINTS
 from smpl import SMPL_PARENTS
 from motion_metrics import get_closest_rotmat
 from motion_metrics import is_valid_rotmat
+from motion_metrics import aa2rotmat
 
 
 class Visualizer(object):
@@ -20,7 +21,7 @@ class Visualizer(object):
         self.smpl_fk = SMPLForwardKinematicsNP(smpl_model_path)
         self.video_dir = video_dir
         self.rep = rep
-        assert rep in ["rot_mat", "quat"]
+        assert rep in ["rot_mat", "quat", "aa"]
 
     def visualize(self, seed, prediction, target, title):
         """
@@ -34,8 +35,10 @@ class Visualizer(object):
         """
         if self.rep == "quat":
             self.visualize_quat(seed, prediction, target, title)
-        else:
+        elif self.rep == "rot_mat":
             self.visualize_rotmat(seed, prediction, target, title)
+        else:
+            self.visualize_aa(seed, prediction, target, title)
 
     def visualize_quat(self, seed, prediction, target, title):
         assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 4
@@ -47,6 +50,18 @@ class Visualizer(object):
             xq = quaternion.from_float_array(np.reshape(x, [b, -1, dof]))
             xr = quaternion.as_rotation_matrix(xq)
             return np.reshape(xr, [b, -1])
+
+        self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
+
+    def visualize_aa(self, seed, prediction, target, title):
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 3
+        assert prediction.shape[0] == target.shape[0]
+        dof = 3
+
+        def _to_rotmat(x):
+            b = x.shape[0]
+            xaa = aa2rotmat(np.reshape(x, [b, -1, dof]))
+            return np.reshape(xaa, [b, -1])
 
         self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
 
