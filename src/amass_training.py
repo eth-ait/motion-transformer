@@ -65,6 +65,7 @@ tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted 
 tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
+tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
 
 args = tf.app.flags.FLAGS
 
@@ -86,13 +87,18 @@ def create_model(session):
                                       'to use normalization'
 
     rep = "quat" if use_quat else "rotmat"
-    train_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "amass-?????-of-?????")
+
+    data_path = os.environ["AMASS_DATA"]
+    if args.use_h36m_only:
+        data_path = os.path.join(data_path, '../per_db/h36m')
+
+    train_data_path = os.path.join(data_path, rep, "training", "amass-?????-of-?????")
     if args.dynamic_validation_split:
-        valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation_dynamic", "amass-?????-of-?????")
+        valid_data_path = os.path.join(data_path, rep, "validation_dynamic", "amass-?????-of-?????")
     else:
-        valid_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "validation", "amass-?????-of-?????")
-    test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
-    meta_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "stats.npz")
+        valid_data_path = os.path.join(data_path, rep, "validation", "amass-?????-of-?????")
+    test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
+    meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
     train_dir = os.environ["AMASS_EXPERIMENTS"]
 
     if args.force_valid_rot:
@@ -129,6 +135,8 @@ def create_model(session):
     experiment_name += '{}_norm'.format('-no' if args.no_normalization else '')
     if args.rot_matrix_regularization:
         experiment_name += "rot_loss"
+
+    experiment_name += "{}".format("-h36m" if args.use_h36m_only else "")
 
     with tf.name_scope("training_data"):
         windows_length = args.seq_length_in + args.seq_length_out
@@ -302,6 +310,7 @@ def get_rnn_config(args):
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['use_quat'] = args.use_quat
     config['no_normalization'] = args.no_normalization
+    config['use_h36m_only'] = args.use_h36m_only
 
     model_exp_name = ""
     if args.model_type == "rnn":
@@ -398,6 +407,7 @@ def get_stcn_config(args):
     config['use_quat'] = args.use_quat
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['no_normalization'] = args.no_normalization
+    config['use_h36m_only'] = args.use_h36m_only
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -468,6 +478,7 @@ def get_seq2seq_config(args):
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['no_normalization'] = args.no_normalization
     config['use_quat'] = args.use_quat
+    config['use_h36m_only'] = args.use_h36m_only
 
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel

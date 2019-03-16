@@ -19,15 +19,19 @@ def create_and_restore_model(session, experiment_dir, config, args):
     windows_length = args.seq_length_in + args.seq_length_out
     rep = "quat" if config.get('use_quat', False) else "rotmat"
 
+    data_path = os.environ["AMASS_DATA"]
+    if config.get('use_h36m_only', False):
+        data_path = os.path.join(data_path, '../per_db/h36m')
+
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
-        test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test_dynamic", "amass-?????-of-?????")
+        test_data_path = os.path.join(data_path, rep, "test_dynamic", "amass-?????-of-?????")
     else:
-        test_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "test", "amass-?????-of-?????")
+        test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
         assert windows_length == 160, "TFRecords are hardcoded with length of 160."
         windows_length = 0  # set to 0 so that dataset class works as intended
 
-    meta_data_path = os.path.join(os.environ["AMASS_DATA"], rep, "training", "stats.npz")
+    meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
     data_normalization = not (args.no_normalization or config.get("no_normalization", False))
     with tf.name_scope("test_data"):

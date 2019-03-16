@@ -210,13 +210,13 @@ class TFRecordMotionDataset(Dataset):
             "db_name": tf.FixedLenFeature([], dtype=tf.string),
             "shape": tf.FixedLenFeature([2], dtype=tf.int64),
             "poses": tf.VarLenFeature(dtype=tf.float32),
-            }
+        }
 
         parsed_features = tf.parse_single_example(proto, feature_to_type)
         parsed_features["poses"] = tf.reshape(tf.sparse.to_dense(parsed_features["poses"]), parsed_features["shape"])
 
         # Remove ".pkl" extension.
-        file_id = tf.strings.substr(parsed_features["file_id"], 0, tf.strings.length(parsed_features["file_id"])-4)
+        file_id = tf.strings.substr(parsed_features["file_id"], 0, tf.strings.length(parsed_features["file_id"]) - 4)
         parsed_features["sample_id"] = tf.strings.join([parsed_features["db_name"], file_id], separator="/")
 
         return parsed_features
