@@ -133,36 +133,44 @@ def create_model(session):
     if args.rot_matrix_regularization:
         experiment_name += "rot_loss"
 
+    window_length = args.seq_length_in + args.seq_length_out
     with tf.name_scope("training_data"):
-        windows_length = args.seq_length_in + args.seq_length_out
         train_data = TFRecordMotionDataset(data_path=train_data_path,
                                            meta_data_path=meta_data_path,
                                            batch_size=args.batch_size,
                                            shuffle=True,
-                                           extract_windows_of=windows_length,
+                                           extract_windows_of=window_length,
+                                           extract_random_windows=True,
                                            num_parallel_calls=16,
                                            normalize=not args.no_normalization)
         train_pl = train_data.get_tf_samples()
 
-    assert windows_length == 160, "TFRecords are hardcoded with length of 160."
-    if not args.dynamic_validation_split:
-        windows_length = 0
+    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
+    if args.dynamic_validation_split:
+        extract_random_windows = True
+    else:
+        window_length = 0
+        extract_random_windows = False
+
     with tf.name_scope("validation_data"):
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
                                            meta_data_path=meta_data_path,
                                            batch_size=args.batch_size,
                                            shuffle=False,
-                                           extract_windows_of=windows_length,
+                                           extract_windows_of=window_length,
+                                           extract_random_windows=extract_random_windows,
                                            num_parallel_calls=16,
                                            normalize=not args.no_normalization)
         valid_pl = valid_data.get_tf_samples()
 
+    window_length = 0 if window_length == 160 else window_length
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=0,
+                                          extract_windows_of=window_length,
+                                          extract_random_windows=False,
                                           num_parallel_calls=16,
                                           normalize=not args.no_normalization)
         test_pl = test_data.get_tf_samples()
