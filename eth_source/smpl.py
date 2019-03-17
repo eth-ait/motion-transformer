@@ -24,70 +24,42 @@ SMPL_JOINTS = ['pelvis', 'l_hip', 'r_hip', 'spine1', 'l_knee', 'r_knee', 'spine2
 SMPL_JOINT_MAPPING = {i: x for i, x in enumerate(SMPL_JOINTS)}
 
 
-def smpl_rot_to_global(joint_angles, rep="rot_mat"):
+# TODO(kamanuel) make this compatible with `ForwardKinematics` class in `fk.py`
+
+
+def sparse_to_full(joint_angles_sparse, sparse_joints_idxs, tot_nr_joints, rep="rot_mat"):
     """
-    Converts local smpl rotations into global rotations by "unrolling" the kinematic chain.
-    Args:
-        joint_angles: An np array of rotation matrices of shape (N, SMPL_NR_JOINTS*dof)
-        rep: Which representation is used for `joint_angles`
-
-    Returns:
-        The global rotations as an np array of rotation matrices in format (N, SMPL_NR_JOINTS, 3, 3)
-    """
-    assert rep in ["rot_mat", "quat", "aa"]
-    if rep == "rot_mat":
-        rots = np.reshape(joint_angles, [-1, SMPL_NR_JOINTS, 3, 3])
-    elif rep == "quat":
-        rots = quaternion.as_rotation_matrix(quaternion.from_float_array(
-            np.reshape(joint_angles, [-1, SMPL_NR_JOINTS, 4])))
-    else:
-        rots = quaternion.as_rotation_matrix(quaternion.from_rotation_vector(
-            np.reshape(joint_angles, [-1, SMPL_NR_JOINTS, 3])))
-
-    out = np.zeros_like(rots)
-    dof = rots.shape[-3]
-    for j in range(dof):
-        if SMPL_PARENTS[j] < 0:
-            # root rotation
-            out[..., j, :, :] = rots[..., j, :, :]
-        else:
-            parent_rot = out[..., SMPL_PARENTS[j], :, :]
-            local_rot = rots[..., j, :, :]
-            out[..., j, :, :] = np.matmul(parent_rot, local_rot)
-
-    return out
-
-
-def smpl_sparse_to_full(joint_angles_sparse, sparse_joints_idxs=None, rep="rot_mat"):
-    """
-    Pad the given sparse joint angles with identity elements to retrieve a full SMPL skeleton with SMPL_NR_JOINTS
+    Pad the given sparse joint angles with identity elements to retrieve a full skeleton with `tot_nr_joints`
     many joints.
     Args:
         joint_angles_sparse: An np array of shape (N, len(sparse_joints_idxs) * dof)
           or (N, len(sparse_joints_idxs), dof)
-        sparse_joints_idxs: A list of joint indices pointing into the full SMPL skeleton, defaults to SMPL_MAJOR_JOINTS
+        sparse_joints_idxs: A list of joint indices pointing into the full skeleton given by range(0, tot_nr_joints)
+        tot_nr_jonts: Total number of joints in the full skeleton.
         rep: Which representation is used, rot_mat or quat
 
     Returns:
-        The padded joint angles as an array of shape (N, SMPL_NR_JOINTS*dof)
+        The padded joint angles as an array of shape (N, tot_nr_joints*dof)
     """
-    joint_idxs = sparse_joints_idxs if sparse_joints_idxs is not None else SMPL_MAJOR_JOINTS
-    assert rep in ["rot_mat", "quat"]
-    dof = 9 if rep == "rot_mat" else 4
+    joint_idxs = sparse_joints_idxs
+    assert rep in ["rot_mat", "quat", "aa"]
+    dof = 9 if rep == "rot_mat" else 4 if rep == "quat" else 3
     n_sparse_joints = len(sparse_joints_idxs)
     angles_sparse = np.reshape(joint_angles_sparse, [-1, n_sparse_joints, dof])
 
     # fill in the missing indices with the identity element
-    smpl_full = np.zeros(shape=[angles_sparse.shape[0], SMPL_NR_JOINTS, dof])  # (N, SMPL_NR_JOINTS, dof)
+    smpl_full = np.zeros(shape=[angles_sparse.shape[0], tot_nr_joints, dof])  # (N, tot_nr_joints, dof)
     if rep == "quat":
         smpl_full[..., 0] = 1.0
-    else:
+    elif rep == "rot_mat":
         smpl_full[..., 0] = 1.0
         smpl_full[..., 4] = 1.0
         smpl_full[..., 8] = 1.0
+    else:
+        pass  # nothing to do for angle-axis
 
     smpl_full[:, joint_idxs] = angles_sparse
-    smpl_full = np.reshape(smpl_full, [-1, SMPL_NR_JOINTS * dof])
+    smpl_full = np.reshape(smpl_full, [-1, tot_nr_joints * dof])
     return smpl_full
 
 
@@ -161,7 +133,7 @@ class SMPLForwardKinematics(object):
         """
         assert rep in ["rot_mat", "quat"]
         joint_idxs = sparse_joints_idxs if sparse_joints_idxs is not None else SMPL_MAJOR_JOINTS
-        smpl_full = smpl_sparse_to_full(joint_angles_sparse, joint_idxs, rep)
+        smpl_full = sparse_to_full(joint_angles_sparse, joint_idxs, SMPL_NR_JOINTS, rep)
         fk_func = self.from_quat if rep == "quat" else self.from_rotmat
         positions = fk_func(smpl_full)
         if return_sparse:
@@ -201,7 +173,10 @@ class SMPLForwardKinematicsNP(SMPLForwardKinematics):
         a_global = np.zeros(shape=[n_samples, SMPL_NR_JOINTS, 4, 4])
 
         # insert global rotation for root
+        # TODO(kamanuel) this makes the root not being in the origin - is this a problem? Probably not, because
+        # gt and prediction are computed in the same way
         j0 = np.tile(np.reshape(self.J[0], [1, 1, 3, 1]), [n_samples, 1, 1, 1])
+        # j0 = np.tile(np.reshape([0.0, 0.0, 0.0], [1, 1, 3, 1]), [n_samples, 1, 1, 1])
         r_with_t = np.concatenate([rots[:, 0:1], j0], axis=-1)  # add translation to right of rotation matrix
         root_r = with_zeros(r_with_t)  # shape (n, 1, 4, 4)
 
@@ -232,7 +207,6 @@ class SMPLForwardKinematicsNP(SMPLForwardKinematics):
         """
         angles = np.reshape(joint_angles, [-1, SMPL_NR_JOINTS, 3])
         angles_rotmat = np.zeros(angles.shape + (3, ))
-        # TODO(kamanuel) use own function instead of opencv for improved speed
         for i in range(angles.shape[0]):
             for j in range(SMPL_NR_JOINTS):
                 angles_rotmat[i, j] = cv2.Rodrigues(angles[i, j])[0]

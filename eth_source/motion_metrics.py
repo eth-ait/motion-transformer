@@ -4,9 +4,8 @@ import quaternion
 import tensorflow as tf
 import copy
 
-from smpl import SMPL_NR_JOINTS, SMPL_MAJOR_JOINTS
-from smpl import smpl_sparse_to_full, smpl_rot_to_global
-from smpl import SMPLForwardKinematicsNP
+from smpl import sparse_to_full
+from fk import local_rot_to_global
 
 
 def rad2deg(v):
@@ -253,11 +252,11 @@ class MetricsEngine(object):
     Compute and aggregate various motion metrics. It keeps track of the metric values per frame, so that we can
     evaluate them for different sequence lengths.
     """
-    def __init__(self, smpl_model_path, target_lengths, force_valid_rot, rep, which=None, pck_threshs=None, is_sparse=True):
+    def __init__(self, fk_engine, target_lengths, force_valid_rot, rep, which=None, pck_threshs=None, is_sparse=True):
         """
         Initializer.
         Args:
-            smpl_model_path: Path to the SMPL pickle file.
+            fk_engine: An object of type `ForwardKinematics` used to compute positions.
             target_lengths: List of target sequence lengths that should be evaluated.
             force_valid_rot: If True, the input rotation matrices might not be valid rotations and so it will find
               the closest rotation before computing the metrics.
@@ -270,7 +269,7 @@ class MetricsEngine(object):
         self.which = which if which is not None else ["positional", "joint_angle", "pck", "euler"]
         self.target_lengths = target_lengths
         self.force_valid_rot = force_valid_rot
-        self.smpl_m = SMPLForwardKinematicsNP(smpl_model_path)
+        self.fk_engine = fk_engine
         self.pck_threshs = pck_threshs if pck_threshs is not None else [0.2]
         self.is_sparse = is_sparse
         self.all_summaries_op = None
@@ -355,7 +354,7 @@ class MetricsEngine(object):
         assert reduce_fn in ["mean", "sum"]
         assert not self._should_call_reset, "you should reset the state of this class after calling `finalize`"
         dof = 9
-        n_joints = len(SMPL_MAJOR_JOINTS) if self.is_sparse else SMPL_NR_JOINTS
+        n_joints = len(self.fk_engine.major_joints) if self.is_sparse else self.fk_engine.n_joints
         batch_size = predictions.shape[0]
         seq_length = predictions.shape[1]
         assert n_joints*dof == predictions.shape[-1], "unexpected number of joints"
@@ -378,12 +377,12 @@ class MetricsEngine(object):
 
         # add potentially missing joints
         if self.is_sparse:
-            pred = smpl_sparse_to_full(pred, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
-            targ = smpl_sparse_to_full(targ, sparse_joints_idxs=SMPL_MAJOR_JOINTS, rep="rot_mat")
+            pred = sparse_to_full(pred, self.fk_engine.major_joints, self.fk_engine.n_joints, rep="rot_mat")
+            targ = sparse_to_full(targ, self.fk_engine.major_joints, self.fk_engine.n_joints, rep="rot_mat")
 
         # make sure we don't consider the root orientation
-        assert pred.shape[-1] == SMPL_NR_JOINTS*dof
-        assert targ.shape[-1] == SMPL_NR_JOINTS*dof
+        assert pred.shape[-1] == self.fk_engine.n_joints*dof
+        assert targ.shape[-1] == self.fk_engine.n_joints*dof
         pred[:, 0:9] = np.eye(3, 3).flatten()
         targ[:, 0:9] = np.eye(3, 3).flatten()
 
@@ -391,12 +390,12 @@ class MetricsEngine(object):
 
         if "positional" in self.which or "pck" in self.which:
             # need to compute positions - only do this once for efficiency
-            pred_pos = self.smpl_m.from_rotmat(pred)  # (-1, SMPL_NR_JOINTS, 3)
-            targ_pos = self.smpl_m.from_rotmat(targ)  # (-1, SMPL_NR_JOINTS, 3)
+            pred_pos = self.fk_engine.from_rotmat(pred)  # (-1, full_n_joints, 3)
+            targ_pos = self.fk_engine.from_rotmat(targ)  # (-1, full_n_joints, 3)
         else:
             pred_pos = targ_pos = None
 
-        select_joints = SMPL_MAJOR_JOINTS if self.is_sparse else list(range(SMPL_NR_JOINTS))
+        select_joints = self.fk_engine.major_joints if self.is_sparse else list(range(self.fk_engine.n_joints))
         reduce_fn_np = np.mean if reduce_fn == "mean" else np.sum
 
         for metric in self.which:
@@ -410,15 +409,17 @@ class MetricsEngine(object):
                 metrics[metric] = reduce_fn_np(v, axis=-1)
             elif metric == "joint_angle":
                 # compute the joint angle diff on the global rotations, not the local ones, which is a harder metric
-                pred_global = smpl_rot_to_global(pred, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
-                targ_global = smpl_rot_to_global(targ, rep="rot_mat")  # (-1, SMPL_NR_JOINTS, 3, 3)
+                pred_global = local_rot_to_global(pred, self.fk_engine.parents, left_mult=self.fk_engine.left_mult,
+                                                  rep="rot_mat")  # (-1, full_n_joints, 3, 3)
+                targ_global = local_rot_to_global(targ, self.fk_engine.parents, left_mult=self.fk_engine.left_mult,
+                                                  rep="rot_mat")  # (-1, full_n_joints, 3, 3)
                 v = angle_diff(pred_global[:, select_joints], targ_global[:, select_joints])  # (-1, n_joints)
                 v = np.reshape(v, [batch_size, seq_length, n_joints])
                 metrics[metric] = reduce_fn_np(v, axis=-1)
             elif metric == "euler":
                 # compute the euler angle error on the local rotations, which is how previous work does it
-                pred_local = np.reshape(pred, [-1, SMPL_NR_JOINTS, 3, 3])
-                targ_local = np.reshape(targ, [-1, SMPL_NR_JOINTS, 3, 3])
+                pred_local = np.reshape(pred, [-1, self.fk_engine.n_joints, 3, 3])
+                targ_local = np.reshape(targ, [-1, self.fk_engine.n_joints, 3, 3])
                 v = euler_diff(pred_local[:, select_joints], targ_local[:, select_joints])  # (-1, )
                 metrics[metric] = np.reshape(v, [batch_size, seq_length])
             else:

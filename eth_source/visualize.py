@@ -5,9 +5,6 @@ from matplotlib import pyplot as plt, animation as animation
 from matplotlib.animation import writers
 from mpl_toolkits.mplot3d import Axes3D
 
-from smpl import SMPLForwardKinematicsNP
-from smpl import SMPL_MAJOR_JOINTS
-from smpl import SMPL_PARENTS
 from motion_metrics import get_closest_rotmat
 from motion_metrics import is_valid_rotmat
 from motion_metrics import aa2rotmat
@@ -17,8 +14,8 @@ class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
     """
-    def __init__(self, smpl_model_path, video_dir=None, rep="rot_mat"):
-        self.smpl_fk = SMPLForwardKinematicsNP(smpl_model_path)
+    def __init__(self, fk_engine, video_dir=None, rep="rot_mat"):
+        self.fk_engine = fk_engine
         self.video_dir = video_dir
         self.rep = rep
         assert rep in ["rot_mat", "quat", "aa"]
@@ -41,7 +38,7 @@ class Visualizer(object):
             self.visualize_aa(seed, prediction, target, title)
 
     def visualize_quat(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 4
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 4
         assert prediction.shape[0] == target.shape[0]
         dof = 4
 
@@ -54,7 +51,7 @@ class Visualizer(object):
         self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
 
     def visualize_aa(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 3
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 3
         assert prediction.shape[0] == target.shape[0]
         dof = 3
 
@@ -66,9 +63,9 @@ class Visualizer(object):
         self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
 
     def visualize_rotmat(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(SMPL_MAJOR_JOINTS) * 9
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 9
         assert prediction.shape[0] == target.shape[0]
-        n_joints = len(SMPL_MAJOR_JOINTS)
+        n_joints = len(self.fk_engine.major_joints)
         dof = 9
 
         # stitch seed in front of prediction and target
@@ -85,14 +82,11 @@ class Visualizer(object):
         assert targ_are_valid, 'target rotation matrices are not valid rotations'
 
         # compute positions
-        pred_pos = self.smpl_fk.from_sparse(pred, return_sparse=False)  # (N, SMPL_NR_JOINTS, 3)
-        targ_pos = self.smpl_fk.from_sparse(targ, return_sparse=False)  # (N, SMPL_NR_JOINTS, 3)
+        pred_pos = self.fk_engine.from_sparse(pred, return_sparse=False)  # (N, full_n_joints, 3)
+        targ_pos = self.fk_engine.from_sparse(targ, return_sparse=False)  # (N, full_n_joints, 3)
 
-        # swap y and z because in SMPL y is up
-        def _swap_yz(v):
-            v[..., 1], v[..., 2] = v[..., 2], v[..., 1].copy()
-        _swap_yz(pred_pos)
-        _swap_yz(targ_pos)
+        pred_pos = pred_pos[..., [0, 2, 1]]
+        targ_pos = targ_pos[..., [0, 2, 1]]
 
         if self.video_dir is not None:
             # save output animation to mp4
@@ -104,7 +98,7 @@ class Visualizer(object):
                             colors=['b', 'b'],
                             titles=['prediction', 'target'],
                             fig_title=title,
-                            parents=SMPL_PARENTS,
+                            parents=self.fk_engine.parents,
                             change_color_after_frame=(seed.shape[0], None),
                             out_file=out_name)
 
@@ -200,7 +194,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                 p = np.vstack([b, a])
                 points_j[k].set_data(p[:, :2].T)
                 points_j[k].set_3d_properties(p[:, 2].T)
-                if change_color_after_frame[l] and num >= change_color_after_frame[l]:
+                if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
                     points_j[k].set_color('r')
                 else:
                     points_j[k].set_color(colors[l])
