@@ -155,7 +155,9 @@ def evaluate(experiment_dir, config, args):
                     # Store each test sample and corresponding predictions with the unique sample IDs.
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
-                        
+
+                    # break  # TODO REMOVE
+
             except tf.errors.OutOfRangeError:
                 pass
             finally:

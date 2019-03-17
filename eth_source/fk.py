@@ -58,7 +58,7 @@ class ForwardKinematics(object):
     """
     FK Engine
     """
-    def __init__(self, offsets, parents, left_mult=False, major_joints=None, norm_idx=None):
+    def __init__(self, offsets, parents, left_mult=False, major_joints=None, norm_idx=None, no_root=True):
         self.offsets = offsets
         if norm_idx is not None:
             self.offsets = self.offsets / np.linalg.norm(self.offsets[norm_idx])
@@ -66,6 +66,7 @@ class ForwardKinematics(object):
         self.n_joints = len(parents)
         self.major_joints = major_joints
         self.left_mult = left_mult
+        self.no_root = no_root
         assert self.offsets.shape[0] == self.n_joints
 
     def fk(self, joint_angles):
@@ -86,6 +87,9 @@ class ForwardKinematics(object):
             offsets = self.offsets[np.newaxis, np.newaxis, ...]  # (1, 1, n_joints, 3)
         else:
             offsets = self.offsets[np.newaxis, ..., np.newaxis]  # (1, n_joints, 3, 1)
+
+        if self.no_root:
+            angles[:, 0] = np.eye(3)
 
         for j in range(self.n_joints):
             if self.parents[j] == -1:
@@ -138,7 +142,7 @@ class ForwardKinematics(object):
             sparse_joints_idxs: List of indices into `H36M_JOINTS` pointing out which SMPL joints are used in
               `pose_sparse`. If None defaults to `H36M_MAJOR_JOINTS`.
             rep: "rot_mat" or "quat", which representation is used for the angles in `joint_angles_sparse`
-            return_sparse: if True it will return only the positions of the joints given in `sparse_joint_idxs`
+            return_sparse: If True it will return only the positions of the joints given in `sparse_joint_idxs`.
 
         Returns:
             The joint positions as an array of shape (N, len(sparse_joint_idxs), 3) if `return_sparse` is True
