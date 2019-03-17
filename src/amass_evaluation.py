@@ -12,6 +12,8 @@ from logger import GoogleSheetLogger
 from constants import Constants as C
 from motion_metrics import MetricsEngine
 from visualize import Visualizer
+from fk import H36MForwardKinematics
+from fk import SMPLForwardKinematics
 
 
 def create_and_restore_model(session, experiment_dir, config, args):
@@ -22,6 +24,9 @@ def create_and_restore_model(session, experiment_dir, config, args):
     data_path = os.environ["AMASS_DATA"]
     if config.get('use_h36m_only', False):
         data_path = os.path.join(data_path, '../per_db/h36m')
+
+    if config.get('use_h36m_martinez', False):
+        data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
@@ -106,10 +111,14 @@ def evaluate(experiment_dir, config, args):
         test_iter = test_data.get_iterator()
 
         # Create metrics engine including summaries
-        # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
-        target_lengths = [x for x in C.METRIC_TARGET_LENGTHS if x <= test_model.target_seq_len]
         pck_threshs = C.METRIC_PCK_THRESHS
-        metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
+        if config.get('use_h36m_martinez', False):
+            fk_engine = H36MForwardKinematics()
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_MARTINEZ if x <= test_model.target_seq_len]
+        else:
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= test_model.target_seq_len]
+            fk_engine = SMPLForwardKinematics()
+        metrics_engine = MetricsEngine(fk_engine,
                                        target_lengths,
                                        force_valid_rot=True,
                                        pck_threshs=pck_threshs,
@@ -146,6 +155,7 @@ def evaluate(experiment_dir, config, args):
                     # Store each test sample and corresponding predictions with the unique sample IDs.
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
+                        
             except tf.errors.OutOfRangeError:
                 pass
             finally:
@@ -168,7 +178,7 @@ def evaluate(experiment_dir, config, args):
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
             video_dir = experiment_dir if args.visualize_save else None
-            visualizer = Visualizer("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl", video_dir,
+            visualizer = Visualizer(fk_engine, video_dir,
                                     rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             n_samples_viz = 20
             rng = np.random.RandomState(42)

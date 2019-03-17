@@ -6,12 +6,15 @@ import numpy as np
 import os
 import tensorflow as tf
 import cv2
+import quaternion
 
 from data_utils import readCSVasFloat
 from amass_prepare import create_tfrecord_writers
 from amass_prepare import write_tfexample
 from amass_prepare import split_into_windows
 from amass_prepare import close_tfrecord_writers
+from fk import H36M_NR_JOINTS
+from fk import H36M_MAJOR_JOINTS
 
 
 RNG = np.random.RandomState(42)
@@ -54,7 +57,7 @@ def process_split(poses, one_hots, file_ids, output_path, n_shards, compute_stat
     meta_stats_per_db = dict()
 
     for idx in range(len(poses)):
-        pose = poses[idx]  # shape (seq_length, 135)
+        pose = poses[idx]  # shape (seq_length, 33*3)
         assert len(pose) > 0, 'file is empty'
 
         db_name = "h36"
@@ -129,6 +132,9 @@ def process_split(poses, one_hots, file_ids, output_path, n_shards, compute_stat
         var_all = m2_all / (n_all - 1)
         var_channel = m2_channel / (n_channel - 1)
 
+        # set certain std's to 1.0 like Martinez did
+        var_channel[np.where(var_channel < 1e-4)] = 1.0
+
         stats = {'mean_all': mean_all, 'mean_channel': mean_channel, 'var_all': var_all,
                  'var_channel': var_channel, 'min_all': min_all, 'max_all': max_all,
                  'min_seq_len': min_seq_len, 'max_seq_len': max_seq_len, 'num_samples': tot_samples}
@@ -140,7 +146,7 @@ def process_split(poses, one_hots, file_ids, output_path, n_shards, compute_stat
     return meta_stats_per_db
 
 
-def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
+def load_data(path_to_dataset, subjects, actions, one_hot, rep):
     """
     Borrowed and adapted from Martinez et al.
 
@@ -149,12 +155,13 @@ def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
       subjects: list of numbers. The subjects to load
       actions: list of string. The actions to load
       one_hot: Whether to add a one-hot encoding to the data
-      as_rotmat: Whether to convert the data to rotation matrices
+      rep: Which representation to use for the data, ["aa", "rotmat", "quat"]
     Returns
       trainData: dictionary with k:v
         k=(subject, action, subaction, 'even'), v=(nxd) un-normalized data
       completeData: nxd matrix with all the data. Used to normlization stats
     """
+    assert rep in ["aa", "rotmat", "quat"]
     nactions = len(actions)
 
     poses = []
@@ -172,10 +179,16 @@ def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
                 filename = '{0}/S{1}/{2}_{3}.txt'.format(path_to_dataset, subj, action, subact)
                 action_sequence = readCSVasFloat(filename)
 
+                # remove the first three dimensions (root position) and the unwanted joints
+                action_sequence = action_sequence[:, 3:]
+                action_sequence = np.reshape(action_sequence, [-1, H36M_NR_JOINTS, 3])
+                action_sequence = action_sequence[:, H36M_MAJOR_JOINTS]
+                action_sequence = np.reshape(action_sequence, [-1, len(H36M_MAJOR_JOINTS) * 3])
+
                 n_samples, dof = action_sequence.shape
                 n_joints = dof // 3
 
-                if as_rotmat:
+                if rep == "rotmat":
                     expmap = np.reshape(action_sequence, [n_samples*n_joints, 3])
                     # first three values are positions, so technically it's meaningless to convert them,
                     # but we do it anyway because later we discard this values anywho
@@ -184,6 +197,13 @@ def load_data(path_to_dataset, subjects, actions, one_hot, as_rotmat=False):
                         rotmats[i] = cv2.Rodrigues(expmap[i])[0]
                     rotmats = np.reshape(rotmats, [n_samples, n_joints*3*3])
                     action_sequence = rotmats
+                elif rep == "quat":
+                    expmap = np.reshape(action_sequence, [n_samples * n_joints, 3])
+                    quats = quaternion.from_rotation_vector(expmap)
+                    quats = np.reshape(quaternion.as_float_array(quats), [n_samples, n_joints*4])
+                    action_sequence = quats
+                else:
+                    pass  # the data is already in angle-axis format
 
                 if one_hot:
                     one = np.zeros([nactions], dtype=np.float)
@@ -202,7 +222,7 @@ if __name__ == '__main__':
     n_shards = 1  # need to save the data in shards, it's too big otherwise
     train_subjects = [1, 6, 7, 8, 9, 11]  # for h3.6m this is fixed
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
-    as_quat = False  # converts the data to quaternions
+    as_quat = True  # converts the data to quaternions
     as_aa = False  # converts tha data to angle_axis
     test_window_size = 160
     test_window_stride = 100
@@ -214,16 +234,12 @@ if __name__ == '__main__':
 
     assert not (as_quat and as_aa), 'must choose between quat or aa'
 
-    as_rotmat = not (as_quat or as_aa)
-    assert as_aa or as_rotmat, "only implemented for angle-axis and rotmat"
-
+    rep = "quat" if as_quat else "aa" if as_aa else "rotmat"
     train_data, train_one_hot, train_ids = load_data(h36m_folder, train_subjects, actions,
-                                                     one_hot=True, as_rotmat=as_rotmat)
+                                                     one_hot=True, rep=rep)
     test_data, test_one_hot, test_ids = load_data(h36m_folder, train_subjects, actions,
-                                                  one_hot=True, as_rotmat=as_rotmat)
+                                                  one_hot=True, rep=rep)
 
-    rep = "quat" if as_quat else "rotmat"
-    rep = "aa" if as_aa else "rotmat"
     tr_stats = process_split(train_data, train_one_hot, train_ids, os.path.join(output_folder, rep, "training"),
                              n_shards, compute_stats=True, create_windows=None)
 

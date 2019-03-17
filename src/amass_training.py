@@ -21,6 +21,8 @@ from constants import Constants as C
 import glob
 import json
 from motion_metrics import MetricsEngine
+from fk import H36MForwardKinematics
+from fk import SMPLForwardKinematics
 from visualize import Visualizer
 
 
@@ -67,6 +69,7 @@ tf.app.flags.DEFINE_boolean("use_aa", False, "Use angle-axis instead of rotation
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
+tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
 
 args = tf.app.flags.FLAGS
 
@@ -92,14 +95,18 @@ def create_model(session):
                                       'to use normalization'
 
     if use_aa:
-        assert args.use_h36m_only, 'currently only H3.6M is in angle-axis format'
+        assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
 
     rep = "quat" if use_quat else "rotmat"
     rep = "aa" if use_aa else rep
 
     data_path = os.environ["AMASS_DATA"]
     if args.use_h36m_only:
+        assert not args.use_h36m_martinez
         data_path = os.path.join(data_path, '../per_db/h36m')
+
+    if args.use_h36m_martinez:
+        data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
     train_data_path = os.path.join(data_path, rep, "training", "amass-?????-of-?????")
     if args.dynamic_validation_split:
@@ -146,6 +153,7 @@ def create_model(session):
         experiment_name += "rot_loss"
 
     experiment_name += "{}".format("-h36m" if args.use_h36m_only else "")
+    experiment_name += "{}".format("-h36martinez" if args.use_h36m_martinez else "")
 
     with tf.name_scope("training_data"):
         windows_length = args.seq_length_in + args.seq_length_out
@@ -321,6 +329,7 @@ def get_rnn_config(args):
     config['use_aa'] = args.use_aa
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
+    config['use_h36m_martinez'] = args.use_h36m_martinez
 
     model_exp_name = ""
     if args.model_type == "rnn":
@@ -419,6 +428,7 @@ def get_stcn_config(args):
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
+    config['use_h36m_martinez'] = args.use_h36m_martinez
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -491,6 +501,7 @@ def get_seq2seq_config(args):
     config['use_quat'] = args.use_quat
     config['use_aa'] = args.use_aa
     config['use_h36m_only'] = args.use_h36m_only
+    config['use_h36m_martinez'] = args.use_h36m_martinez
 
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
@@ -534,10 +545,14 @@ def train():
         train_data, valid_data, test_data = data
 
         # Create metrics engine including summaries
-        # in milliseconds: 83.3, 166.7, 316.7, 400, 566.7, 1000]
-        target_lengths = [x for x in C.METRIC_TARGET_LENGTHS if x <= train_model.target_seq_len]
         pck_threshs = C.METRIC_PCK_THRESHS  # thresholds for pck, in meters
-        metrics_engine = MetricsEngine("../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl",
+        if args.use_h36m_martinez:
+            fk_engine = H36MForwardKinematics()
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_MARTINEZ if x <= train_model.target_seq_len]
+        else:
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
+            fk_engine = SMPLForwardKinematics()
+        metrics_engine = MetricsEngine(fk_engine,
                                        target_lengths,
                                        pck_threshs=pck_threshs,
                                        rep="quat" if train_model.use_quat else "aa" if train_model.use_aa else "rot_mat",
@@ -619,8 +634,8 @@ def train():
                         time_elapsed = time_counter/args.print_every
                         train_loss, time_counter = 0., 0.
                         print("Train [{:04d}] \t Loss: {:.3f} \t time/batch: {:.3f}".format(step,
-                                                                                             train_loss_avg,
-                                                                                             time_elapsed))
+                                                                                            train_loss_avg,
+                                                                                            time_elapsed))
                     # Learning rate decay
                     if step % args.learning_rate_decay_steps == 0 and train_model.learning_rate_decay_type == "piecewise":
                         sess.run(train_model.learning_rate_scheduler)

@@ -40,6 +40,7 @@ class BaseModel(object):
         self.prediction_activation = None if not self.rot_matrix_regularization else tf.nn.tanh
         self.use_quat = config.get('use_quat', False)
         self.use_aa = config.get('use_aa', False)
+        self.h36m_martinez = config.get("use_h36m_martinez", False)
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -77,7 +78,7 @@ class BaseModel(object):
 
         # Hard-coded parameters.
         self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa else 9
-        self.NUM_JOINTS = 15
+        self.NUM_JOINTS = 21 if self.h36m_martinez else 15
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE
 
@@ -89,6 +90,17 @@ class BaseModel(object):
                           [(6, 7, "neck"), (6, 8, "l_collar"), (6, 9, "r_collar")],
                           [(7, 10, "head"), (8, 11, "l_shoulder"), (9, 12, "r_shoulder")],
                           [(11, 13, "l_elbow"), (12, 14, "r_elbow")]]
+
+        if self.h36m_martinez:
+            self.structure = [[(-1, 0, "Hips")],
+                              [(0, 1, "RightUpLeg"), (0, 5, "LeftUpLeg"), (0, 9, "Spine")],
+                              [(1, 2, "RightLeg"), (5, 6, "LeftLeg"), (9, 10, "Spine1")],
+                              [(2, 3, "RightFoot"), (6, 7, "LeftFoot"), (10, 17, "RightShoulder"),
+                               (10, 13, "LeftShoulder"), (10, 11, "Neck")],
+                              [(3, 4, "RightToeBase"), (7, 8, "LeftToeBase"), (17, 18, "RightArm"), (13, 14, "LeftArm"),
+                               (11, 12, "Head")],
+                              [(18, 19, "RightForeArm"), (14, 15, "LeftForeArm")],
+                              [(19, 20, "RightHand"), (15, 16, "LeftHand")]]
 
         # Reorder the structure so that we can access joint information by using its index.
         self.structure_indexed = dict()
@@ -291,7 +303,7 @@ class BaseModel(object):
 
     def get_closest_rotmats(self, rotmats):
         """
-         Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
+        Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix
         it computes the SVD as R = USV' and sets R_closest = UV'.
 
         WARNING: tf.svd is very slow - use at your own peril.
