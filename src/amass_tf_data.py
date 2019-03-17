@@ -95,8 +95,10 @@ class TFRecordMotionDataset(Dataset):
     Dataset class for AMASS dataset stored as TFRecord files.
     """
     def __init__(self, data_path, meta_data_path, batch_size, shuffle, **kwargs):
-        # Extract a window. If the sequence is shorter, ignore it.
+        # Extract a window randomly. If the sequence is shorter, ignore it.
         self.extract_windows_of = kwargs.get("extract_windows_of", 0)
+        # Whether to extract windows randomly or from the beginning of the sequence.
+        self.extract_random_windows = kwargs.get("extract_random_windows", True)
         self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
         self.num_parallel_calls = kwargs.get("num_parallel_calls", 16)
         self.normalize = kwargs.get("normalize", True)
@@ -135,7 +137,12 @@ class TFRecordMotionDataset(Dataset):
 
         if self.extract_windows_of > 0:
             self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
-            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows), num_parallel_calls=self.num_parallel_calls)
+            if self.extract_random_windows:
+                self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_randomly),
+                                                num_parallel_calls=self.num_parallel_calls)
+            else:
+                self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_from_beginning),
+                                                num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_normalization(self):
         # Applies normalization.
@@ -181,11 +188,15 @@ class TFRecordMotionDataset(Dataset):
     def __pp_filter(self, sample):
         return tf.shape(sample["poses"])[0] >= self.length_threshold
 
-    def __pp_get_windows(self, sample):
+    def __pp_get_windows_randomly(self, sample):
         start = tf.random_uniform((1, 1), minval=0, maxval=tf.shape(sample["poses"])[0]-self.extract_windows_of+1, dtype=tf.int32)[0][0]
         end = tf.minimum(start+self.extract_windows_of, tf.shape(sample["poses"])[0])
         sample["poses"] = sample["poses"][start:end, :]
-        # sample["poses"].set_shape([self.extract_windows_of, None])
+        sample["shape"] = tf.shape(sample["poses"])
+        return sample
+
+    def __pp_get_windows_from_beginning(self, sample):
+        sample["poses"] = sample["poses"][0:self.extract_windows_of, :]
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 

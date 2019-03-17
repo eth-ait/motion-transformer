@@ -17,8 +17,13 @@ from fk import SMPLForwardKinematics
 
 
 def create_and_restore_model(session, experiment_dir, config, args):
+    if args.seq_length_out is not None and config["target_seq_len"] != args.seq_length_out:
+        print("!!! Prediction length for training and sampling is different !!!")
+        config["target_seq_len"] = args.seq_length_out
+
     # Create dataset.
-    windows_length = args.seq_length_in + args.seq_length_out
+    window_length = args.seq_length_in + config["target_seq_len"]
+    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
     rep = "quat" if config.get('use_quat', False) else "aa" if config.get('use_aa') else "rotmat"
 
     data_path = os.environ["AMASS_DATA"]
@@ -39,12 +44,14 @@ def create_and_restore_model(session, experiment_dir, config, args):
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
     data_normalization = not (args.no_normalization or config.get("no_normalization", False))
+    window_length = 0 if window_length == 160 else window_length
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
                                           batch_size=args.batch_size,
                                           shuffle=False,
-                                          extract_windows_of=windows_length,
+                                          extract_windows_of=window_length,
+                                          extract_random_windows=False,
                                           num_parallel_calls=16,
                                           normalize=data_normalization)
         test_pl = test_data.get_tf_samples()
@@ -195,7 +202,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_dir', required=False, default=os.path.normpath("../experiments_amass/"), type=str, help='Model save directory.')
     parser.add_argument('--model_id', required=True, default=None, type=str, help='Experiment ID (experiment timestamp).')
     parser.add_argument('--seq_length_in', required=False, default=100, type=int, help='Seed sequence length')
-    parser.add_argument('--seq_length_out', required=False, default=60, type=int, help='Target sequence length')
+    parser.add_argument('--seq_length_out', required=False, type=int, help='Target sequence length')
+    parser.add_argument('--test_data_path', required=False, default="../data/amass/tfrecords/test/amass-?????-of-?????", type=str, help='Path to test data.')
+    parser.add_argument('--meta_data_path', required=False, default="../data/amass/tfrecords/training/stats.npz", type=str, help='Path to meta-data file.')
     parser.add_argument('--batch_size', required=False, default=64, type=int, help='Batch size')
     parser.add_argument('--no_normalization', required=False, action="store_true", help='If set, do not use zero-mean unit-variance normalization.')
     parser.add_argument('--glog_entry', required=False, action="store_true", help='Write to the Google sheet.')
