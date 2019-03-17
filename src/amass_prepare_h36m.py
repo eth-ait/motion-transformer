@@ -1,119 +1,17 @@
 import numpy as np
 import os
 import pickle as pkl
-import tensorflow as tf
-import quaternion
 import cv2
+
+from amass_prepare import create_tfrecord_writers
+from amass_prepare import close_tfrecord_writers
+from amass_prepare import write_tfexample
+from amass_prepare import to_tfexample
+from amass_prepare import split_into_windows
+from amass_prepare import rotmat2quat
 
 
 RNG = np.random.RandomState(42)
-
-
-def create_tfrecord_writers(output_file, n_shards):
-    writers = []
-    for i in range(n_shards):
-        writers.append(tf.python_io.TFRecordWriter("{}-{:0>5d}-of-{:0>5d}".format(output_file, i, n_shards)))
-    return writers
-
-
-def close_tfrecord_writers(writers):
-    for w in writers:
-        w.close()
-
-
-def write_tfexample(writers, tf_example):
-    random_writer_idx = RNG.randint(0, len(writers))
-    writers[random_writer_idx].write(tf_example.SerializeToString())
-
-
-def to_tfexample(poses, file_id, db_name):
-    features = dict()
-    features['file_id'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[file_id.encode('utf-8')]))
-    features['db_name'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[db_name.encode('utf-8')]))
-    features['shape'] = tf.train.Feature(int64_list=tf.train.Int64List(value=poses.shape))
-    features['poses'] = tf.train.Feature(float_list=tf.train.FloatList(value=poses.flatten()))
-    example = tf.train.Example(features=tf.train.Features(feature=features))
-    return example
-
-
-def split_into_windows(poses, window_size, stride):
-    """Split (seq_length, dof) array into arrays of shape (window_size, dof) with the given stride."""
-    n_windows = (poses.shape[0] - window_size) // stride + 1
-    windows = poses[stride*np.arange(n_windows)[:, None] + np.arange(window_size)]
-    return windows
-
-
-def correct_antipodal_quaternions(quat):
-    """
-    Removes discontinuities coming from antipodal representation of quaternions. At time step t it checks which
-    representation, q or -q, is closer to time step t-1 and chooses the closest one.
-    Args:
-        quat: numpy array of shape (N, K, 4) where N is the number of frames and K the number of joints. K is optional,
-          i.e. can be 0.
-
-    Returns: numpy array of shape (N, K, 4) with fixed antipodal representation
-    """
-    assert len(quat.shape) == 3 or len(quat.shape) == 2
-    assert quat.shape[-1] == 4
-
-    if len(quat.shape) == 2:
-        quat_r = quat[:, np.newaxis].copy()
-    else:
-        quat_r = quat.copy()
-
-    def dist(x, y):
-        return np.sqrt(np.sum((x-y)**2, axis=-1))
-
-    # naive implementation looping over all time steps sequentially
-    quat_corrected = np.zeros_like(quat_r)
-    quat_corrected[0] = quat_r[0]
-    for t in range(1, quat.shape[0]):
-        diff_to_plus = dist(quat_r[t], quat_corrected[t-1])
-        diff_to_neg = dist(-quat_r[t], quat_corrected[t-1])
-
-        # diffs are vectors
-        qc = quat_r[t]
-        swap_idx = np.where(diff_to_neg < diff_to_plus)
-        qc[swap_idx] = -quat_r[t, swap_idx]
-        quat_corrected[t] = qc
-    quat_corrected = np.squeeze(quat_corrected)
-    return quat_corrected
-
-
-def rotmat2quat(rotmats):
-    """
-    Convert rotation matrices to quaternions. It ensures that there's no switch to the antipodal representation
-    within this sequence of rotations.
-    Args:
-        oris: np array of shape (seq_length, n_joints*9).
-
-    Returns: np array of shape (seq_length, n_joints*4)
-    """
-    seq_length = rotmats.shape[0]
-    assert rotmats.shape[1] % 9 == 0
-    ori = np.reshape(rotmats, [seq_length, -1, 3, 3])
-    ori_q = quaternion.as_float_array(quaternion.from_rotation_matrix(ori))
-    ori_qc = correct_antipodal_quaternions(ori_q)
-
-    # import matplotlib.pyplot as plt
-    # for j in range(15):
-    #     ax = plt.subplot(8, 2, j + 1)
-    #
-    #     l1, = ax.plot(ori_qc[:, j, 0], label='w')
-    #     l2, = ax.plot(ori_qc[:, j, 1], label='x')
-    #     l3, = ax.plot(ori_qc[:, j, 2], label='y')
-    #     l4, = ax.plot(ori_qc[:, j, 3], label='z')
-    #
-    #     l1, = ax.plot(ori_q[:, j, 0], '--r', label='w')
-    #     l2, = ax.plot(ori_q[:, j, 1], '--b', label='x')
-    #     l3, = ax.plot(ori_q[:, j, 2], '--k', label='y')
-    #     l4, = ax.plot(ori_q[:, j, 3], '--g', label='z')
-    #
-    # plt.figlegend((l1, l2, l3, l4), ('w', 'x', 'y', 'z'), 'lower right')
-    # plt.show()
-
-    ori_qc = np.reshape(ori_qc, [seq_length, -1])
-    return ori_qc
 
 
 def rotmat2aa(rotmats):
