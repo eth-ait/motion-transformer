@@ -4,12 +4,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import math
 import os
-import random
 import sys
 import time
 import h5py
+import copy
 
 import numpy as np
 import tensorflow as tf
@@ -22,6 +21,8 @@ import models
 from constants import Constants as C
 import glob
 import json
+from logger import GoogleSheetLogger
+
 
 # Learning
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
@@ -30,7 +31,7 @@ tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning ra
 tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("iterations", 30000, "Iterations to train for.")
+tf.app.flags.DEFINE_integer("iterations", 100000, "Iterations to train for.")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
@@ -43,7 +44,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 64, "Number of units in the output layer.")
 tf.app.flags.DEFINE_integer("output_layer_number", 1, "Number of output layer.")
-tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
+tf.app.flags.DEFINE_string("cell_type", C.LSTM, "RNN cell type: gru, lstm, layernormbasiclstmcell")
 tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
 # Directories
@@ -430,6 +431,7 @@ def train():
         best_valid_loss = np.inf
         num_steps_wo_improvement = 0
         stop_signal = False
+        best_google_sheet_data = None
 
         while not stop_signal:
             if current_step >= FLAGS.iterations:
@@ -472,6 +474,8 @@ def train():
                 print()
 
                 all_actions_mean_error = []
+                # dictionary {action -> {ms -> error}}
+                google_sheet_data = dict()
                 # === Validation with srnn's seeds ===
                 for action in actions:
 
@@ -541,6 +545,11 @@ def train():
                         else:
                             print("   n/a |", end="")
                     print()
+
+                    google_sheet_data[action] = {"80": mean_mean_errors[1],
+                                                 "160": mean_mean_errors[3],
+                                                 "320": mean_mean_errors[7],
+                                                 "400": mean_mean_errors[9]}
 
                     # Ugly massive if-then to log the error to tensorboard :shrug:
                     if action == "walking":
@@ -751,10 +760,8 @@ def train():
                              eval_model.walkingtogether_err160 : mean_mean_errors[3] if FLAGS.seq_length_out >= 4 else None,
                              eval_model.walkingtogether_err320 : mean_mean_errors[7] if FLAGS.seq_length_out >= 8 else None,
                              eval_model.walkingtogether_err400 : mean_mean_errors[9] if FLAGS.seq_length_out >= 10 else None,
-                             eval_model.walkingtogether_err560 : mean_mean_errors[
-                                 13] if FLAGS.seq_length_out >= 14 else None,
-                             eval_model.walkingtogether_err1000: mean_mean_errors[
-                                 24] if FLAGS.seq_length_out >= 25 else None})
+                             eval_model.walkingtogether_err560 : mean_mean_errors[13] if FLAGS.seq_length_out >= 14 else None,
+                             eval_model.walkingtogether_err1000: mean_mean_errors[24] if FLAGS.seq_length_out >= 25 else None})
 
                     for i in np.arange(len(summaries)):
                         test_writer.add_summary(summaries[i], current_step)
@@ -807,11 +814,27 @@ def train():
                 # Save the model
                 if valid_loss <= best_valid_loss:
                     best_valid_loss = valid_loss
+                    best_google_sheet_data = copy.deepcopy(google_sheet_data)
                     print("Saving the model to {}".format(experiment_dir))
                     saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=current_step)
 
                 step_time, loss = 0, 0
                 sys.stdout.flush()
+
+        # store best eval results in google sheet data
+        g_logger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
+                                     workbook_name="martinez_setting_experiments")
+        glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
+                     'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
+                     'Comment': [""]}
+
+        which_actions = ["walking", "eating", "discussion", "smoking"]
+        for action in which_actions:
+            best_euler = best_google_sheet_data[action]
+            for ms in best_euler:
+                glog_data[action[0] + ms] = [best_euler[ms]]
+
+        g_logger.append_row(glog_data, sheet_name="logs")
 
 
 def get_srnn_gts(actions, model, test_set, data_mean, data_std, dim_to_ignore, one_hot, rep, to_euler=True):
