@@ -174,16 +174,8 @@ def _some_variables():
     return parent, offset, rotInd, expmapInd
 
 
-def main(sample_path, sample_name=None):
-    # Load all the data
-    sample_name = sample_name or "walking_0"
+def from_numpy(expmap_gt, expmap_pred):
     parent, offset, rotInd, expmapInd = _some_variables()
-
-    # numpy implementation
-    with h5py.File(sample_path, 'r') as h5f:
-        expmap_gt = h5f['expmap/gt/'+sample_name][:]
-        expmap_pred = h5f['expmap/preds/'+sample_name][:]
-
     nframes_gt, nframes_pred = expmap_gt.shape[0], expmap_pred.shape[0]
 
     # Put them together and revert the coordinate space
@@ -218,6 +210,18 @@ def main(sample_path, sample_name=None):
         plt.pause(0.01)
 
 
+def from_file(sample_path, sample_name=None):
+    # Load all the data
+    sample_name = sample_name or "walking_0"
+
+    # numpy implementation
+    with h5py.File(sample_path, 'r') as h5f:
+        expmap_gt = h5f['expmap/gt/' + sample_name][:]
+        expmap_pred = h5f['expmap/preds/' + sample_name][:]
+
+    from_numpy(expmap_gt, expmap_pred)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--sample_path', required=False, default=None, type=str, help='Path to motion samples file.')
@@ -234,4 +238,4 @@ if __name__ == '__main__':
     else:
         raise Exception("Sample file is required.")
 
-    main(sample_path, args.sample_name)
+    from_file(sample_path, args.sample_name)

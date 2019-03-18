@@ -119,7 +119,8 @@ def create_model(session, actions, sampling=False):
         experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
     if not os.path.exists(experiment_dir):
         os.mkdir(experiment_dir)
-    json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
+    if not sampling:
+        json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
 
     train_model.optimization_routines()
     train_model.summary_routines()
@@ -187,8 +188,8 @@ def create_rnn_model(actions, sampling=False):
 
     config['grad_clip_by_norm'] = 1
     config['loss_on_encoder_outputs'] = True
-    config['source_seq_len'] = FLAGS.seq_length_in if not sampling else 50
-    config['target_seq_len'] = FLAGS.seq_length_out if not sampling else 100
+    config['source_seq_len'] = FLAGS.seq_length_in
+    config['target_seq_len'] = FLAGS.seq_length_out
     config['batch_size'] = FLAGS.batch_size
     config['autoregressive_input'] = FLAGS.autoregressive_input if not sampling else "sampling_based",
     config['number_of_actions'] = 0 if FLAGS.omit_one_hot else len(actions)
@@ -270,8 +271,8 @@ def create_stcn_model(actions, sampling=False):
     config['use_future_steps_in_q'] = False
     config['loss_on_encoder_outputs'] = True
 
-    config['source_seq_len'] = FLAGS.seq_length_in if not sampling else 50
-    config['target_seq_len'] = FLAGS.seq_length_out if not sampling else 100
+    config['source_seq_len'] = FLAGS.seq_length_in
+    config['target_seq_len'] = FLAGS.seq_length_out
     config['batch_size'] = FLAGS.batch_size
     config['autoregressive_input'] = FLAGS.autoregressive_input if not sampling else "sampling_based",
     config['number_of_actions'] = 0 if FLAGS.omit_one_hot else len(actions)
@@ -321,8 +322,8 @@ def create_seq2seq_model(actions, sampling=False):
     config['residual_velocities'] = FLAGS.residual_velocities
     config['joint_prediction_model'] = FLAGS.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
     config['architecture'] = FLAGS.architecture
-    config['source_seq_len'] = FLAGS.seq_length_in if not sampling else 50
-    config['target_seq_len'] = FLAGS.seq_length_out if not sampling else 100
+    config['source_seq_len'] = FLAGS.seq_length_in
+    config['target_seq_len'] = FLAGS.seq_length_out
     config['rnn_size'] = FLAGS.size
     config['num_layers'] = FLAGS.num_layers
     config['grad_clip_by_norm'] = FLAGS.max_gradient_norm
@@ -876,8 +877,6 @@ def sample():
 
         # === Read and denormalize the gt with srnn's seeds, as we'll need them
         # many times for evaluation in Euler Angles ===
-        srnn_gts_expmap = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
-                                       not FLAGS.omit_one_hot, rep, to_euler=False)
         srnn_gts_euler = get_srnn_gts(actions, eval_model, test_set, data_mean, data_std, dim_to_ignore,
                                       not FLAGS.omit_one_hot, rep, to_euler=True)
 
@@ -893,12 +892,6 @@ def sample():
                 _converted.append(np.reshape(_aas, [_seq_len, 99]))
             return _converted
 
-        if rep == "rot_mat":
-            srnn_gts_expmap_c = dict()
-            for action in srnn_gts_expmap:
-                srnn_gts_expmap_c[action] = _to_expmap(srnn_gts_expmap[action])
-            srnn_gts_expmap = srnn_gts_expmap_c
-
         # Clean and create a new h5 file of samples
         SAMPLES_FNAME = os.path.join(experiment_dir, 'samples.h5')
         try:
@@ -913,6 +906,11 @@ def sample():
             encoder_inputs, decoder_inputs, decoder_outputs = eval_model.get_batch_srnn(test_set, action)
             srnn_poses = eval_model.sampled_step(encoder_inputs, decoder_inputs, decoder_outputs)
 
+            srnn_seeds = np.concatenate([encoder_inputs, decoder_inputs[:, 0:1]], axis=1)  # first frame of decoder input is gt
+            srnn_seeds = np.transpose(srnn_seeds, [1, 0, 2])  # transpose so that revert output format works correctly
+            srnn_seeds_expmap = data_utils.revert_output_format(srnn_seeds, data_mean, data_std, dim_to_ignore, actions,
+                                                                not FLAGS.omit_one_hot, rep)
+
             # denormalizes too
             srnn_pred_expmap = data_utils.revert_output_format(srnn_poses, data_mean, data_std, dim_to_ignore, actions,
                                                                not FLAGS.omit_one_hot, rep)
@@ -921,20 +919,21 @@ def sample():
             if rep == "rot_mat":
                 # convert back to exponential map
                 srnn_pred_expmap = _to_expmap(srnn_pred_expmap)
+                srnn_seeds_expmap = _to_expmap(srnn_seeds_expmap)
 
             # Save the samples
             with h5py.File(SAMPLES_FNAME, 'a') as hf:
                 for i in np.arange(8):
                     # Save conditioning ground truth
                     node_name = 'expmap/gt/{1}_{0}'.format(i, action)
-                    hf.create_dataset(node_name, data=srnn_gts_expmap[action][i])
+                    hf.create_dataset(node_name, data=srnn_seeds_expmap[i])
                     # Save prediction
                     node_name = 'expmap/preds/{1}_{0}'.format(i, action)
                     hf.create_dataset(node_name, data=srnn_pred_expmap[i])
 
-            # Compute and save the errors here
-            mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
-
+            # # Compute and save the errors here
+            # mean_errors = np.zeros((len(srnn_pred_expmap), srnn_pred_expmap[0].shape[0]))
+            #
             # Not interested in this for the moment
             # for i in np.arange(8):
             #
@@ -962,8 +961,6 @@ def sample():
             # with h5py.File(SAMPLES_FNAME, 'a') as hf:
             #     node_name = 'mean_{0}_error'.format(action)
             #     hf.create_dataset(node_name, data=mean_mean_errors)
-
-    return
 
 
 def define_actions(action):
