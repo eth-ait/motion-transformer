@@ -31,6 +31,7 @@ tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("iterations", 30000, "Iterations to train for.")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -116,7 +117,7 @@ def create_model(session, actions, sampling=False):
     num_param = 0
     for v in tf.global_variables():
         num_param += np.prod(v.shape.as_list())
-    print("# of parameters: " + str(num_param))
+    print("# of parameters: " + str(int(num_param)))
     config["num_parameters"] = num_param
 
     if FLAGS.experiment_id is None:
@@ -422,13 +423,20 @@ def train():
         step_time, loss, val_loss = 0.0, 0.0, 0.0
         current_step = 0 if FLAGS.load <= 0 else FLAGS.load + 1
         previous_losses = []
-
         step_time, loss = 0, 0
 
-        for _ in range(FLAGS.iterations):
+        # Early stopping configuration.
+        improvement_ratio = 0.005
+        best_valid_loss = np.inf
+        num_steps_wo_improvement = 0
+        stop_signal = False
+
+        while not stop_signal:
+            if current_step >= FLAGS.iterations:
+                stop_signal = True
+                break
 
             start_time = time.time()
-
             # === Training step ===
             encoder_inputs, decoder_inputs, decoder_outputs = train_model.get_batch(train_set, not FLAGS.omit_one_hot)
             step_loss, summary, _ = train_model.step(encoder_inputs, decoder_inputs, decoder_outputs)
@@ -787,16 +795,22 @@ def train():
 
                 previous_losses.append(loss)
 
+                # Early stopping check.
+                valid_loss = np.mean(all_actions_mean_error)
+                if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
+                    num_steps_wo_improvement = 0
+                else:
+                    num_steps_wo_improvement += 1
+                if num_steps_wo_improvement == FLAGS.early_stopping_tolerance:
+                    stop_signal = True
+
                 # Save the model
-                if current_step % FLAGS.save_every == 0:
-                    print("Saving the model...")
-                    start_time = time.time()
+                if valid_loss <= best_valid_loss:
+                    best_valid_loss = valid_loss
+                    print("Saving the model to {}".format(experiment_dir))
                     saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=current_step)
-                    print("done in {0:.2f} ms".format((time.time() - start_time)*1000))
 
-                # Reset global time and loss
                 step_time, loss = 0, 0
-
                 sys.stdout.flush()
 
 
