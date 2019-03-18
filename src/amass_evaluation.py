@@ -21,8 +21,12 @@ def create_and_restore_model(session, experiment_dir, config, args):
         print("!!! Prediction length for training and sampling is different !!!")
         config["target_seq_len"] = args.seq_length_out
 
+    if args.seq_length_in is not None and config["source_seq_len"] != args.seq_length_in:
+        print("!!! Seed sequence length for training and sampling is different !!!")
+        config["source_seq_len"] = args.seq_length_in
+
     # Create dataset.
-    window_length = args.seq_length_in + config["target_seq_len"]
+    window_length = config["source_seq_len"] + config["target_seq_len"]
     assert window_length <= 160, "TFRecords are hardcoded with length of 160."
     rep = "quat" if config.get('use_quat', False) else "aa" if config.get('use_aa') else "rotmat"
 
@@ -41,6 +45,8 @@ def create_and_restore_model(session, experiment_dir, config, args):
     else:
         test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
         extract_random_windows = False
+        assert window_length <= 160, "TFRecords are hardcoded with length of 160."
+        windows_length = 0  # set to 0 so that dataset class works as intended
 
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
@@ -138,8 +144,11 @@ def evaluate(experiment_dir, config, args):
 
         # create logger
         if args.glog_entry:
+            workbook_name = "motion_modelling_experiments"
+            if config["use_h36m_only"] or config["use_h36m_martinez"]:
+                workbook_name = "h36m_motion_modelling_experiments"
             g_logger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
-                                         workbook_name="motion_modelling_experiments")
+                                         workbook_name=workbook_name)
             glog_data = {'Model ID'  : [os.path.split(experiment_dir)[-1].split('-')[0]],
                          'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                          'Comment'   : [""]}
@@ -202,7 +211,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--save_dir', required=False, default=os.path.normpath("../experiments_amass/"), type=str, help='Model save directory.')
     parser.add_argument('--model_id', required=True, default=None, type=str, help='Experiment ID (experiment timestamp).')
-    parser.add_argument('--seq_length_in', required=False, default=100, type=int, help='Seed sequence length')
+    parser.add_argument('--seq_length_in', required=False, type=int, help='Seed sequence length')
     parser.add_argument('--seq_length_out', required=False, type=int, help='Target sequence length')
     parser.add_argument('--test_data_path', required=False, default="../data/amass/tfrecords/test/amass-?????-of-?????", type=str, help='Path to test data.')
     parser.add_argument('--meta_data_path', required=False, default="../data/amass/tfrecords/training/stats.npz", type=str, help='Path to meta-data file.')

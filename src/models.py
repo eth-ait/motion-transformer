@@ -228,7 +228,7 @@ class BaseModel(object):
                 self.outputs_tensor = pose_prediction
 
             # This code repository expects the outputs to be a list of time-steps.
-            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+            # outputs_list = tf.split(self.outputs_mu, self.sequence_length, axis=1)
             # Select only the "decoder" predictions.
             self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
 
@@ -1088,7 +1088,7 @@ class Wavenet(BaseModel):
                                                                   zero_padding=True)
 
             with tf.variable_scope('out_tcn_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-                prediction, _ = Wavenet.temporal_block_ccn(input_layer=inputs,
+                prediction, _ = Wavenet.temporal_block_ccn(input_layer=current_layer,
                                                            num_filters=output_size,
                                                            kernel_size=kernel_size,
                                                            dilation=1,
@@ -1514,7 +1514,7 @@ class StructuredSTCN(STCN):
                 self.outputs_mu += self.prediction_inputs[:, 0:-1]
 
             # This code repository expects the outputs to be a list of time-steps.
-            # outputs_list = tf.split(self.outputs_tensor, self.sequence_length, axis=1)
+            # outputs_list = tf.split(self.outputs_mu, self.sequence_length, axis=1)
             # Select only the "decoder" predictions.
             self.outputs = [tf.squeeze(out_frame, axis=1) for out_frame in tf.split(self.outputs_tensor[:, -self.target_seq_len:], self.target_seq_len, axis=1)]
 
