@@ -31,7 +31,7 @@ tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_rate", 0.95, "Learning rate mutiplier. 1 means no decay.")
 tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning rate decay type.")
 tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
-tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
+tf.app.flags.DEFINE_float("max_gradient_norm", 1.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
 tf.app.flags.DEFINE_string("optimizer", "adam", "Optimization algorithm: adam or sgd.")
@@ -43,6 +43,7 @@ tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connec
 tf.app.flags.DEFINE_string("residual_velocities_type", "plus", "How to combine inputs with model prediction")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
 tf.app.flags.DEFINE_integer("output_layer_size", 128, "Number of units in the output layer.")
+tf.app.flags.DEFINE_integer("output_layer_number", 2, "Number of output layer.")
 tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
 tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
@@ -319,12 +320,12 @@ def get_rnn_config(args):
     config['input_layer']['num_layers'] = 1
     config['input_layer']['size'] = 256
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
+    config['output_layer']['num_layers'] = args.output_layer_number
     config['output_layer']['size'] = args.output_layer_size
     config['output_layer']['activation_fn'] = C.RELU
 
     config['optimizer'] = args.optimizer
-    config['grad_clip_by_norm'] = 1
+    config['grad_clip_by_norm'] = args.max_gradient_norm
     config['loss_on_encoder_outputs'] = True
     config['source_seq_len'] = args.seq_length_in
     config['target_seq_len'] = args.seq_length_out
@@ -384,7 +385,7 @@ def get_stcn_config(args):
     config['learning_rate_decay_steps'] = 1000
     config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
-    config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    config['latent_layer']['kld_weight'] = 1.0  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
     config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
@@ -403,8 +404,8 @@ def get_stcn_config(args):
     config['input_layer'] = dict()
     config['input_layer']['dropout_rate'] = args.input_dropout_rate  # dict(values=[0.1, 0.5, 0.1], step=5e3, type=C.DECAY_PC)
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 128
+    config['output_layer']['num_layers'] = args.output_layer_number
+    config['output_layer']['size'] = args.output_layer_size
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
@@ -420,7 +421,7 @@ def get_stcn_config(args):
     config['decoder_use_enc_skip'] = args.wavenet_enc_skip
     config['decoder_use_enc_last'] = args.wavenet_enc_last
     config['decoder_use_raw_inputs'] = args.wavenet_enc_raw
-    config['grad_clip_by_norm'] = 1
+    config['grad_clip_by_norm'] = args.max_gradient_norm
     config['use_future_steps_in_q'] = False
     config['loss_on_encoder_outputs'] = True
 
@@ -443,6 +444,11 @@ def get_stcn_config(args):
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
+    if args.use_h36m_only:
+        model_exp_name = "h36m"
+    elif args.use_h36m_only:
+        model_exp_name = "h36m_martinez"
+
     if args.model_type == "stcn":
         model_cls = models.STCN
         kld_weight = config['latent_layer']['kld_weight']
@@ -521,6 +527,12 @@ def get_seq2seq_config(args):
     config['use_h36m_only'] = args.use_h36m_only
     config['use_h36m_martinez'] = args.use_h36m_martinez
 
+    model_exp_name = ""
+    if args.use_h36m_only:
+        model_exp_name = "h36m"
+    elif args.use_h36m_only:
+        model_exp_name = "h36m_martinez"
+
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel
     elif args.model_type == "seq2seq_feedback":
@@ -531,11 +543,12 @@ def get_seq2seq_config(args):
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
-    experiment_name_format = "{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
                                                     "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
+                                                    model_exp_name,
                                                     config['angle_loss_type'],
                                                     config['batch_size'],
                                                     args.seq_length_in,
@@ -711,8 +724,11 @@ def train():
                                                                  metrics_engine.get_summary_string(test_metrics),
                                                                  test_time))
         # create logger
+        workbook_name = "motion_modelling_experiments"
+        if args.use_h36m_only or args.use_h36m_martinez:
+            workbook_name = "h36m_motion_modelling_experiments"
         gLogger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
-                                    workbook_name="motion_modelling_experiments")
+                                    workbook_name=workbook_name)
         glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
                      'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                      'Comment': [""]}

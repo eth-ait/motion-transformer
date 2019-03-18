@@ -8,3 +8,5 @@ amass_to_temp/
 experiments_amass/
 experiment-logger-*
 selected_experiments_amass/*
+experiments_h36m/
+experiments_amass_all/

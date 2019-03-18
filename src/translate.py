@@ -30,7 +30,7 @@ tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning ra
 tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("iterations", int(1e5), "Iterations to train for.")
+tf.app.flags.DEFINE_integer("iterations", 30000, "Iterations to train for.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -39,9 +39,15 @@ tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into 
 tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
 tf.app.flags.DEFINE_boolean("omit_one_hot", False, "Whether to remove one-hot encoding from the data")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
+tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the model inputs.")
+tf.app.flags.DEFINE_integer("output_layer_size", 64, "Number of units in the output layer.")
+tf.app.flags.DEFINE_integer("output_layer_number", 1, "Number of output layer.")
+tf.app.flags.DEFINE_string("cell_type", C.GRU, "RNN cell type: gru, lstm, layernormbasiclstmcell")
+tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
+tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
 # Directories
 tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset"), "Data directory")
-tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments/"), "Training directory.")
+tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_h36m/"), "Training directory.")
 
 tf.app.flags.DEFINE_string("action", "all", "The action to train on. all actions")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -57,7 +63,7 @@ tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is n
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
-tf.app.flags.DEFINE_string("action_loss", "cross_entropy", "cross_entropy, l2 or none.")
+tf.app.flags.DEFINE_string("action_loss", "none", "cross_entropy, l2 or none.")
 tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")  # TODO(kamanuel) implement this for all models
 
@@ -121,6 +127,7 @@ def create_model(session, actions, sampling=False):
         os.mkdir(experiment_dir)
     if not sampling:
         json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
+    print("Experiment directory: ", experiment_dir)
 
     train_model.optimization_routines()
     train_model.summary_routines()
@@ -166,9 +173,9 @@ def create_rnn_model(actions, sampling=False):
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
     config['cell'] = dict()
-    config['cell']['cell_type'] = C.LSTM
-    config['cell']['cell_size'] = 1024
-    config['cell']['cell_num_layers'] = 1
+    config['cell']['cell_type'] = FLAGS.cell_type
+    config['cell']['cell_size'] = FLAGS.cell_size
+    config['cell']['cell_num_layers'] = FLAGS.cell_layers
     if FLAGS.model_type == 'vrnn':
         config['cell']['kld_weight'] = 1  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
         config['cell']['type'] = C.LATENT_GAUSSIAN
@@ -178,12 +185,12 @@ def create_rnn_model(actions, sampling=False):
         config['cell']["num_hidden_layers"] = 1
         config['cell']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0.1
+    config['input_layer']['dropout_rate'] = FLAGS.input_dropout_rate
     config['input_layer']['num_layers'] = 1
-    config['input_layer']['size'] = 512
+    config['input_layer']['size'] = 256
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 1
-    config['output_layer']['size'] = 64
+    config['output_layer']['num_layers'] = FLAGS.output_layer_number
+    config['output_layer']['size'] = FLAGS.output_layer_size
     config['output_layer']['activation_fn'] = C.RELU
 
     config['grad_clip_by_norm'] = 1
@@ -205,12 +212,14 @@ def create_rnn_model(actions, sampling=False):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
+    input_dropout = config['input_layer'].get('dropout_rate', 0)
+    experiment_name_format = "{}-{}{}-{}-{}{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
+                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cell']['cell_size'],
                                                     config['cell']['cell_type'],
@@ -226,7 +235,7 @@ def create_stcn_model(actions, sampling=False):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['seed'] = 1234
-    config['learning_rate'] = 1e-3
+    config['learning_rate'] = FLAGS.learning_rate
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
     config['learning_rate_decay_steps'] = 1000
@@ -236,9 +245,9 @@ def create_stcn_model(actions, sampling=False):
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_units"] = 64
     config['latent_layer']["num_hidden_layers"] = 2
-    config['latent_layer']['vertical_dilation'] = 4
+    config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
     config['latent_layer']['use_same_q_sample'] = False
     config['latent_layer']['dynamic_prior'] = True
@@ -248,19 +257,19 @@ def create_stcn_model(actions, sampling=False):
     config['latent_layer']['dense_z'] = True
     config['latent_layer']['latent_sigma_threshold'] = 5.0
     config['input_layer'] = dict()
-    config['input_layer']['dropout_rate'] = 0.1
+    config['input_layer']['dropout_rate'] = FLAGS.input_dropout_rate
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 2
-    config['output_layer']['size'] = 128
+    config['output_layer']['num_layers'] = FLAGS.output_layer_number
+    config['output_layer']['size'] = FLAGS.output_layer_size
     config['output_layer']['type'] = C.LAYER_TCN
     config['output_layer']['filter_size'] = 2
     config['output_layer']['activation_fn'] = C.RELU
     config['cnn_layer'] = dict()
-    config['cnn_layer']['num_encoder_layers'] = 28
+    config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 128
+    config['cnn_layer']['num_filters'] = 64
     config['cnn_layer']['filter_size'] = 2
-    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8]*7
+    config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU
     config['cnn_layer']['use_residual'] = True
     config['cnn_layer']['zero_padding'] = True
@@ -295,12 +304,14 @@ def create_stcn_model(actions, sampling=False):
     else:
         raise Exception()
 
-    experiment_name_format = "{}-{}{}-{}-{}-b{}-{}x{}@{}{}-in{}_out{}-{}-{}"
+    input_dropout = config['input_layer'].get('dropout_rate', 0)
+    experiment_name_format = "{}-{}{}-{}-{}{}-b{}-{}x{}@{}{}-in{}_out{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
                                                     config['joint_prediction_model'],
+                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cnn_layer']['num_encoder_layers'],
                                                     config['cnn_layer']['num_filters'],
