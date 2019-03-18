@@ -14,10 +14,12 @@ class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
     """
-    def __init__(self, fk_engine, video_dir=None, rep="rot_mat"):
+    def __init__(self, fk_engine, video_dir=None, rep="rot_mat", is_sparse=True):
         self.fk_engine = fk_engine
         self.video_dir = video_dir
         self.rep = rep
+        self.is_sparse = is_sparse
+        self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
         assert rep in ["rot_mat", "quat", "aa"]
 
     def visualize(self, seed, prediction, target, title):
@@ -38,7 +40,7 @@ class Visualizer(object):
             self.visualize_aa(seed, prediction, target, title)
 
     def visualize_quat(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 4
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == self.expected_n_input_joints * 4
         assert prediction.shape[0] == target.shape[0]
         dof = 4
 
@@ -51,7 +53,7 @@ class Visualizer(object):
         self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
 
     def visualize_aa(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 3
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == self.expected_n_input_joints * 3
         assert prediction.shape[0] == target.shape[0]
         dof = 3
 
@@ -63,9 +65,9 @@ class Visualizer(object):
         self.visualize_rotmat(_to_rotmat(seed), _to_rotmat(prediction), _to_rotmat(target), title)
 
     def visualize_rotmat(self, seed, prediction, target, title):
-        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == len(self.fk_engine.major_joints) * 9
+        assert seed.shape[-1] == prediction.shape[-1] == target.shape[-1] == self.expected_n_input_joints * 9
         assert prediction.shape[0] == target.shape[0]
-        n_joints = len(self.fk_engine.major_joints)
+        n_joints = self.expected_n_input_joints
         dof = 9
 
         # stitch seed in front of prediction and target
@@ -81,9 +83,17 @@ class Visualizer(object):
         targ_are_valid = is_valid_rotmat(np.reshape(targ, [-1, n_joints, 3, 3]))
         assert targ_are_valid, 'target rotation matrices are not valid rotations'
 
+        # check that the targets are valid
+        pred_are_valid = is_valid_rotmat(np.reshape(pred, [-1, n_joints, 3, 3]))
+        assert pred_are_valid, 'predicted rotation matrices are not valid rotations'
+
         # compute positions
-        pred_pos = self.fk_engine.from_sparse(pred, return_sparse=False)  # (N, full_n_joints, 3)
-        targ_pos = self.fk_engine.from_sparse(targ, return_sparse=False)  # (N, full_n_joints, 3)
+        if self.is_sparse:
+            pred_pos = self.fk_engine.from_sparse(pred, return_sparse=False)  # (N, full_n_joints, 3)
+            targ_pos = self.fk_engine.from_sparse(targ, return_sparse=False)  # (N, full_n_joints, 3)
+        else:
+            pred_pos = self.fk_engine.from_rotmat(pred)
+            targ_pos = self.fk_engine.from_rotmat(targ)
 
         pred_pos = pred_pos[..., [0, 2, 1]]
         targ_pos = targ_pos[..., [0, 2, 1]]
