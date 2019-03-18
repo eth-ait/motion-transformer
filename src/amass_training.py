@@ -98,8 +98,8 @@ def create_model(session):
         assert args.no_normalization, 'we normalize quaternions on the output, so it does not make sense ' \
                                       'to use normalization'
 
-    if use_aa:
-        assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
+    # if use_aa:
+    #     assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
 
     rep = "quat" if use_quat else "rotmat"
     rep = "aa" if use_aa else rep

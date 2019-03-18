@@ -556,11 +556,12 @@ class MetricsEngine(object):
         return copy.deepcopy(self.metrics_agg)
 
     @classmethod
-    def get_summary_string(cls, final_metrics):
+    def get_summary_string(cls, final_metrics, at_mode=False):
         """
         Create a summary string from the given metrics, e.g. for printing to the console.
         Args:
             final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
+            at_mode: If true will report the numbers at the last frame rather then until the last frame.
 
         Returns:
             A summary string.
@@ -570,26 +571,27 @@ class MetricsEngine(object):
         for m in sorted(final_metrics):
             if m.startswith("pck"):
                 continue
-            val = np.sum(final_metrics[m])
+            val = final_metrics[m][seq_length-1] if at_mode else np.sum(final_metrics[m])
             s += "   {}: {:.3f}".format(m, val)
 
         # print pcks last
         pck_threshs = [5, 10, 15]
         for t in pck_threshs:
             m_name = "pck_{}".format(t)
-            val = np.mean(final_metrics[m_name])
+            val = final_metrics[m_name][seq_length-1] if at_mode else np.mean(final_metrics[m_name])
             s += "   {}: {:.3f}".format(m_name, val)
 
         return s
 
     @classmethod
-    def get_summary_glogger(cls, final_metrics, is_validation=True, until=None):
+    def get_summary_glogger(cls, final_metrics, is_validation=True, until=None, at_mode=False):
         """
         Create a summary that can be written into glogger.
         Args:
             final_metrics: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
             is_validation: If the given metrics are from the validation set, otherwise it's assumed they're from test.
             until: Until which time step to compute the metrics.
+            at_mode: If true will report the numbers at frame `until` rather then summing until `until`.
 
         Returns:
             A dictionary that can be written into glogger
@@ -601,11 +603,14 @@ class MetricsEngine(object):
             if m == "pck_{}".format(pck_thresh):
                 # store under "pck"
                 key = "val pck" if is_validation else "test pck"
-                val = np.mean(final_metrics[m][:t])
+                val = final_metrics[m][t-1] if at_mode else np.mean(final_metrics[m][:t])
                 glog_data[key] = [float(val)]
 
             key = "val {}".format(m) if is_validation else "test {}".format(m)
-            val = np.mean(final_metrics[m][:t]) if m.startswith("pck") else np.sum(final_metrics[m][:t])
+            if at_mode:
+                val = final_metrics[m][t-1] if m.startswith("pck") else final_metrics[m][t-1]
+            else:
+                val = np.mean(final_metrics[m][:t]) if m.startswith("pck") else np.sum(final_metrics[m][:t])
             glog_data[key] = [float(val)]
         return glog_data
 
