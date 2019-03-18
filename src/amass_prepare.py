@@ -3,6 +3,8 @@ import os
 import pickle as pkl
 import tensorflow as tf
 import quaternion
+import cv2
+
 
 RNG = np.random.RandomState(42)
 
@@ -114,12 +116,36 @@ def rotmat2quat(rotmats):
     return ori_qc
 
 
-def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, create_windows=None):
+def rotmat2aa(rotmats):
+    """
+    Convert rotation matrices to angle-axis format.
+    Args:
+        oris: np array of shape (seq_length, n_joints*9).
+
+    Returns: np array of shape (seq_length, n_joints*3)
+    """
+    seq_length = rotmats.shape[0]
+    assert rotmats.shape[1] % 9 == 0
+    n_joints = rotmats.shape[1] // 9
+    ori = np.reshape(rotmats, [seq_length*n_joints, 3, 3])
+    aas = np.zeros([seq_length*n_joints, 3])
+    for i in range(ori.shape[0]):
+        aas[i] = np.squeeze(cv2.Rodrigues(ori[i])[0])
+    return np.reshape(aas, [seq_length, n_joints*3])
+
+
+def process_split(all_fnames, output_path, n_shards, compute_stats, rep, create_windows=None):
+    assert rep in ["aa", "rotmat", "quat"]
     print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
+
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
 
     # save data as tfrecords
     tfrecord_writers = create_tfrecord_writers(os.path.join(output_path, 'amass'), n_shards)
     if create_windows is not None:
+        if not os.path.exists(output_path + "_dynamic"):
+            os.makedirs(output_path + "_dynamic")
         tfrecord_writers_dyn = create_tfrecord_writers(os.path.join(output_path + "_dynamic", "amass"), n_shards)
 
     # compute normalization stats online
@@ -139,9 +165,13 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, cre
             poses = np.array(data['poses'])  # shape (seq_length, 135)
             assert len(poses) > 0, 'file is empty'
 
-            if as_quat:
+            if rep == "quat":
                 # convert to quaternions
                 poses = rotmat2quat(poses)
+            elif rep == "aa":
+                poses = rotmat2aa(poses)
+            else:
+                pass
 
             db_name = os.path.split(os.path.dirname(os.path.join(root_dir, f)))[1]
             if "AMASS" in db_name:
@@ -236,9 +266,12 @@ if __name__ == '__main__':
     n_shards = 20  # need to save the data in shards, it's too big otherwise
     valid_split = 0.05  # percentage of files we want to save for validation
     test_split = 0.05  # percentage of files we want to save for test
-    as_quat = True  # converts the data to quaternions
+    as_quat = False  # converts the data to quaternions
+    as_aa = True  # converts tha data to angle_axis
     test_window_size = 180  # 3 seconds
     test_window_stride = 120  # 2 seconds
+
+    assert not (as_quat and as_aa), 'must choose between quat or aa'
 
     # raise ValueError("are you sure you want to start the prepare script?? This might take some time.")
 
@@ -286,7 +319,6 @@ if __name__ == '__main__':
     assert len(training_set.intersection(test_set)) == 0
     assert len(validation_set.intersection(test_set)) == 0
 
-
     # read filenames from disk to make sure the splits are always the same
     def _read_fnames(from_):
         with open(from_, 'r') as fh:
@@ -318,26 +350,23 @@ if __name__ == '__main__':
     _assert_split_invariance(valid_fnames_fixed, valid_fnames)
     _assert_split_invariance(test_fnames_fixed, test_fnames)
 
-    # raise ValueError("value error")
-
     tot_files = len(train_fnames) + len(valid_fnames) + len(test_fnames)
     print("found {} training files {:.2f} %".format(len(train_fnames), len(train_fnames) / tot_files * 100.0))
     print("found {} validation files {:.2f} %".format(len(valid_fnames), len(valid_fnames) / tot_files * 100.0))
     print("found {} test files {:.2f} %".format(len(test_fnames), len(test_fnames) / tot_files * 100.0))
 
     print("process training data ...")
-    rep = "quat" if as_quat else "rotmat"
+    rep = "quat" if as_quat else "aa" if as_aa else "rotmat"
     tr_stats = process_split(train_fnames, os.path.join(output_folder, rep, "training"), n_shards, compute_stats=True,
-                             as_quat=as_quat, create_windows=None)
+                             rep=rep, create_windows=None)
 
     print("process validation data ...")
     va_stats = process_split(valid_fnames, os.path.join(output_folder, rep, "validation"), n_shards,
-                             compute_stats=False,
-                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
+                             compute_stats=False, rep=rep, create_windows=(test_window_size, test_window_stride))
 
     print("process test data ...")
     te_stats = process_split(test_fnames, os.path.join(output_folder, rep, "test"), n_shards, compute_stats=False,
-                             as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
+                             rep=rep, create_windows=(test_window_size, test_window_stride))
 
     print("Meta stats for all splits combined")
     total_stats = tr_stats
