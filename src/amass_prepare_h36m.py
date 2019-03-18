@@ -31,7 +31,7 @@ def rotmat2aa(rotmats):
 
 
 def process_split(all_fnames, output_path, n_shards, compute_stats, rep, create_windows=None):
-    assert rep in ["rot_mat", "quat", "aa"]
+    assert rep in ["rotmat", "quat", "aa"]
     print("storing into {} computing stats {}".format(output_path, "YES" if compute_stats else "NO"))
 
     if not os.path.exists(output_path):
@@ -159,13 +159,13 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, rep, create_
 if __name__ == '__main__':
     amass_h36m_folder = "C:/Users/manuel/projects/imu/data/new_batch_v9_unnorm/H36_60FPS_for_TC_No_Blend"
     output_folder = "C:/Users/manuel/projects/motion-modelling/data/amass/per_db/h36m"
-    n_shards = 1  # need to save the data in shards, it's too big otherwise
+    n_shards = 5
     train_subjects = [1, 6, 7, 8, 9, 11]  # for h3.6m this is fixed
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
     as_quat = False  # converts the data to quaternions
     as_aa = True  # converts tha data to angle_axis
-    test_window_size = 160
-    test_window_stride = 100
+    test_window_size = 180  # 3 seconds
+    test_window_stride = 120  # 2 seconds
 
     assert not (as_quat and as_aa), 'must choose between quat or aa'
 
@@ -195,8 +195,7 @@ if __name__ == '__main__':
     print("found {} test files {:.2f} %".format(len(test_fnames), len(test_fnames) / tot_files * 100.0))
 
     print("process training data ...")
-    rep = "quat" if as_quat else "rotmat"
-    rep = "aa" if as_aa else "rotmat"
+    rep = "quat" if as_quat else "aa" if as_aa else "rotmat"
     tr_stats = process_split(train_fnames, os.path.join(output_folder, rep, "training"), n_shards, compute_stats=True,
                              rep=rep, create_windows=None)
 

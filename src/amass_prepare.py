@@ -37,7 +37,7 @@ def to_tfexample(poses, file_id, db_name):
 def split_into_windows(poses, window_size, stride):
     """Split (seq_length, dof) array into arrays of shape (window_size, dof) with the given stride."""
     n_windows = (poses.shape[0] - window_size) // stride + 1
-    windows = poses[stride*np.arange(n_windows)[:, None] + np.arange(window_size)]
+    windows = poses[stride * np.arange(n_windows)[:, None] + np.arange(window_size)]
     return windows
 
 
@@ -60,14 +60,14 @@ def correct_antipodal_quaternions(quat):
         quat_r = quat.copy()
 
     def dist(x, y):
-        return np.sqrt(np.sum((x-y)**2, axis=-1))
+        return np.sqrt(np.sum((x - y) ** 2, axis=-1))
 
     # naive implementation looping over all time steps sequentially
     quat_corrected = np.zeros_like(quat_r)
     quat_corrected[0] = quat_r[0]
     for t in range(1, quat.shape[0]):
-        diff_to_plus = dist(quat_r[t], quat_corrected[t-1])
-        diff_to_neg = dist(-quat_r[t], quat_corrected[t-1])
+        diff_to_plus = dist(quat_r[t], quat_corrected[t - 1])
+        diff_to_neg = dist(-quat_r[t], quat_corrected[t - 1])
 
         # diffs are vectors
         qc = quat_r[t]
@@ -134,7 +134,7 @@ def process_split(all_fnames, output_path, n_shards, compute_stats, as_quat, cre
     for idx in range(len(all_fnames)):
         root_dir, f = all_fnames[idx]
         with open(os.path.join(root_dir, f), 'rb') as f_handle:
-            print('\r [{:0>5d} / {:0>5d}] processing file {}'.format(idx+1, len(all_fnames), f), end='')
+            print('\r [{:0>5d} / {:0>5d}] processing file {}'.format(idx + 1, len(all_fnames), f), end='')
             data = pkl.load(f_handle, encoding='latin1')
             poses = np.array(data['poses'])  # shape (seq_length, 135)
             assert len(poses) > 0, 'file is empty'
@@ -237,10 +237,10 @@ if __name__ == '__main__':
     valid_split = 0.05  # percentage of files we want to save for validation
     test_split = 0.05  # percentage of files we want to save for test
     as_quat = True  # converts the data to quaternions
-    test_window_size = 160
-    test_window_stride = 100
+    test_window_size = 180  # 3 seconds
+    test_window_stride = 120  # 2 seconds
 
-    raise ValueError("are you sure you want to start the prepare script?? This might take some time.")
+    # raise ValueError("are you sure you want to start the prepare script?? This might take some time.")
 
     # gather all file names to create the training/val/test splits
     # this assumes the files are not empty
@@ -265,7 +265,11 @@ if __name__ == '__main__':
                     # check if that file is big enough
                     with open(os.path.join(root_dir, f), 'rb') as ph:
                         x = pkl.load(ph, encoding='latin1')
-                        if np.array(x["poses"]).shape[0] < test_window_size:
+                        seq_len = np.array(x["poses"]).shape[0]
+                        if seq_len < test_window_size:
+                            print("rejecting {} from {} (seq length {} < test_window_size)".format(f,
+                                                                                                   "valid" if is_valid else "test",
+                                                                                                   seq_len))
                             continue
                     if is_valid:
                         valid_fnames.append((root_dir, f))
@@ -282,11 +286,13 @@ if __name__ == '__main__':
     assert len(training_set.intersection(test_set)) == 0
     assert len(validation_set.intersection(test_set)) == 0
 
+
     # read filenames from disk to make sure the splits are always the same
     def _read_fnames(from_):
         with open(from_, 'r') as fh:
             lines = fh.readlines()
             return [line.strip() for line in lines]
+
 
     def _assert_split_invariance(fnames_fixed, fnames_split):
         fnames_proposed = []
@@ -302,6 +308,7 @@ if __name__ == '__main__':
         f1 = [f.encode("utf-8") for f in sorted(fnames_proposed)]
         f2 = [f.encode("utf-8") for f in sorted(fnames_fixed)]
         assert f1 == f2
+
 
     train_fnames_fixed = _read_fnames(os.path.join(output_folder, "training_fnames.txt"))
     valid_fnames_fixed = _read_fnames(os.path.join(output_folder, "validation_fnames.txt"))
@@ -324,7 +331,8 @@ if __name__ == '__main__':
                              as_quat=as_quat, create_windows=None)
 
     print("process validation data ...")
-    va_stats = process_split(valid_fnames, os.path.join(output_folder, rep, "validation"), n_shards, compute_stats=False,
+    va_stats = process_split(valid_fnames, os.path.join(output_folder, rep, "validation"), n_shards,
+                             compute_stats=False,
                              as_quat=as_quat, create_windows=(test_window_size, test_window_stride))
 
     print("process test data ...")

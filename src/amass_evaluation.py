@@ -33,13 +33,14 @@ def create_and_restore_model(session, experiment_dir, config, args):
     if config.get('use_h36m_martinez', False):
         data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
+    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
+        extract_random_windows = True
         test_data_path = os.path.join(data_path, rep, "test_dynamic", "amass-?????-of-?????")
     else:
         test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
-        assert windows_length == 160, "TFRecords are hardcoded with length of 160."
-        windows_length = 0  # set to 0 so that dataset class works as intended
+        extract_random_windows = False
 
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
@@ -51,7 +52,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
                                           batch_size=args.batch_size,
                                           shuffle=False,
                                           extract_windows_of=window_length,
-                                          extract_random_windows=False,
+                                          extract_random_windows=extract_random_windows,
                                           num_parallel_calls=16,
                                           normalize=data_normalization)
         test_pl = test_data.get_tf_samples()

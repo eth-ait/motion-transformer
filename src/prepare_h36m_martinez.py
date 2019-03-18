@@ -219,13 +219,13 @@ def load_data(path_to_dataset, subjects, actions, one_hot, rep):
 if __name__ == '__main__':
     h36m_folder = "../data/h3.6m/dataset/"
     output_folder = "C:/Users/manuel/projects/motion-modelling/data/h3.6m/tfrecords/"
-    n_shards = 1  # need to save the data in shards, it's too big otherwise
+    n_shards = 5  # need to save the data in shards, it's too big otherwise
     train_subjects = [1, 6, 7, 8, 9, 11]  # for h3.6m this is fixed
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
-    as_quat = True  # converts the data to quaternions
-    as_aa = False  # converts tha data to angle_axis
-    test_window_size = 160
-    test_window_stride = 100
+    as_quat = False  # converts the data to quaternions
+    as_aa = True  # converts tha data to angle_axis
+    test_window_size = 150  # 3 seconds
+    test_window_stride = 100  # 2 seconds
 
     actions = ["walking", "eating", "smoking", "discussion", "directions",
                "greeting", "phoning", "posing", "purchases", "sitting",
