@@ -10,6 +10,7 @@ import quaternion
 from amass_prepare import create_tfrecord_writers
 from amass_prepare import write_tfexample
 from amass_prepare import close_tfrecord_writers
+from fk import H36M_MAJOR_JOINTS
 
 
 RNG = np.random.RandomState(42)
@@ -50,7 +51,11 @@ def process_poses(data, rep, output_path, n_shards):
     for idx in range(n_samples):
         pose = poses_q[idx]
         seq_len = pose.shape[0]
-        pose_r = quaternion.from_float_array(np.reshape(pose, [seq_len, -1, 4]))
+        pose_r = np.reshape(pose, [seq_len, -1, 4])  # (-1, 32, 4)
+
+        # remove unwanted joints
+        pose_r = pose_r[:, H36M_MAJOR_JOINTS]
+        pose_r = quaternion.from_float_array(pose_r)
         if rep == "aa":
             pose_aa = quaternion.as_rotation_vector(pose_r)
             pose = np.reshape(pose_aa, [seq_len, -1])
@@ -58,9 +63,9 @@ def process_poses(data, rep, output_path, n_shards):
             pose_rot = quaternion.as_rotation_matrix(pose_r)
             pose = np.reshape(pose_rot, [seq_len, -1])
         else:
-            pass  # data is already in quaternion format
+            pass
 
-        eul = euler_targets[idx]
+        eul = euler_targets[idx]  # (seq_length, 96)
         action = action_labels[idx]
         file_id = "{}/{}".format(idx, action)
 
@@ -95,8 +100,8 @@ if __name__ == '__main__':
     srnn_poses = "../data/h3.6m/h36m_srnn_test_samples_50fps.npz"
     output_folder = "C:/Users/manuel/projects/motion-modelling/data/h3.6m/tfrecords/"
     n_shards = 1  # need to save the data in shards, it's too big otherwise
-    as_quat = False  # converts the data to quaternions
-    as_aa = True  # converts tha data to angle_axis
+    as_quat = True  # converts the data to quaternions
+    as_aa = False  # converts tha data to angle_axis
 
     assert not (as_quat and as_aa), 'must choose between quat or aa'
 

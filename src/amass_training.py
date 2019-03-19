@@ -21,8 +21,12 @@ from constants import Constants as C
 import glob
 import json
 from motion_metrics import MetricsEngine
+from motion_metrics import rotmat2euler
+from motion_metrics import quat2euler
+from motion_metrics import aa2rotmat
 from fk import H36MForwardKinematics
 from fk import SMPLForwardKinematics
+from fk import H36M_MAJOR_JOINTS
 from visualize import Visualizer
 
 
@@ -629,7 +633,6 @@ def train():
             sess.run(_eval_iter.initializer)
             try:
                 while True:
-                    # TODO(kamanuel) should we compute the validation loss here as well, if so how?
                     # get the predictions and ground truth values
                     prediction, targets, seed_sequence, data_id = _eval_model.sampled_step(sess)
 
@@ -742,6 +745,92 @@ def train():
             glog_data["Comment"] = ["until_{}".format(t)]
             glog_data = {**glog_data, **glog_valid_metrics, **glog_test_metrics}
             gLogger.append_row(glog_data, sheet_name="until_{}".format(t))
+
+        # compute metrics on SRNN poses to compare directly to Martinez
+        def _evaluate_srnn_poses(_eval_model, _srnn_iter, _gt_euler):
+            # make a full pass on the validation or test dataset and compute the metrics
+            _start_time = time.perf_counter()
+            sess.run(_srnn_iter.initializer)
+            _euler_angle_metrics = dict()  # {action -> list of mean euler angles per frame}
+            try:
+                while True:
+                    # get the predictions and ground truth values
+                    prediction, _, seed_sequence, data_id = _eval_model.sampled_step(sess)
+
+                    # unnormalize - if normalization is not configured, these calls do nothing
+                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")["poses"]
+                    batch_size, seq_length = p.shape[0], p.shape[1]
+
+                    # convert to euler angles
+                    if train_model.use_quat:
+                        # TODO(kamanuel) using function from quaternions, may be convert to rotmat like with aa
+                        p_euler = quat2euler(np.reshape(p, [batch_size, seq_length, -1, 4]))
+                    elif train_model.use_aa:
+                        p_euler = rotmat2euler(aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
+                    else:
+                        p_euler = rotmat2euler(np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
+
+                    p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
+                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = np.reshape(p_euler, [batch_size, seq_length, -1, 3])
+                    p_euler_padded = np.reshape(p_euler_padded, [batch_size, seq_length, -1])
+
+                    for k in range(batch_size):
+                        _d_id = data_id[k].decode("utf-8")
+                        _action = _d_id.split('/')[-1]
+                        _targ = _gt_euler[_d_id]  # (seq_length, 96)
+                        _pred = p_euler_padded[k]  # (seq_length, 96)
+
+                        # compute euler loss like Martinez does it, but we don't have global translation
+                        gt_i = np.copy(_targ)
+                        gt_i[:, 0:3] = 0.0
+                        _pred[:, 0:3] = 0.0
+
+                        # compute the error only on the joints that we use for training
+                        # only do this on ground truths, predictions are already sparse
+                        idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
+
+                        euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use], 2)
+                        euc_error = np.sum(euc_error, axis=1)
+                        euc_error = np.sqrt(euc_error)  # (seq_length, )
+                        if _action not in _euler_angle_metrics:
+                            _euler_angle_metrics[_action] = [euc_error]
+                        else:
+                            _euler_angle_metrics[_action].append(euc_error)
+
+            except tf.errors.OutOfRangeError:
+                pass
+            return _euler_angle_metrics, time.perf_counter() - _start_time
+
+        if args.use_h36m_martinez:
+            predictions_euler, _ = _evaluate_srnn_poses(srnn_test_model, srnn_iter, srnn_gts)
+
+            which_actions = ['walking', 'eating', 'discussion', 'smoking']
+            google_sheet_data = dict()
+            for action in which_actions:
+                # get the mean over all samples for that action
+                assert len(predictions_euler[action]) == 8
+                euler_mean = np.mean(np.stack(predictions_euler[action]), axis=0)
+                assert euler_mean.shape[0] == 200
+
+                # get the metrics for the timesteps, NOTE this assumes 50 Hz!!
+                google_sheet_data[action] = {"80": euler_mean[3],
+                                             "160": euler_mean[7],
+                                             "320": euler_mean[15],
+                                             "400": euler_mean[19]}
+
+            g_logger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
+                                         workbook_name="h36m_motion_modelling_experiments")
+            glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
+                         'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
+                         'Comment': [""]}
+
+            which_actions = ["walking", "eating", "discussion", "smoking"]
+            for action in which_actions:
+                best_euler = google_sheet_data[action]
+                for ms in best_euler:
+                    glog_data[action[0] + ms] = [best_euler[ms]]
+
+            g_logger.append_row(glog_data, sheet_name="logs")
 
         # save some sample videos to the experiment folder
         # TODO(kamanuel) this does not work on Leonhard for some stupid reason

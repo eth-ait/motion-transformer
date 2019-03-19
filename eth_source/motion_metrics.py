@@ -108,6 +108,35 @@ def rotmat2euler(rotmats):
     return eul
 
 
+def quat2euler(quats, epsilon=0):
+    """
+    Adopted from QuaterNet; only supports order == 'xyz'. Original source code found here:
+    https://github.com/facebookresearch/QuaterNet/blob/ce2d8016f749d265da9880a8dcb20a9be1a6d69c/common/quaternion.py#L53
+    Args:
+        quats: numpy array of shape (..., 4)
+
+    Returns:
+        A numpy array of shape (..., 3)
+    """
+    assert quats.shape[-1] == 4
+
+    orig_shape = list(quats.shape)
+    orig_shape[-1] = 3
+    quats = np.reshape(quats, [-1, 4])
+
+    q0 = quats[:, 0]
+    q1 = quats[:, 1]
+    q2 = quats[:, 2]
+    q3 = quats[:, 3]
+
+    x = np.arctan2(2 * (q0 * q1 - q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2))
+    y = np.arcsin(np.clip(2 * (q1 * q3 + q0 * q2), -1 + epsilon, 1 - epsilon))
+    z = np.arctan2(2 * (q0 * q3 - q1 * q2), 1 - 2 * (q2 * q2 + q3 * q3))
+
+    eul = np.stack([x, y, z], axis=-1)
+    return np.reshape(eul, orig_shape)
+
+
 def aa2rotmat(angle_axes):
     """
     Convert angle-axis to rotation matrices using opencv's Rodrigues formula.
