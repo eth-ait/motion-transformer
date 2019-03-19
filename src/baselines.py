@@ -5,12 +5,11 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 import translate
 import data_utils
-import seq2seq_model
+from translate import create_seq2seq_model
 
 
 # Dummy object to create parameters for also-dummy model
@@ -98,19 +97,21 @@ def denormalize_and_convert_to_euler(data, data_mean, data_std, dim_to_ignore, a
                     that corresponds to a denormalized sequence in Euler angles
     """
 
+    all_denormed_euler = []
     all_denormed = []
 
     # expmap -> rotmat -> euler
     for i in np.arange(data.shape[0]):
         denormed = data_utils.unNormalizeData(data[i, :, :], data_mean, data_std, dim_to_ignore, actions, one_hot)
+        all_denormed.append(np.copy(denormed))
 
         for j in np.arange(denormed.shape[0]):
             for k in np.arange(3, 97, 3):
                 denormed[j, k:k + 3] = data_utils.rotmat2euler(data_utils.expmap2rotmat(denormed[j, k:k + 3]))
 
-        all_denormed.append(denormed)
+        all_denormed_euler.append(denormed)
 
-    return all_denormed
+    return all_denormed_euler, all_denormed
 
 
 def main():
@@ -125,7 +126,7 @@ def main():
     # Parameters for dummy model. We only build the model to load the data.
     one_hot = False
     FLAGS = Object()
-    FLAGS.data_dir = "./data/h3.6m/dataset"
+    FLAGS.data_dir = "../data/h3.6m/dataset"
     FLAGS.architecture = "tied"
     FLAGS.seq_length_in = 50
     FLAGS.seq_length_out = 100
@@ -137,48 +138,60 @@ def main():
     FLAGS.learning_rate_decay_factor = 1
     summaries_dir = "./log/"
     FLAGS.loss_to_use = "sampling_based"
-    FLAGS.omit_one_hot = True,
+    FLAGS.omit_one_hot = False,
     FLAGS.residual_velocities = False,
+    FLAGS.new_preprocessing = True,
     dtype = tf.float32
 
     # Baselines are very simple. No need to use the GPU.
     with tf.Session(config=tf.ConfigProto(device_count={"GPU": 0})) as sess:
 
-        model = seq2seq_model.Seq2SeqModel(
-            FLAGS.architecture,
-            FLAGS.seq_length_in,
-            FLAGS.seq_length_out,
-            FLAGS.size,  # hidden layer size
-            FLAGS.num_layers,
-            FLAGS.max_gradient_norm,
-            FLAGS.batch_size,
-            FLAGS.learning_rate,
-            FLAGS.learning_rate_decay_factor,
-            summaries_dir,
-            FLAGS.loss_to_use,
-            len(actions),
-            not FLAGS.omit_one_hot,
-            FLAGS.residual_velocities,
-            dtype=dtype)
+        model_cls, config, experiment_name = create_seq2seq_model(actions, False)
 
+        with tf.name_scope("sampling"):
+            eval_model = model_cls(
+                config=config,
+                session=sess,
+                mode="sampling",
+                reuse=False,
+                dtype=tf.float32)
+            eval_model.build_graph()
+
+        omit_one_hot = FLAGS.omit_one_hot[0]
         # Load the data
         _, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = translate.read_all_data(
-            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
-            FLAGS.new_preprocessing)
+            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not omit_one_hot,
+            FLAGS.new_preprocessing[0])
 
         # Get all the data, denormalize and convert it to euler angles
         poses_data = {}
+        to_store = dict()
         for action in actions:
-            enc_in, dec_in, dec_out = model.get_batch_srnn(test_set, action)
+            enc_in_euler, dec_in_euler, dec_out_euler = eval_model.get_batch_srnn(test_set, action)
 
-            enc_in = denormalize_and_convert_to_euler(
-                enc_in, data_mean, data_std, dim_to_ignore, actions, not FLAGS.omit_one_hot)
-            dec_in = denormalize_and_convert_to_euler(
-                dec_in, data_mean, data_std, dim_to_ignore, actions, not FLAGS.omit_one_hot)
-            dec_out = denormalize_and_convert_to_euler(
-                dec_out, data_mean, data_std, dim_to_ignore, actions, not FLAGS.omit_one_hot)
+            enc_in_euler, enc_in = denormalize_and_convert_to_euler(
+                enc_in_euler, data_mean, data_std, dim_to_ignore, actions, not omit_one_hot)
+            dec_in_euler, dec_in = denormalize_and_convert_to_euler(
+                dec_in_euler, data_mean, data_std, dim_to_ignore, actions, not omit_one_hot)
+            dec_out_euler, dec_out = denormalize_and_convert_to_euler(
+                dec_out_euler, data_mean, data_std, dim_to_ignore, actions, not omit_one_hot)
 
-            poses_data[action] = (enc_in, dec_in, dec_out)
+            re_stored_seq = []
+            re_stored_euler = []
+            for k in range(len(enc_in)):
+                re_stored_seq.append(np.concatenate([enc_in[k][0:FLAGS.seq_length_in - 1],
+                                                     dec_in[k],
+                                                     dec_out[k][-1:]], axis=0))
+                re_stored_euler.append(np.concatenate([enc_in_euler[k][0:FLAGS.seq_length_in - 1],
+                                                       dec_in_euler[k],
+                                                       dec_out_euler[k][-1:]], axis=0))
+
+            to_store[action] = {'euler': re_stored_euler,
+                                'pose': re_stored_seq}
+
+            poses_data[action] = (enc_in_euler, dec_in_euler, dec_out_euler)
+
+        np.savez('./martinez_euler_gt.npz', data=to_store)
 
         # Compute baseline errors
         errs_constant_frame = running_average(poses_data, actions, 1)

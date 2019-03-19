@@ -110,6 +110,13 @@ def rotmat2euler(rotmats):
 
 def quat2euler(quats, epsilon=0):
     """
+
+    THIS FUNCTION IS EVIL !!!
+
+    IT ASSUMES Tait–Bryan angles, I.E. WE ROTATE AROUND THE ROTATED COORDINATE SYSTEM !!!
+
+    USE AT YOUR OWN PERIL!!!
+
     Adopted from QuaterNet; only supports order == 'xyz'. Original source code found here:
     https://github.com/facebookresearch/QuaterNet/blob/ce2d8016f749d265da9880a8dcb20a9be1a6d69c/common/quaternion.py#L53
     Args:
@@ -709,7 +716,9 @@ def _test_rotmat2euler():
         martinez_out.append(rotmat2euler_martinez(rs_random[i]))
     martinez_out = np.stack(martinez_out)
     ours = rotmat2euler(rs_random)
-    print("random: ", np.linalg.norm(martinez_out - ours))
+    quaternet = quat2euler(quaternion.as_float_array(quaternion.from_rotation_matrix(rs_random)))
+    print("martinez vs ours random: ", np.linalg.norm(martinez_out - ours))
+    print("quaternet vs ours random: ", np.linalg.norm(quaternet - ours))
 
     # some manual cases
     rs = np.stack([rx(np.pi/4),
@@ -720,7 +729,9 @@ def _test_rotmat2euler():
         martinez_out.append(rotmat2euler_martinez(r))
     martinez_out = np.stack(martinez_out)
     ours = rotmat2euler(rs)
-    print("manual: ", np.linalg.norm(martinez_out - ours))
+    quaternet = quat2euler(quaternion.as_float_array(quaternion.from_rotation_matrix(rs)))
+    print("manual martinez vs ours: ", np.linalg.norm(martinez_out - ours))
+    print("manual quaternet vs ours: ", np.linalg.norm(quaternet - ours))
 
 
 if __name__ == '__main__':

@@ -205,12 +205,15 @@ def load_data(path_to_dataset, subjects, actions, one_hot, rep):
                 else:
                     pass  # the data is already in angle-axis format
 
+                # downsample to 25 fps
+                even_list = range(0, n_samples, 2)
+
                 if one_hot:
                     one = np.zeros([nactions], dtype=np.float)
                     one[action_idx] = 1.0
                     one_hots.append(one)
 
-                poses.append(action_sequence)
+                poses.append(action_sequence[even_list, :])
                 file_ids.append("S{}_{}_{}".format(subj, action, subact))
 
     return poses, one_hots, file_ids
@@ -224,8 +227,8 @@ if __name__ == '__main__':
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
     as_quat = False  # converts the data to quaternions
     as_aa = True  # converts tha data to angle_axis
-    test_window_size = 150  # 3 seconds
-    test_window_stride = 100  # 2 seconds
+    test_window_size = 75  # 3 seconds
+    test_window_stride = 50  # 2 seconds
 
     actions = ["walking", "eating", "smoking", "discussion", "directions",
                "greeting", "phoning", "posing", "purchases", "sitting",

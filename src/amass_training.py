@@ -11,6 +11,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+import quaternion
 
 import amass_models as models
 from amass_tf_data import TFRecordMotionDataset
@@ -42,8 +43,8 @@ tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
 tf.app.flags.DEFINE_string("optimizer", "adam", "Optimization algorithm: adam or sgd.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
-tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder. 25 fps")
-tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict. 25fps")
+tf.app.flags.DEFINE_integer("seq_length_in", 50, "Number of frames to feed into the encoder.")
+tf.app.flags.DEFINE_integer("seq_length_out", 10, "Number of frames that the decoder has to predict.")
 tf.app.flags.DEFINE_boolean("residual_velocities", False, "Add a residual connection that effectively models velocities")
 tf.app.flags.DEFINE_string("residual_velocities_type", "plus", "How to combine inputs with model prediction")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.0, "Dropout rate on the model inputs.")
@@ -80,6 +81,7 @@ tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps 
 tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
 tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
+tf.app.flags.DEFINE_boolean("use_25fps", True, "Use downsampled Martinez data")
 
 args = tf.app.flags.FLAGS
 
@@ -98,7 +100,7 @@ def create_model(session):
     use_quat = args.use_quat
     use_aa = args.use_aa
 
-    assert not (use_quat and use_quat), 'must choose between quat or aa'
+    assert not (use_quat and use_aa), 'must choose between quat or aa'
 
     if use_quat:
         assert args.no_normalization, 'we normalize quaternions on the output, so it does not make sense ' \
@@ -126,6 +128,9 @@ def create_model(session):
     test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
     train_dir = os.environ["AMASS_EXPERIMENTS"]
+
+    if args.use_h36m_martinez:
+        train_dir = os.path.join(train_dir, '../', 'experiments_h36m')
 
     if args.force_valid_rot:
         assert args.no_normalization, 'Normalization does not make sense when enforcing valid rotations.'
@@ -237,12 +242,17 @@ def create_model(session):
     if args.use_h36m_martinez:
         # create model and data for SRNN evaluation
         with tf.name_scope("srnn_data"):
-            srnn_path = os.path.join(data_path, rep, "srnn_poses", "amass-?????-of-?????")
+            srnn_dir = "srnn_poses"
+            extract_windows_of = 120  # 100 = 2 seconds input, 20 = 400 ms output
+            if args.use_25fps:
+                srnn_dir += "_25fps"
+                extract_windows_of = 60
+            srnn_path = os.path.join(data_path, rep, srnn_dir, "amass-?????-of-?????")
             srnn_data = SRNNTFRecordMotionDataset(data_path=srnn_path,
                                                   meta_data_path=meta_data_path,
                                                   batch_size=args.batch_size,
                                                   shuffle=False,
-                                                  extract_windows_of=120,  # 100 = 2 seconds input, 20 = 400 ms output
+                                                  extract_windows_of=extract_windows_of,
                                                   extract_random_windows=False,
                                                   num_parallel_calls=16,
                                                   normalize=not args.no_normalization)
@@ -632,7 +642,8 @@ def train():
         pck_threshs = C.METRIC_PCK_THRESHS  # thresholds for pck, in meters
         if args.use_h36m_martinez:
             fk_engine = H36MForwardKinematics()
-            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_MARTINEZ if x <= train_model.target_seq_len]
+            tls = C.METRIC_TARGET_LENGTHS_MARTINEZ_25FPS if args.use_25fps else C.METRIC_TARGET_LENGTHS_MARTINEZ
+            target_lengths = [x for x in tls if x <= train_model.target_seq_len]
         else:
             target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
             fk_engine = SMPLForwardKinematics()
@@ -700,6 +711,62 @@ def train():
                 final_metrics = _metrics_engine.get_final_metrics()
             return final_metrics, time.perf_counter() - _start_time, _eval_result
 
+        def _evaluate_srnn_poses(_eval_model, _srnn_iter, _gt_euler):
+            # compute the euler angle metric on the SRNN poses
+            _start_time = time.perf_counter()
+            sess.run(_srnn_iter.initializer)
+            _euler_angle_metrics = dict()  # {action -> list of mean euler angles per frame}
+            try:
+                while True:
+                    # get the predictions and ground truth values
+                    prediction, _, seed_sequence, data_id = _eval_model.sampled_step(sess)
+
+                    # unnormalize - if normalization is not configured, these calls do nothing
+                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")["poses"]
+                    batch_size, seq_length = p.shape[0], p.shape[1]
+
+                    # convert to euler angles
+                    # NOTE: because these ground truth euler angles come from Martinez, so we shouldn't use quat2euler
+                    # as this uses a different convention
+                    if train_model.use_quat:
+                        rot = quaternion.as_rotation_matrix(quaternion.from_float_array(np.reshape(p, [batch_size, seq_length, -1, 4])))
+                        p_euler = rotmat2euler(rot)
+                    elif train_model.use_aa:
+                        p_euler = rotmat2euler(aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
+                    else:
+                        p_euler = rotmat2euler(np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
+
+                    p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
+                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
+                    p_euler_padded = np.reshape(p_euler_padded, [batch_size, seq_length, -1])
+
+                    for k in range(batch_size):
+                        _d_id = data_id[k].decode("utf-8")
+                        _action = _d_id.split('/')[-1]
+                        _targ = _gt_euler[_d_id]  # (seq_length, 96)
+                        _pred = p_euler_padded[k]  # (seq_length, 96)
+
+                        # compute euler loss like Martinez does it, but we don't have global translation
+                        gt_i = np.copy(_targ)
+                        gt_i[:, 0:3] = 0.0
+                        _pred[:, 0:3] = 0.0
+
+                        # compute the error only on the joints that we use for training
+                        # only do this on ground truths, predictions are already sparse
+                        idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
+
+                        euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use], 2)
+                        euc_error = np.sum(euc_error, axis=1)
+                        euc_error = np.sqrt(euc_error)  # (seq_length, )
+                        if _action not in _euler_angle_metrics:
+                            _euler_angle_metrics[_action] = [euc_error]
+                        else:
+                            _euler_angle_metrics[_action].append(euc_error)
+
+            except tf.errors.OutOfRangeError:
+                pass
+            return _euler_angle_metrics, time.perf_counter() - _start_time
+
         while not stop_signal:
             # Training.
             for i in range(args.test_every):
@@ -749,6 +816,19 @@ def train():
 
             # Early stopping check.
             valid_loss = valid_metrics[early_stopping_metric_key].sum()
+
+            if args.use_h36m_martinez:
+                # do early stopping based on euler angle loss
+                predictions_euler, _ = _evaluate_srnn_poses(srnn_model, srnn_iter, srnn_gts)
+                selected_actions_mean_error = []
+
+                for action in ['walking', 'eating', 'discussion', 'smoking']:
+                    selected_actions_mean_error.append(np.stack(predictions_euler[action]))
+
+                valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0))
+
+                print("euler angle valid loss: {}".format(valid_loss))
+
             if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
                 num_steps_wo_improvement = 0
             else:
@@ -795,61 +875,6 @@ def train():
             glog_data = {**glog_data, **glog_valid_metrics, **glog_test_metrics}
             gLogger.append_row(glog_data, sheet_name="until_{}".format(t))
 
-        # compute metrics on SRNN poses to compare directly to Martinez
-        def _evaluate_srnn_poses(_eval_model, _srnn_iter, _gt_euler):
-            # make a full pass on the validation or test dataset and compute the metrics
-            _start_time = time.perf_counter()
-            sess.run(_srnn_iter.initializer)
-            _euler_angle_metrics = dict()  # {action -> list of mean euler angles per frame}
-            try:
-                while True:
-                    # get the predictions and ground truth values
-                    prediction, _, seed_sequence, data_id = _eval_model.sampled_step(sess)
-
-                    # unnormalize - if normalization is not configured, these calls do nothing
-                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")["poses"]
-                    batch_size, seq_length = p.shape[0], p.shape[1]
-
-                    # convert to euler angles
-                    if train_model.use_quat:
-                        # TODO(kamanuel) using function from quaternions, may be convert to rotmat like with aa
-                        p_euler = quat2euler(np.reshape(p, [batch_size, seq_length, -1, 4]))
-                    elif train_model.use_aa:
-                        p_euler = rotmat2euler(aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
-                    else:
-                        p_euler = rotmat2euler(np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
-
-                    p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
-                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
-                    p_euler_padded = np.reshape(p_euler_padded, [batch_size, seq_length, -1])
-
-                    for k in range(batch_size):
-                        _d_id = data_id[k].decode("utf-8")
-                        _action = _d_id.split('/')[-1]
-                        _targ = _gt_euler[_d_id]  # (seq_length, 96)
-                        _pred = p_euler_padded[k]  # (seq_length, 96)
-
-                        # compute euler loss like Martinez does it, but we don't have global translation
-                        gt_i = np.copy(_targ)
-                        gt_i[:, 0:3] = 0.0
-                        _pred[:, 0:3] = 0.0
-
-                        # compute the error only on the joints that we use for training
-                        # only do this on ground truths, predictions are already sparse
-                        idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
-
-                        euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use], 2)
-                        euc_error = np.sum(euc_error, axis=1)
-                        euc_error = np.sqrt(euc_error)  # (seq_length, )
-                        if _action not in _euler_angle_metrics:
-                            _euler_angle_metrics[_action] = [euc_error]
-                        else:
-                            _euler_angle_metrics[_action].append(euc_error)
-
-            except tf.errors.OutOfRangeError:
-                pass
-            return _euler_angle_metrics, time.perf_counter() - _start_time
-
         if args.use_h36m_martinez:
             predictions_euler, _ = _evaluate_srnn_poses(srnn_model, srnn_iter, srnn_gts)
 
@@ -860,14 +885,17 @@ def train():
                 assert len(predictions_euler[action]) == 8
                 euler_mean = np.mean(np.stack(predictions_euler[action]), axis=0)
 
-                # get the metrics for the timesteps, NOTE this assumes 50 Hz!!
-                google_sheet_data[action] = {"80": euler_mean[3],
-                                             "160": euler_mean[7],
-                                             "320": euler_mean[15],
-                                             "400": euler_mean[19]}
+                # get the metrics for the timesteps
+                at_idxs = [3, 7, 15, 19]
+                if args.use_25fps:
+                    at_idxs = [1, 3, 7, 9]
+                google_sheet_data[action] = {"80": euler_mean[at_idxs[0]],
+                                             "160": euler_mean[at_idxs[1]],
+                                             "320": euler_mean[at_idxs[2]],
+                                             "400": euler_mean[at_idxs[3]]}
 
             g_logger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
-                                         workbook_name="h36m_motion_modelling_experiments")
+                                         workbook_name=workbook_name)
             glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
                          'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
                          'Comment': [""]}

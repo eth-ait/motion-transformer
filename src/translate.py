@@ -477,7 +477,6 @@ def train():
                 selected_actions_mean_error = []
                 # dictionary {action -> {ms -> error}}
                 google_sheet_data = dict()
-                selected_means = dict()
                 # === Validation with srnn's seeds ===
                 for action in actions:
 
