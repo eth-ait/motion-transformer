@@ -27,7 +27,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
     # Create dataset.
     window_length = config["source_seq_len"] + config["target_seq_len"]
-    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
+    assert window_length <= 180, "TFRecords are hardcoded with length of 180."
     rep = "quat" if config.get('use_quat', False) else "aa" if config.get('use_aa') else "rotmat"
 
     data_path = os.environ["AMASS_DATA"]
@@ -37,7 +37,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
     if config.get('use_h36m_martinez', False):
         data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
-    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
         extract_random_windows = True
@@ -45,7 +44,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
     else:
         test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
         extract_random_windows = False
-        assert window_length <= 160, "TFRecords are hardcoded with length of 160."
         windows_length = 0  # set to 0 so that dataset class works as intended
 
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
