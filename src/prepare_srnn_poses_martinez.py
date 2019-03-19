@@ -63,7 +63,7 @@ def process_poses(data, rep, output_path, n_shards):
             pose_rot = quaternion.as_rotation_matrix(pose_r)
             pose = np.reshape(pose_rot, [seq_len, -1])
         else:
-            pass
+            pose = np.reshape(quaternion.as_float_array(pose_r), [seq_len, -1])
 
         eul = euler_targets[idx]  # (seq_length, 96)
         action = action_labels[idx]

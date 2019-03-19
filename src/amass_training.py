@@ -14,6 +14,7 @@ import tensorflow as tf
 
 import amass_models as models
 from amass_tf_data import TFRecordMotionDataset
+from amass_tf_data import SRNNTFRecordMotionDataset
 from logger import GoogleSheetLogger
 
 # ETH imports
@@ -233,6 +234,29 @@ def create_model(session):
             dtype=tf.float32)
         test_model.build_graph()
 
+    if args.use_h36m_martinez:
+        # create model and data for SRNN evaluation
+        with tf.name_scope("srnn_data"):
+            srnn_path = os.path.join(data_path, rep, "srnn_poses", "amass-?????-of-?????")
+            srnn_data = SRNNTFRecordMotionDataset(data_path=srnn_path,
+                                                  meta_data_path=meta_data_path,
+                                                  batch_size=args.batch_size,
+                                                  shuffle=False,
+                                                  extract_windows_of=120,  # 100 = 2 seconds input, 20 = 400 ms output
+                                                  extract_random_windows=False,
+                                                  num_parallel_calls=16,
+                                                  normalize=not args.no_normalization)
+            srnn_pl = srnn_data.get_tf_samples()
+
+        with tf.name_scope("SRNN"):
+            srnn_model = model_cls(
+                config=config,
+                data_pl=srnn_pl,
+                mode=C.SAMPLE,
+                reuse=True,
+                dtype=tf.float32)
+            srnn_model.build_graph()
+
     num_param = 0
     for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
@@ -255,8 +279,12 @@ def create_model(session):
     # Create saver.
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
 
-    models = (train_model, valid_model, test_model)
-    data = (train_data, valid_data, test_data)
+    models = [train_model, valid_model, test_model]
+    data = [train_data, valid_data, test_data]
+
+    if args.use_h36m_martinez:
+        models.append(srnn_model)
+        data.append(srnn_data)
 
     if args.experiment_id is None:
         print("Creating model with fresh parameters.")
@@ -577,8 +605,28 @@ def train():
 
         # Create the model
         models, data, saver, global_step, experiment_dir = create_model(sess)
-        train_model, valid_model, test_model = models
-        train_data, valid_data, test_data = data
+        if args.use_h36m_martinez:
+            train_model, valid_model, test_model, srnn_model = models
+            train_data, valid_data, test_data, srnn_data = data
+
+            srnn_iter = srnn_data.get_iterator()
+            srnn_pl = srnn_data.get_tf_samples()
+            # iterate once over data to get all ground truth samples
+            try:
+                sess.run(srnn_iter.initializer)
+                srnn_gts = dict()
+                while True:
+                    srnn_batch = sess.run(srnn_pl)
+                    # Store each test sample and corresponding predictions with the unique sample IDs.
+                    for k in range(srnn_batch["euler_targets"].shape[0]):
+                        euler_targ = srnn_batch["euler_targets"][k]  # (window_size, 96)
+                        euler_targ = euler_targ[-srnn_model.target_seq_len:]
+                        srnn_gts[srnn_batch[C.BATCH_ID][k].decode("utf-8")] = euler_targ
+            except tf.errors.OutOfRangeError:
+                pass
+        else:
+            train_model, valid_model, test_model = models
+            train_data, valid_data, test_data = data
 
         # Create metrics engine including summaries
         pck_threshs = C.METRIC_PCK_THRESHS  # thresholds for pck, in meters
@@ -727,6 +775,7 @@ def train():
         print("Test [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
                                                                  metrics_engine.get_summary_string(test_metrics),
                                                                  test_time))
+
         # create logger
         workbook_name = "motion_modelling_experiments"
         if args.use_h36m_only or args.use_h36m_martinez:
@@ -771,7 +820,7 @@ def train():
                         p_euler = rotmat2euler(np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
 
                     p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
-                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = np.reshape(p_euler, [batch_size, seq_length, -1, 3])
+                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
                     p_euler_padded = np.reshape(p_euler_padded, [batch_size, seq_length, -1])
 
                     for k in range(batch_size):
@@ -802,7 +851,7 @@ def train():
             return _euler_angle_metrics, time.perf_counter() - _start_time
 
         if args.use_h36m_martinez:
-            predictions_euler, _ = _evaluate_srnn_poses(srnn_test_model, srnn_iter, srnn_gts)
+            predictions_euler, _ = _evaluate_srnn_poses(srnn_model, srnn_iter, srnn_gts)
 
             which_actions = ['walking', 'eating', 'discussion', 'smoking']
             google_sheet_data = dict()
@@ -810,7 +859,6 @@ def train():
                 # get the mean over all samples for that action
                 assert len(predictions_euler[action]) == 8
                 euler_mean = np.mean(np.stack(predictions_euler[action]), axis=0)
-                assert euler_mean.shape[0] == 200
 
                 # get the metrics for the timesteps, NOTE this assumes 50 Hz!!
                 google_sheet_data[action] = {"80": euler_mean[3],

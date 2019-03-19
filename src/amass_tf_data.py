@@ -29,7 +29,7 @@ class Dataset(object):
         self.var_channel = self.meta_data['var_channel']
 
         self.tf_data_transformations()
-        # self.tf_data_normalization()
+        self.tf_data_normalization()
         self.tf_data_to_model()
 
         if tf.executing_eagerly():
@@ -315,15 +315,15 @@ if __name__ == '__main__':
         print("============")
 
 
-    """
+
     # some tests in eager mode.
     tf.enable_eager_execution()
-    tfrecord_pattern = "../data/h3.6m/tfrecords/quat/srnn/amass-?????-of-?????"
+    tfrecord_pattern = "../data/h3.6m/tfrecords/quat/srnn_poses/amass-?????-of-?????"
     dataset = SRNNTFRecordMotionDataset(data_path=tfrecord_pattern,
                                         meta_data_path="../data/h3.6m/tfrecords/quat/training/stats.npz",
                                         batch_size=32,
                                         shuffle=False,
-                                        extract_windows_of=0,
+                                        extract_windows_of=120,
                                         extract_random_windows=False)
     stats = dataset.meta_data
     train_iterator = dataset.get_iterator()
@@ -335,7 +335,7 @@ if __name__ == '__main__':
         i += 1
         print(i, batch[C.BATCH_INPUT].shape)
     print("Elapsed time {:.3f}".format(time.perf_counter() - start_time))
-    """
+
     # some tests in eager mode.
     tf.enable_eager_execution()
 
