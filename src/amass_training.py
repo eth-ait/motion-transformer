@@ -50,6 +50,7 @@ tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.
 tf.app.flags.DEFINE_boolean("wavenet_enc_skip", False, "Wavenet model using skip connections.")
 tf.app.flags.DEFINE_boolean("wavenet_enc_last", False, "Wavenet model using the last layer.")
 tf.app.flags.DEFINE_boolean("wavenet_enc_raw", False, "Wavenet model using the inputs.")
+tf.app.flags.DEFINE_integer("wavenet_units", 128, "Number of wavenet units generally used in the model.")
 
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -99,7 +100,7 @@ def create_model(session):
                                       'to use normalization'
 
     # if use_aa:
-    #     assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
+    #    assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
 
     rep = "quat" if use_quat else "rotmat"
     rep = "aa" if use_aa else rep
@@ -171,7 +172,7 @@ def create_model(session):
                                            normalize=not args.no_normalization)
         train_pl = train_data.get_tf_samples()
 
-    assert window_length <= 160, "TFRecords are hardcoded with length of 160."
+    assert window_length <= 180, "TFRecords are hardcoded with length of 180."
     if args.dynamic_validation_split:
         extract_random_windows = True
     else:
@@ -385,12 +386,12 @@ def get_stcn_config(args):
     config['learning_rate_decay_steps'] = 1000
     config['learning_rate_decay_type'] = 'exponential'
     config['latent_layer'] = dict()
-    config['latent_layer']['kld_weight'] = 1.0  # dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
+    config['latent_layer']['kld_weight'] = dict(type=C.DECAY_LINEAR, values=[0, 1.0, 1e-4])
     config['latent_layer']['latent_size'] = [64, 32, 16, 8, 4, 2, 1]
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 128
+    config['latent_layer']["num_hidden_units"] = args.wavenet_units
     config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
@@ -412,7 +413,7 @@ def get_stcn_config(args):
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 128
+    config['cnn_layer']['num_filters'] = args.wavenet_units
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU

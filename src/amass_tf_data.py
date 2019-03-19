@@ -245,12 +245,13 @@ if __name__ == '__main__':
     # some tests in eager mode.
     tf.enable_eager_execution()
 
-    tfrecord_pattern = "../data/amass/tfrecords/validation/amass-?????-of-?????"
+    tfrecord_pattern = "../data/amass/tfrecords/rotmat/test/amass-?????-of-?????"
     dataset = TFRecordMotionDataset(data_path=tfrecord_pattern,
-                                    meta_data_path="../data/amass/tfrecords/training/stats.npz",
+                                    meta_data_path="../data/amass/tfrecords/rotmat/training/stats.npz",
                                     batch_size=32,
                                     shuffle=False,
-                                    extract_windows_of=80)
+                                    extract_windows_of=0,
+                                    extract_random_windows=False)
     stats = dataset.meta_data
     # log_stats(stats, "OnlineTFRecord")
 
