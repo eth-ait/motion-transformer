@@ -247,7 +247,7 @@ def create_stcn_model(actions, sampling=False):
     config['latent_layer']['type'] = C.LATENT_LADDER_GAUSSIAN
     config['latent_layer']['layer_structure'] = C.LAYER_CONV1
     config['latent_layer']["hidden_activation_fn"] = C.RELU
-    config['latent_layer']["num_hidden_units"] = 64
+    config['latent_layer']["num_hidden_units"] = 128
     config['latent_layer']["num_hidden_layers"] = 2
     config['latent_layer']['vertical_dilation'] = 5
     config['latent_layer']['use_fixed_pz1'] = False
@@ -269,7 +269,7 @@ def create_stcn_model(actions, sampling=False):
     config['cnn_layer'] = dict()
     config['cnn_layer']['num_encoder_layers'] = 35
     config['cnn_layer']['num_decoder_layers'] = 0
-    config['cnn_layer']['num_filters'] = 64
+    config['cnn_layer']['num_filters'] = 128
     config['cnn_layer']['filter_size'] = 2
     config['cnn_layer']['dilation_size'] = [1, 2, 4, 8, 16]*7
     config['cnn_layer']['activation_fn'] = C.RELU
@@ -474,8 +474,10 @@ def train():
                 print()
 
                 all_actions_mean_error = []
+                selected_actions_mean_error = []
                 # dictionary {action -> {ms -> error}}
                 google_sheet_data = dict()
+                selected_means = dict()
                 # === Validation with srnn's seeds ===
                 for action in actions:
 
@@ -537,6 +539,8 @@ def train():
                     # This is simply the mean error over the N_SEQUENCE_TEST examples
                     mean_mean_errors = np.mean(mean_errors, 0)
                     all_actions_mean_error.append(mean_errors)
+                    if action in ["walking", "discussion", "smoking", "eating"]:
+                        selected_actions_mean_error.append(mean_errors)
                     # Pretty print of the results for 80, 160, 320, 400, 560 and 1000 ms
                     print("{0: <16} |".format(action), end="")
                     for ms in [1, 3, 7, 9, 13, 24]:
@@ -787,6 +791,7 @@ def train():
                 for i in np.arange(len(summaries)):
                     test_writer.add_summary(summaries[i], current_step)
 
+                valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0))
                 print()
                 print("============================\n"
                       "Global step:         %d\n"
@@ -796,14 +801,14 @@ def train():
                       "--------------------------\n"
                       "Val loss:            %.4f\n"
                       "All avg loss:            %.4f\n"
+                      "Early stopping loss:  %.4f\n"
                       "============================" % (current_step, train_model.learning_rate.eval(), step_time*1000,
-                                                        loss, val_loss, np.mean(all_actions_mean_error)))
+                                                        loss, val_loss, np.mean(all_actions_mean_error), valid_loss))
                 print()
 
                 previous_losses.append(loss)
 
                 # Early stopping check.
-                valid_loss = np.mean(all_actions_mean_error)
                 if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
                     num_steps_wo_improvement = 0
                 else:
