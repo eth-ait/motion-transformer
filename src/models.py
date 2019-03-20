@@ -680,18 +680,39 @@ class Seq2SeqModel(BaseModel):
 
     def build_network(self):
         # === Create the RNN that will keep the state ===
-        cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+        if self.config['cell_type'] == C.GRU:
+            cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+        elif self.config['cell_type'] == C.LSTM:
+            cell = tf.contrib.rnn.LSTMCell(self.rnn_size)
+        else:
+            raise Exception("Cell not found.")
+
+        dropout_rate = self.config['input_layer'].get('dropout_rate', 0)
+        if dropout_rate > 0:
+            cell = rnn_cell_extensions.InputDropoutWrapper(cell, self.is_training, dropout_rate)
 
         if self.num_layers > 1:
             cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
 
         with tf.variable_scope("seq2seq", reuse=self.reuse):
             # === Add space decoder ===
-            cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
+            ignore_actions = False
+            if self.joint_prediction_model == "fk_joints":
+                cell = rnn_cell_extensions.StructuredOutputWrapper(cell,
+                                                                   self.structure_indexed,
+                                                                   hidden_size=self.output_layer_config.get('size', 0),
+                                                                   num_hidden_layers=self.output_layer_config.get('num_layers', 0),
+                                                                   activation_fn=self.activation_fn,
+                                                                   joint_size=self.JOINT_SIZE,
+                                                                   human_size=self.HUMAN_SIZE,
+                                                                   reuse=self.reuse)
+                ignore_actions = True
+            else:
+                cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
 
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
-                cell = rnn_cell_extensions.ResidualWrapper(cell)
+                cell = rnn_cell_extensions.ResidualWrapper(cell, action_len=self.ACTION_SIZE, ignore_actions=ignore_actions)
 
             # Define the loss function
             if self.is_eval:
@@ -724,8 +745,12 @@ class Seq2SeqModel(BaseModel):
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
         params = tf.trainable_variables()
-        opt = tf.train.GradientDescentOptimizer(self.learning_rate)
-
+        if self.config["optimizer"] == "adam":
+            opt = tf.train.AdamOptimizer(self.learning_rate)
+        elif self.config["optimizer"] == "sgd":
+            opt = tf.train.GradientDescentOptimizer(self.learning_rate)
+        else:
+            raise Exception()
         # Update all the trainable parameters
         gradients = tf.gradients(self.loss, params)
         # Apply gradient clipping.

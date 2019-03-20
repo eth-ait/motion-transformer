@@ -33,6 +33,7 @@ tf.app.flags.DEFINE_float("max_gradient_norm", 5, "Clip gradients to this norm."
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("iterations", 100000, "Iterations to train for.")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
+tf.app.flags.DEFINE_string("optimizer", "adam", "Optimization algorithm: adam or sgd.")
 # Architecture
 tf.app.flags.DEFINE_string("architecture", "tied", "Seq2seq architecture to use: [basic, tied].")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
@@ -331,6 +332,7 @@ def create_seq2seq_model(actions, sampling=False):
 
     config = dict()
     config['seed'] = 1234
+    config['optimizer'] = FLAGS.optimizer
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['residual_velocities'] = FLAGS.residual_velocities
     config['joint_prediction_model'] = FLAGS.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
@@ -338,6 +340,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['source_seq_len'] = FLAGS.seq_length_in
     config['target_seq_len'] = FLAGS.seq_length_out
     config['rnn_size'] = FLAGS.size
+    config['cell_type'] = FLAGS.cell_type
     config['num_layers'] = FLAGS.num_layers
     config['grad_clip_by_norm'] = FLAGS.max_gradient_norm
     config['batch_size'] = FLAGS.batch_size
@@ -348,10 +351,11 @@ def create_seq2seq_model(actions, sampling=False):
     config['number_of_actions'] = 0 if FLAGS.omit_one_hot else len(actions)
     config['one_hot'] = not FLAGS.omit_one_hot
     config['residual_velocities'] = FLAGS.residual_velocities
-    config['joint_prediction_model'] = FLAGS.joint_prediction_model  # currently ignored by seq2seq models
+    config['input_layer'] = dict()
+    config['input_layer']['dropout_rate'] = FLAGS.input_dropout_rate
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 0
-    config['output_layer']['size'] = 128
+    config['output_layer']['num_layers'] = FLAGS.output_layer_number
+    config['output_layer']['size'] = FLAGS.output_layer_size
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = FLAGS.angle_loss
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
@@ -372,11 +376,13 @@ def create_seq2seq_model(actions, sampling=False):
     else:
         autoregressive_input = "sampling_based"
 
-    experiment_name_format = "{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                                     config['angle_loss_type'],
+                                                    config['joint_prediction_model'],
+                                                    config["cell_type"],
                                                     config['batch_size'],
                                                     FLAGS.seq_length_in,
                                                     FLAGS.seq_length_out,
