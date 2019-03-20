@@ -59,58 +59,103 @@ best_configuration = [
 # --experiment_name 400ms --dynamic_validation_split --input_dropout_rate 0.1 --optimizer sgd --learning_rate 0.005 --angle_loss all_mean --batch_size 16 --model_type seq2seq --autoregressive_input sampling_based --seq_length_in 100 --seq_length_out 24 --residual_velocities
 
 experiment_list = [
-    'python amass_training.py --experiment_name outL2_400ms --dynamic_validation_split '
+    # No residual velocity.
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 2 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model separate_joints --batch_size 64 --model_type rnn --residual_velocities '
-    '--seq_length_in 100 --seq_length_out 24 --max_gradient_norm 1 ',
+    '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type wavenet --wavenet_enc_last '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 1 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name logli_400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss normal --output_layer_size 64 --output_layer_number 1 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model separate_joints --batch_size 64 --model_type rnn --residual_velocities '
-    '--seq_length_in 100 --seq_length_out 24 --max_gradient_norm 1 ',
+    '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type stcn '
+    '--batch_size 64 --output_layer_size 64 --output_layer_number 1 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name logli_400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss normal --output_layer_size 64 --output_layer_number 1 '
+    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
+    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--joint_prediction_model fk_joints --batch_size 64 --model_type rnn '
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 256 --output_layer_number 1 '
+    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--joint_prediction_model plain --batch_size 64 --model_type rnn '
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
+
+    # Residual velocity.
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
     '--cell_type lstm --cell_size 1024 --cell_layers 1 '
     '--joint_prediction_model fk_joints --batch_size 64 --model_type rnn --residual_velocities '
-    '--seq_length_in 100 --seq_length_out 24 --max_gradient_norm 1 ',
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name logli_lr5_400ms --dynamic_validation_split '
-    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 '
-    '--angle_loss normal --output_layer_size 64 --output_layer_number 1 '
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 256 --output_layer_number 1 '
+    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--joint_prediction_model plain --batch_size 64 --model_type rnn --residual_velocities '
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.05 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
     '--cell_type lstm --cell_size 1024 --cell_layers 1 '
     '--joint_prediction_model fk_joints --batch_size 64 --model_type rnn --residual_velocities '
-    '--seq_length_in 100 --seq_length_out 24 --max_gradient_norm 1 ',
+    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name outL5_400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 '
     '--angle_loss joint_sum  --joint_prediction_model plain --model_type wavenet --wavenet_enc_last '
-    '--batch_size 64 --output_layer_size 128 --output_layer_number 5 '
-    '--seq_length_in 100 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 2 --wavenet_units 128 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name outL5_400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 '
-    '--angle_loss joint_sum  --joint_prediction_model plain '
-    '--batch_size 64 --output_layer_size 128 --output_layer_number 5 --model_type stcn '
-    '--seq_length_in 100 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+    '--angle_loss joint_sum  --joint_prediction_model plain --model_type stcn '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 2 --wavenet_units 128 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name 400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 '
     '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type wavenet --wavenet_enc_last '
-    '--batch_size 64 --output_layer_size 64 --output_layer_number 2 '
-    '--seq_length_in 100 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 1 --wavenet_units 128 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
 
-    'python amass_training.py --experiment_name 400ms --dynamic_validation_split '
+    'python amass_training.py --dynamic_validation_split '
     '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 '
-    '--angle_loss joint_sum  --joint_prediction_model fk_joints '
-    '--batch_size 64 --output_layer_size 64 --output_layer_number 2 '
-    '--seq_length_in 100 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
-]
+    '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type stcn '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 1 --wavenet_units 128 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+    
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum  --joint_prediction_model plain --model_type wavenet --wavenet_enc_last '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 2 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum  --joint_prediction_model plain --model_type stcn '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 2 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type wavenet --wavenet_enc_last '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 1 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+
+    'python amass_training.py --dynamic_validation_split '
+    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
+    '--angle_loss joint_sum  --joint_prediction_model fk_joints --model_type stcn '
+    '--batch_size 64 --output_layer_size 128 --output_layer_number 1 --wavenet_units 64 '
+    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --max_gradient_norm 1 ',
+    ]
 
 h36m_experiments = [
     'python translate.py --dynamic_validation_split --input_dropout_rate 0.0 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 128 --output_layer_number 2 --batch_size 64 --model_type wavenet --action_loss none --seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type lstm --data_dir /cluster/work/hilliges/kamanuel/data/motion-modelling/h3.6m/dataset --experiment_name wesd --train_dir /cluster/work/hilliges/kamanuel/trained_models/motion-modelling/experiments_h36m ',

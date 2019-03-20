@@ -13,6 +13,7 @@ from tf_models import LatentLayer
 from tf_rnn_cells import LatentCell
 from tf_loss_quat import quaternion_norm
 from tf_loss_quat import quaternion_loss
+from tf_loss import logli_normal_isotropic
 from motion_metrics import get_closest_rotmat
 
 
@@ -42,6 +43,8 @@ class BaseModel(object):
         self.use_quat = config.get('use_quat', False)
         self.use_aa = config.get('use_aa', False)
         self.h36m_martinez = config.get("use_h36m_martinez", False)
+        # Model the outputs with Normal distribution.
+        self.mle_normal = self.angle_loss_type == C.LOSS_POSE_NORMAL
 
         self.is_eval = self.mode == C.SAMPLE
         self.is_training = self.mode == C.TRAIN
@@ -63,8 +66,12 @@ class BaseModel(object):
         self.joint_prediction_model = config.get('joint_prediction_model', "plain")
 
         # Set by the child model class.
-        self.outputs_tensor = None  # Tensor of predicted frames.
-        self.outputs = None  # List of predicted frames.
+        self.outputs_mu = None  # Mu tensor of predicted frames (Normal distribution).
+        self.outputs_sigma = None  # Sigma tensor of predicted frames (Normal distribution).
+        self.outputs_mu_joints = list()  # List of individual joint predictions.
+        self.outputs_sigma_joints = list()  # List of individual joint predictions.
+
+        self.outputs = None  # List of predicted frames. If the model is probabilistic, a sample is drawn first.
         self.prediction_targets = None  # Targets in pose loss term.
         self.prediction_inputs = None  # Inputs that are used to make predictions.
         self.prediction_representation = None  # Intermediate representation of the model to make predictions.
@@ -149,17 +156,13 @@ class BaseModel(object):
 
     def build_loss(self):
         if self.is_eval or not self.loss_on_encoder_outputs:
-            predictions = self.outputs_tensor[:, -self.target_seq_len:, :]
-            targets = self.prediction_targets[:, -self.target_seq_len:, :]
+            predictions_pose = self.outputs[:, -self.target_seq_len:, :]
+            targets_pose = self.prediction_targets[:, -self.target_seq_len:, :]
             seq_len = self.target_seq_len
         else:
-            predictions = self.outputs_tensor
-            targets = self.prediction_targets
-            seq_len = tf.shape(self.outputs_tensor)[1]
-
-        batch_size = tf.shape(predictions)[0]
-        targets_pose = targets[:, :, :self.HUMAN_SIZE]
-        predictions_pose = predictions[:, :, :self.HUMAN_SIZE]
+            predictions_pose = self.outputs
+            targets_pose = self.prediction_targets
+            seq_len = tf.shape(self.outputs)[1]
 
         with tf.name_scope("loss_angles"):
             if self.use_quat:
@@ -168,27 +171,28 @@ class BaseModel(object):
                 loss_per_frame = quaternion_loss(targets_pose, predictions_pose, loss_type)
                 loss_per_sample = tf.reduce_sum(loss_per_frame, axis=-1)
                 loss_per_batch = tf.reduce_mean(loss_per_sample)
-                tf.summary.scalar(self.mode + "/pose_loss" + loss_type, loss_per_batch, collections=[self.mode + "/model_summary"])
                 self.loss = loss_per_batch
             else:
                 diff = targets_pose - predictions_pose
                 if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
                     pose_loss = tf.reduce_mean(tf.square(diff))
-                    tf.summary.scalar(self.mode + "/pose_loss", pose_loss, collections=[self.mode + "/model_summary"])
                     self.loss = pose_loss
                 elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
                     per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                     per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
                     per_joint_loss = tf.reduce_mean(per_joint_loss)
-                    tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
                     self.loss = per_joint_loss
                 elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
                     per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
                     per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
                     per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                     per_joint_loss = tf.reduce_mean(per_joint_loss)
-                    tf.summary.scalar(self.mode + "/pose_loss", per_joint_loss, collections=[self.mode + "/model_summary"])
                     self.loss = per_joint_loss
+                elif self.angle_loss_type == C.LOSS_POSE_NORMAL:
+                    pose_likelihood = logli_normal_isotropic(targets_pose, self.outputs_mu, self.outputs_sigma)
+                    pose_likelihood = tf.reduce_sum(pose_likelihood, axis=[1, 2])
+                    pose_likelihood = tf.reduce_mean(pose_likelihood)
+                    self.loss = -pose_likelihood
                 else:
                     raise Exception("Unknown angle loss.")
 
@@ -197,7 +201,7 @@ class BaseModel(object):
 
         if self.rot_matrix_regularization:
             with tf.name_scope("output_rot_mat_regularization"):
-                rot_matrix_loss = self.rot_mat_regularization(predictions, summary_name="rot_matrix_reg")
+                rot_matrix_loss = self.rot_mat_regularization(predictions_pose, summary_name="rot_matrix_reg")
                 self.loss += rot_matrix_loss
 
     def optimization_routines(self):
@@ -227,38 +231,70 @@ class BaseModel(object):
     def sampled_step(self, session):
         pass
 
+    def parse_outputs(self, prediction_dict):
+        self.outputs_mu_joints.append(prediction_dict["mu"])
+        if self.mle_normal:
+            self.outputs_sigma_joints.append(prediction_dict["sigma"])
+
+    def aggregate_outputs(self):
+        self.outputs_mu = tf.concat(self.outputs_mu_joints, axis=-1)
+        assert self.outputs_mu.get_shape()[-1] == self.HUMAN_SIZE, "Prediction not matching with the skeleton."
+        if self.mle_normal:
+            self.outputs_sigma = tf.concat(self.outputs_sigma_joints, axis=-1)
+
+    def get_joint_prediction(self, joint_idx=-1):
+        """
+        Returns the predicted joint value or whole body.
+        """
+        if joint_idx < 0:  # whole body.
+            assert self.outputs_mu is not None, "Whole body is not predicted yet."
+            if self.mle_normal:
+                return self.outputs_mu + tf.random.normal(tf.shape(self.outputs_sigma))*self.outputs_sigma
+            else:
+                return self.outputs_mu
+        else:  # individual joint.
+            assert joint_idx < len(self.outputs_mu_joints), "The required joint is not predicted yet."
+            if self.mle_normal:
+                return self.outputs_mu_joints[joint_idx] + tf.random.normal(
+                    tf.shape(self.outputs_sigma_joints[joint_idx]))*self.outputs_sigma_joints[joint_idx]
+            else:
+                return self.outputs_mu_joints[joint_idx]
+
+    def traverse_parents(self, output_list, parent_id):
+        """
+        Collects joint predictions recursively by following the kinematic chain.
+        Args:
+            output_list:
+            parent_id:
+        """
+        if parent_id >= 0:
+            output_list.append(self.get_joint_prediction(parent_id))
+            self.traverse_parents(output_list, self.structure_indexed[parent_id][0])
+
     def build_output_layer(self):
         """
         Builds layers to make predictions.
         """
         with tf.variable_scope('output_layer', reuse=self.reuse):
-            prediction = []
-
             if self.joint_prediction_model == "plain":
-                prediction.append(self.build_predictions(self.prediction_representation, self.HUMAN_SIZE, "all"))
+                self.parse_outputs(self.build_predictions(self.prediction_representation, self.HUMAN_SIZE, "all"))
 
             elif self.joint_prediction_model == "separate_joints":
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
-                    prediction.append(self.build_predictions(self.prediction_representation, self.JOINT_SIZE, joint_name))
+                    self.parse_outputs(self.build_predictions(self.prediction_representation, self.JOINT_SIZE, joint_name))
 
             elif self.joint_prediction_model == "fk_joints":
-                def traverse_parents(tree, source_list, output_list, parent_id):
-                    if parent_id >= 0:
-                        output_list.append(source_list[parent_id])
-                        traverse_parents(tree, source_list, output_list, tree[parent_id][0])
-
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
-                    joint_inputs = []
-                    traverse_parents(self.structure_indexed, prediction, joint_inputs, parent_joint_idx)
-                    joint_inputs.append(self.prediction_representation)
-                    prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
+                    joint_inputs = [self.prediction_representation]
+                    self.traverse_parents(joint_inputs, parent_joint_idx)
+                    self.parse_outputs(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
             else:
                 raise Exception("Prediction model not recognized.")
 
-            pose_prediction = tf.concat(prediction, axis=-1)
-            assert pose_prediction.get_shape()[-1] == self.HUMAN_SIZE, "Prediction not matching with the skeleton."
+            self.aggregate_outputs()
+            pose_prediction = self.outputs_mu
 
             # Apply residual connection on the pose only.
             if self.residual_velocities:
@@ -276,11 +312,11 @@ class BaseModel(object):
                 else:
                     raise ValueError("residual velocity type {} unknown".format(self.residual_velocities_type))
 
-            # Enforce valid rotations as the very last step, this currently doesn't do anything with rotation matrices
+            # Enforce valid rotations as the very last step, this currently doesn't do anything with rotation matrices.
+            # TODO(eaksan) Not sure how to handle probabilistic predictions. For now we use only the mu predictions.
             pose_prediction = self.build_valid_rot_layer(pose_prediction)
-
-            self.outputs_tensor = pose_prediction
-            self.outputs = self.outputs_tensor
+            self.outputs_mu = pose_prediction
+            self.outputs = self.get_joint_prediction(joint_idx=-1)
 
     def rot_mat_regularization(self, rotmats, summary_name="rot_matrix_reg"):
         """
@@ -400,19 +436,35 @@ class BaseModel(object):
         hidden_size = self.output_layer_config.get('size', 0)
         num_hidden_layers = self.output_layer_config.get('num_layers', 0)
 
+        prediction = dict()
         current_layer = inputs
         for layer_idx in range(num_hidden_layers):
             with tf.variable_scope('out_dense_' + name + "_" + str(layer_idx), reuse=self.reuse):
                 current_layer = tf.layers.dense(inputs=current_layer, units=hidden_size, activation=self.activation_fn)
 
         with tf.variable_scope('out_dense_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-            prediction = tf.layers.dense(inputs=current_layer, units=output_size, activation=self.prediction_activation)
+            prediction["mu"] = tf.layers.dense(inputs=current_layer, units=output_size,
+                                               activation=self.prediction_activation)
+
+        if self.mle_normal:
+            with tf.variable_scope('out_dense_sigma_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+                sigma = tf.layers.dense(inputs=current_layer,
+                                        units=output_size,
+                                        activation=tf.nn.softplus)
+                # prediction["sigma"] = tf.clip_by_value(sigma, 1e-4, 5.0)
+                prediction["sigma"] = sigma
         return prediction
 
     def summary_routines(self):
         # Note that summary_routines are called outside of the self.mode name_scope. Hence, self.mode should be
         # prepended to summary name if needed.
-        self.loss_summary = tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
+        if self.mle_normal:
+            tf.summary.scalar(self.mode + "/likelihood", -self.loss, collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/avg_sigma", tf.reduce_mean(self.outputs_sigma), collections=[self.mode + "/model_summary"])
+        elif self.use_quat:
+            tf.summary.scalar(self.mode + "/loss_quat", self.loss, collections=[self.mode + "/model_summary"])
+        else:
+            tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
 
         if self.is_training:
             tf.summary.scalar(self.mode + "/learning_rate",
@@ -509,16 +561,16 @@ class Seq2SeqModel(BaseModel):
                 # Basic RNN does not have a loop function in its API, so copying here.
                 with tf.variable_scope("basic_rnn_seq2seq"):
                     _, enc_state = tf.contrib.rnn.static_rnn(cell, self.enc_in, dtype=tf.float32)  # Encoder
-                    self.outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, cell, loop_function=loop_function)  # Decoder
+                    outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, cell, loop_function=loop_function)  # Decoder
 
             elif self.architecture == "tied":
-                self.outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(self.enc_in, self.dec_in, cell, loop_function=loop_function)
+                outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(self.enc_in, self.dec_in, cell, loop_function=loop_function)
             else:
                 raise (ValueError, "Unknown architecture: %s" % self.architecture)
 
-        self.outputs = tf.transpose(tf.stack(self.outputs), (1, 0, 2))  # (N, seq_length, n_joints*dof)
-        self.outputs = self.build_valid_rot_layer(self.outputs)
-        self.outputs_tensor = self.outputs
+        self.outputs_mu = tf.transpose(tf.stack(outputs), (1, 0, 2))  # (N, seq_length, n_joints*dof)
+        self.outputs_mu = self.build_valid_rot_layer(self.outputs_mu)
+        self.outputs = self.outputs_mu
         self.build_loss()
 
     def step(self, session):
@@ -727,6 +779,7 @@ class Wavenet(BaseModel):
             num_filters = self.cnn_layer_config['num_filters']
         num_hidden_layers = self.output_layer_config.get('num_layers', 0)
 
+        prediction = dict()
         current_layer = inputs
         if out_layer_type == C.LAYER_CONV1:
             for layer_idx in range(num_hidden_layers):
@@ -736,8 +789,15 @@ class Wavenet(BaseModel):
                                                      activation=self.activation_fn)
 
             with tf.variable_scope('out_conv1d_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-                prediction = tf.layers.conv1d(inputs=current_layer, kernel_size=1, padding='valid', filters=output_size,
-                                              dilation_rate=1, activation=self.prediction_activation)
+                prediction["mu"] = tf.layers.conv1d(inputs=current_layer, kernel_size=1, padding='valid',
+                                                    filters=output_size,
+                                                    dilation_rate=1, activation=self.prediction_activation)
+            if self.mle_normal:
+                with tf.variable_scope('out_conv1d_sigma_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+                    sigma = tf.layers.conv1d(inputs=current_layer, kernel_size=1, padding='valid',
+                                             filters=output_size,
+                                             dilation_rate=1, activation=tf.nn.softplus)
+                    prediction["sigma"] = tf.clip_by_value(sigma, 1e-4, 5.0)
 
         elif out_layer_type == C.LAYER_TCN:
             kernel_size = self.output_layer_config.get('filter_size', 0)
@@ -756,15 +816,28 @@ class Wavenet(BaseModel):
                                                                   zero_padding=True)
 
             with tf.variable_scope('out_tcn_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
-                prediction, _ = Wavenet.temporal_block_ccn(input_layer=inputs,
-                                                           num_filters=output_size,
-                                                           kernel_size=kernel_size,
-                                                           dilation=1,
-                                                           activation_fn=self.prediction_activation,
-                                                           num_extra_conv=0,
-                                                           use_gate=self.use_gate,
-                                                           use_residual=self.use_residual,
-                                                           zero_padding=True)
+                mu, _ = Wavenet.temporal_block_ccn(input_layer=current_layer,
+                                                   num_filters=output_size,
+                                                   kernel_size=kernel_size,
+                                                   dilation=1,
+                                                   activation_fn=self.prediction_activation,
+                                                   num_extra_conv=0,
+                                                   use_gate=self.use_gate,
+                                                   use_residual=self.use_residual,
+                                                   zero_padding=True)
+                prediction["mu"] = mu
+            if self.mle_normal:
+                with tf.variable_scope('out_tcn_sigma_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+                    sigma, _ = Wavenet.temporal_block_ccn(input_layer=current_layer,
+                                                          num_filters=output_size,
+                                                          kernel_size=kernel_size,
+                                                          dilation=1,
+                                                          activation_fn=None,
+                                                          num_extra_conv=0,
+                                                          use_gate=self.use_gate,
+                                                          use_residual=self.use_residual,
+                                                          zero_padding=True)
+                    prediction["sigma"] = tf.clip_by_value(tf.nn.softplus(sigma), 1e-4, 5.0)
         else:
             raise Exception("Layer type not recognized.")
         return prediction
@@ -835,8 +908,7 @@ class Wavenet(BaseModel):
             end_idx = min(self.receptive_field_width, input_sequence.shape[1])
             # Insert a dummy frame since the model shifts the inputs by one step.
             model_inputs = np.concatenate([input_sequence[:, -end_idx:], dummy_frame], axis=1)
-
-            model_outputs = session.run(self.outputs_tensor, feed_dict={self.data_inputs: model_inputs})
+            model_outputs = session.run(self.outputs, feed_dict={self.data_inputs: model_inputs})
             prediction = model_outputs[:, -1:, :]
             # prediction = np.reshape(get_closest_rotmat(np.reshape(prediction, [-1, 3, 3])), prediction.shape)
             predictions.append(prediction)
@@ -1047,8 +1119,11 @@ class STCN(Wavenet):
 
         # KLD Loss.
         if self.is_training:
+            def kl_reduce_fn(x):
+                return tf.reduce_mean(tf.reduce_sum(x, axis=[1, 2]))
+
             loss_mask = tf.expand_dims(tf.sequence_mask(lengths=self.prediction_seq_len, dtype=tf.float32), -1)
-            self.latent_cell_loss = self.latent_layer.build_loss(loss_mask, tf.reduce_mean)
+            self.latent_cell_loss = self.latent_layer.build_loss(loss_mask, kl_reduce_fn)
             for loss_key, loss_op in self.latent_cell_loss.items():
                 self.loss += loss_op
 
@@ -1057,6 +1132,114 @@ class STCN(Wavenet):
             tf.summary.scalar(str(loss_key), loss_op, collections=[self.mode + "/model_summary"])
         tf.summary.scalar(self.mode + "/kld_weight", self.latent_layer.kld_weight, collections=[self.mode + "/model_summary"])
         super(STCN, self).summary_routines()
+
+
+class StructuredSTCN(STCN):
+    def __init__(self,
+                 config,
+                 data_pl,
+                 mode,
+                 reuse,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(StructuredSTCN, self).__init__(config=config, data_pl=data_pl, mode=mode, reuse=reuse, dtype=dtype, **kwargs)
+
+    def build_network(self):
+        self.latent_layer = LatentLayer.get(config=self.latent_layer_config,
+                                            layer_type=C.LATENT_STRUCTURED_HUMAN,
+                                            mode=self.mode,
+                                            reuse=self.reuse,
+                                            global_step=self.global_step,
+                                            structure=self.structure)
+
+        self.receptive_field_width = Wavenet.receptive_field_size(self.cnn_layer_config['filter_size'], self.cnn_layer_config['dilation_size'])
+        self.inputs_hidden = self.prediction_inputs
+        if self.input_layer_config is not None and self.input_layer_config.get("dropout_rate", 0) > 0:
+            with tf.variable_scope('input_dropout', reuse=self.reuse):
+                self.inputs_hidden = tf.layers.dropout(self.inputs_hidden, rate=self.input_layer_config.get("dropout_rate"), seed=self.config["seed"], training=self.is_training)
+
+        with tf.variable_scope("encoder", reuse=self.reuse):
+            self.encoder_blocks, self.encoder_blocks_no_res = self.build_temporal_block(self.inputs_hidden, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+        if self.use_future_steps_in_q:
+            reuse_params_in_bw = True
+            reversed_inputs = tf.manip.reverse(self.prediction_inputs, axis=[1])
+            if reuse_params_in_bw:
+                with tf.variable_scope("encoder", reuse=True):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, True, self.cnn_layer_config['filter_size'])
+            else:
+                with tf.variable_scope("bw_encoder", reuse=self.reuse):
+                    self.bw_encoder_blocks, self.bw_encoder_blocks_no_res = self.build_temporal_block(reversed_inputs, self.num_encoder_blocks, self.reuse, self.cnn_layer_config['filter_size'])
+
+            self.bw_encoder_blocks = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks]
+            self.bw_encoder_blocks_no_res = [tf.manip.reverse(bw, axis=[1])[:, 1:] for bw in self.bw_encoder_blocks_no_res]
+
+        with tf.variable_scope("latent", reuse=self.reuse):
+            p_input = [enc_layer[:, 0:-1] for enc_layer in self.encoder_blocks]
+            if self.latent_layer_config.get('dynamic_prior', False):
+                if self.use_future_steps_in_q:
+                    q_input = [tf.concat([fw_enc[:, 1:], bw_enc], axis=-1) for fw_enc, bw_enc in zip(self.encoder_blocks, self.bw_encoder_blocks)]
+                else:
+                    q_input = [enc_layer[:, 1:] for enc_layer in self.encoder_blocks]
+            else:
+                q_input = p_input
+
+            self.latent_samples = self.latent_layer.build_latent_layer(q_input=q_input, p_input=p_input)
+
+        self.output_width = tf.shape(self.latent_samples[0])[1]
+        self.build_output_layer()
+        self.build_loss()
+
+    def build_output_layer(self):
+        """
+        Builds layers to make predictions. The structured latent space has a random variable per joint.
+        """
+        if self.mle_normal and self.joint_prediction_model == "plain":
+            raise Exception("Normal distribution doesn't work in this setup.")
+
+        with tf.variable_scope('output_layer', reuse=self.reuse):
+            for joint_key in sorted(self.structure_indexed.keys()):
+                parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                joint_sample = self.latent_samples[joint_key]
+                if self.joint_prediction_model == "plain":
+                    self.parse_outputs(joint_sample)
+                elif self.joint_prediction_model == "separate_joints":
+                    self.parse_outputs(self.build_predictions(joint_sample, self.JOINT_SIZE, joint_name))
+                elif self.joint_prediction_model == "fk_joints":
+                    joint_inputs = [joint_sample]
+                    self.traverse_parents(joint_inputs, parent_joint_idx)
+                    self.parse_outputs(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
+                else:
+                    raise Exception("Prediction model not recognized.")
+
+            self.aggregate_outputs()
+            pose_prediction = self.outputs_mu
+
+            # Apply residual connection on the pose only.
+            if self.residual_velocities:
+                if self.residual_velocities_type == "plus":
+                    pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
+                elif self.residual_velocities_type == "matmul":
+                    # add regularizer to the predicted rotations
+                    self.residual_velocities_reg = self.rot_mat_regularization(pose_prediction,
+                                                                               summary_name="velocity_rot_mat_reg")
+                    # now perform the multiplication
+                    preds = tf.reshape(pose_prediction, [-1, 3, 3])
+                    inputs = tf.reshape(self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE],
+                                        [-1, 3, 3])
+                    preds = tf.matmul(inputs, preds, transpose_b=True)
+                    pose_prediction = tf.reshape(preds, tf.shape(pose_prediction))
+                else:
+                    raise ValueError("residual velocity type {} unknown".format(self.residual_velocities_type))
+
+            # Enforce valid rotations as the very last step, this currently doesn't do anything with rotation matrices.
+            # TODO(eaksan) Not sure how to handle probabilistic predictions. For now we use only the mu predictions.
+            pose_prediction = self.build_valid_rot_layer(pose_prediction)
+            self.outputs_mu = pose_prediction
+            self.outputs = self.get_joint_prediction(joint_idx=-1)
+
+    def build_loss(self):
+        super(StructuredSTCN, self).build_loss()
 
 
 class RNN(BaseModel):
@@ -1195,20 +1378,18 @@ class RNN(BaseModel):
 
         feed_dict = {self.prediction_inputs: seed_sequence,
                      self.prediction_seq_len: np.ones(seed_sequence.shape[0])*seed_sequence.shape[1]}
-        state, prediction = session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
+        state, prediction = session.run([self.rnn_state, self.outputs], feed_dict=feed_dict)
 
         prediction = prediction[:, -1:]
         predictions = [prediction]
-        orig_shape = prediction.shape
         for step in range(prediction_steps-1):
             # get the prediction
             feed_dict = {self.prediction_inputs: prediction,
                          self.initial_states: state,
                          self.prediction_seq_len: one_step_seq_len}
-            state, prediction = session.run([self.rnn_state, self.outputs_tensor], feed_dict=feed_dict)
-            # prediction = np.reshape(get_closest_rotmat(np.reshape(prediction, [-1, 3, 3])), orig_shape)
+            state, prediction = session.run([self.rnn_state, self.outputs], feed_dict=feed_dict)
+            # prediction = np.reshape(get_closest_rotmat(np.reshape(prediction, [-1, 3, 3])), prediction.shape)
             predictions.append(prediction)
-
         return np.concatenate(predictions, axis=1)
 
 
@@ -1281,8 +1462,8 @@ class ASimpleYetEffectiveBaseline(Seq2SeqModel):
     def build_network(self):
         # don't do anything, just repeat the last known pose
         last_known_pose = self.decoder_inputs[:, 0:1]
-        self.outputs_tensor = tf.tile(last_known_pose, [1, self.target_seq_len, 1])
-        self.outputs = self.outputs_tensor
+        self.outputs_mu = tf.tile(last_known_pose, [1, self.target_seq_len, 1])
+        self.outputs = self.outputs_mu
         # dummy variable
         self._dummy = tf.Variable(0.0, name="imadummy")
         self.build_loss()
