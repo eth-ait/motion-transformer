@@ -131,7 +131,7 @@ class LinearSpaceDecoderWrapper(RNNCell):
 class StructuredOutputWrapper(RNNCell):
     """Given a structure, implements structured outputs."""
 
-    def __init__(self, cell, structure, hidden_size, num_hidden_layers, activation_fn, joint_size, human_size, reuse):
+    def __init__(self, cell, structure, hidden_size, num_hidden_layers, activation_fn, joint_size, human_size, reuse, is_sparse=False):
         """Create a cell with with a linear encoder in space.
 
         Args:
@@ -151,6 +151,7 @@ class StructuredOutputWrapper(RNNCell):
         self.structure = structure
         self.joint_size = joint_size
         self.human_size = human_size
+        self.is_sparse = is_sparse
 
     @property
     def state_size(self):
@@ -196,9 +197,12 @@ class StructuredOutputWrapper(RNNCell):
 
         for joint_key in sorted(self.structure.keys()):
             parent_joint_idx, joint_idx, joint_name = self.structure[joint_key]
-            joint_inputs = []
-            traverse_parents(self.structure, prediction, joint_inputs, parent_joint_idx)
-            joint_inputs.append(prediction_context)
+            joint_inputs = [prediction_context]
+            if self.is_sparse:
+                if parent_joint_idx >= 0:
+                    joint_inputs.append(prediction[parent_joint_idx])
+            else:
+                traverse_parents(self.structure, prediction, joint_inputs, parent_joint_idx)
             prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.joint_size, joint_name))
 
         # Apply the multiplication to everything

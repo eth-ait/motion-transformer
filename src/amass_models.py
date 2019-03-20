@@ -2,8 +2,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import numpy as np
 import tensorflow as tf
+
 import rnn_cell_extensions  # my extensions of the tf repos
 
 # ETH imports
@@ -64,6 +66,7 @@ class BaseModel(object):
         # (2) "separate_joints": each latent variable is transformed into a joint prediction by using separate networks.
         # (3) "fk_joints": latent samples on the forward kinematic chain are concatenated and used as in (2).
         self.joint_prediction_model = config.get('joint_prediction_model', "plain")
+        self.use_sparse_fk_joints = config.get('use_sparse_fk_joints', False)
 
         # Set by the child model class.
         self.outputs_mu = None  # Mu tensor of predicted frames (Normal distribution).
@@ -288,7 +291,11 @@ class BaseModel(object):
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
                     joint_inputs = [self.prediction_representation]
-                    self.traverse_parents(joint_inputs, parent_joint_idx)
+                    if self.use_sparse_fk_joints:
+                        if parent_joint_idx >= 0:
+                            joint_inputs.append(self.outputs_mu_joints[parent_joint_idx])
+                    else:
+                        self.traverse_parents(joint_inputs, parent_joint_idx)
                     self.parse_outputs(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
             else:
                 raise Exception("Prediction model not recognized.")
@@ -530,14 +537,33 @@ class Seq2SeqModel(BaseModel):
 
     def build_network(self):
         # === Create the RNN that will keep the state ===
-        cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+        if self.config['cell_type'] == C.GRU:
+            cell = tf.contrib.rnn.GRUCell(self.rnn_size)
+        elif self.config['cell_type'] == C.LSTM:
+            cell = tf.contrib.rnn.LSTMCell(self.rnn_size)
+        else:
+            raise Exception("Cell not found.")
+
+        if self.input_dropout_rate is not None:
+            cell = rnn_cell_extensions.InputDropoutWrapper(cell, self.is_training, self.input_dropout_rate)
 
         if self.num_layers > 1:
             cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.rnn_size) for _ in range(self.num_layers)])
 
         with tf.variable_scope("seq2seq", reuse=self.reuse):
             # === Add space decoder ===
-            cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
+            if self.joint_prediction_model == "fk_joints":
+                cell = rnn_cell_extensions.StructuredOutputWrapper(cell,
+                                                                   self.structure_indexed,
+                                                                   hidden_size=self.output_layer_config.get('size', 0),
+                                                                   num_hidden_layers=self.output_layer_config.get('num_layers', 0),
+                                                                   activation_fn=self.activation_fn,
+                                                                   joint_size=self.JOINT_SIZE,
+                                                                   human_size=self.HUMAN_SIZE,
+                                                                   reuse=self.reuse,
+                                                                   is_sparse=self.use_sparse_fk_joints)
+            else:
+                cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
 
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
@@ -559,9 +585,12 @@ class Seq2SeqModel(BaseModel):
             # Build the RNN
             if self.architecture == "basic":
                 # Basic RNN does not have a loop function in its API, so copying here.
+                with tf.variable_scope("rnn_decoder_cell", reuse=self.reuse):
+                    dec_cell = copy.deepcopy(cell)
+                
                 with tf.variable_scope("basic_rnn_seq2seq"):
                     _, enc_state = tf.contrib.rnn.static_rnn(cell, self.enc_in, dtype=tf.float32)  # Encoder
-                    outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, cell, loop_function=loop_function)  # Decoder
+                    outputs, self.states = tf.contrib.legacy_seq2seq.rnn_decoder(self.dec_in, enc_state, dec_cell, loop_function=loop_function)  # Decoder
 
             elif self.architecture == "tied":
                 outputs, self.states = tf.contrib.legacy_seq2seq.tied_rnn_seq2seq(self.enc_in, self.dec_in, cell, loop_function=loop_function)

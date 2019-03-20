@@ -65,6 +65,7 @@ tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, seq2se
 tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
+tf.app.flags.DEFINE_boolean("use_sparse_fk_joints", False, "Sparse or dense fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_string("action_loss", "none", "cross_entropy, l2 or none.")
 tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
@@ -206,6 +207,7 @@ def create_rnn_model(actions, sampling=False):
     config['one_hot'] = not FLAGS.omit_one_hot
     config['residual_velocities'] = FLAGS.residual_velocities
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
+    config['use_sparse_fk_joints'] = FLAGS.use_sparse_fk_joints
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
@@ -221,7 +223,7 @@ def create_rnn_model(actions, sampling=False):
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
-                                                    config['joint_prediction_model'],
+                                                    "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cell']['cell_size'],
@@ -291,6 +293,7 @@ def create_stcn_model(actions, sampling=False):
     config['one_hot'] = not FLAGS.omit_one_hot
     config['residual_velocities'] = FLAGS.residual_velocities
     config['joint_prediction_model'] = FLAGS.joint_prediction_model
+    config['use_sparse_fk_joints'] = FLAGS.use_sparse_fk_joints
     config['angle_loss_type'] = FLAGS.angle_loss
     config['action_loss_type'] = FLAGS.action_loss
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
@@ -313,7 +316,7 @@ def create_stcn_model(actions, sampling=False):
                                                     FLAGS.model_type,
                                                     "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
                                                     config['angle_loss_type'],
-                                                    config['joint_prediction_model'],
+                                                    "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     config['cnn_layer']['num_encoder_layers'],
@@ -336,6 +339,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['residual_velocities'] = FLAGS.residual_velocities
     config['joint_prediction_model'] = FLAGS.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
+    config['use_sparse_fk_joints'] = FLAGS.use_sparse_fk_joints  # "plain", "separate_joints", "fk_joints"
     config['architecture'] = FLAGS.architecture
     config['source_seq_len'] = FLAGS.seq_length_in
     config['target_seq_len'] = FLAGS.seq_length_out
@@ -381,7 +385,7 @@ def create_seq2seq_model(actions, sampling=False):
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
                                                     config['angle_loss_type'],
-                                                    config['joint_prediction_model'],
+                                                    "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     config["cell_type"],
                                                     config['batch_size'],
                                                     FLAGS.seq_length_in,
