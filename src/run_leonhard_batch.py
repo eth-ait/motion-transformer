@@ -163,18 +163,17 @@ h36m_experiments = [
 'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type lstm --use_h36m_martinez'
 ]
 
-for experiment in h36m_experiments:
-# print(experiment)
-# Create a unique experiment timestamp.
+for i, experiment in enumerate(h36m_experiments):
+    # print(experiment)
+    # Create a unique experiment timestamp.
+    time.sleep(2)
     experiment_timestamp = str(int(time.time()))
-experiment_command = experiment + ' --new_experiment_id ' + experiment_timestamp
+    print(experiment_timestamp)
+    experiment_command = experiment + ' --new_experiment_id ' + experiment_timestamp
 
-cluster_command = cluster_command_format.format(NUM_CPU,
-                                                WALL_TIME,
-                                                experiment_timestamp,
-                                                MEMORY,
-                                                NUM_GPU)
-print(experiment_timestamp)
-call([cluster_command + experiment_command], shell=True)
-# Make sure that we get unique timestamps :)
-time.sleep(1.5)
+    cluster_command = cluster_command_format.format(NUM_CPU,
+                                                    WALL_TIME,
+                                                    experiment_timestamp,
+                                                    MEMORY,
+                                                    NUM_GPU)
+    call([cluster_command + experiment_command], shell=True)

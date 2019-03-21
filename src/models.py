@@ -48,6 +48,7 @@ class BaseModel(object):
         # (2) "separate_joints": each latent variable is transformed into a joint prediction by using separate networks.
         # (3) "fk_joints": latent samples on the forward kinematic chain are concatenated and used as in (2).
         self.joint_prediction_model = config.get('joint_prediction_model', "plain")
+        self.use_sparse_fk_joints = config.get('use_sparse_fk_joints', False)
 
         # Set by the child model class.
         self.outputs_tensor = None  # Tensor of predicted frames.
@@ -203,9 +204,12 @@ class BaseModel(object):
 
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
-                    joint_inputs = []
-                    traverse_parents(self.structure_indexed, prediction, joint_inputs, parent_joint_idx)
-                    joint_inputs.append(self.prediction_representation)
+                    joint_inputs = [self.prediction_representation]
+                    if self.use_sparse_fk_joints:
+                        if parent_joint_idx >= 0:
+                            joint_inputs.append(prediction[parent_joint_idx])
+                    else:
+                        traverse_parents(self.structure_indexed, prediction, joint_inputs, parent_joint_idx)
                     prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
             else:
                 raise Exception("Prediction model not recognized.")
@@ -705,7 +709,8 @@ class Seq2SeqModel(BaseModel):
                                                                    activation_fn=self.activation_fn,
                                                                    joint_size=self.JOINT_SIZE,
                                                                    human_size=self.HUMAN_SIZE,
-                                                                   reuse=self.reuse)
+                                                                   reuse=self.reuse,
+                                                                   is_sparse=self.use_sparse_fk_joints)
                 ignore_actions = True
             else:
                 cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)

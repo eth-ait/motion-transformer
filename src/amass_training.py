@@ -68,9 +68,10 @@ tf.app.flags.DEFINE_integer("load", 0, "Try to load a previous checkpoint.")
 tf.app.flags.DEFINE_string("experiment_name", None, "A descriptive name for the experiment.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment timestamp to load a pre-trained model.")
 tf.app.flags.DEFINE_string("model_type", "seq2seq", "Model type: seq2seq, wavenet, stcn, simple_baseline, rnn or vrnn.")
-tf.app.flags.DEFINE_boolean("feed_error_to_encoder", True, "If architecture is not tied, can choose to feed error in encoder or not")
+tf.app.flags.DEFINE_boolean("feed_error_to_encoder", False, "If architecture is not tied, can choose to feed error in encoder or not")
 tf.app.flags.DEFINE_boolean("new_preprocessing", True, "Only discard entire joints not single DOFs per joint")
 tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_joints or fk_joints.")
+tf.app.flags.DEFINE_boolean("use_sparse_fk_joints", False, "Sparse or dense fk_joints.")
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("rot_matrix_regularization", False, "If set, apply regularization term.")
@@ -377,6 +378,7 @@ def get_rnn_config(args):
     config['residual_velocities'] = args.residual_velocities
     config['residual_velocities_type'] = args.residual_velocities_type
     config['joint_prediction_model'] = args.joint_prediction_model
+    config['use_sparse_fk_joints'] = args.use_sparse_fk_joints
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
     config['rot_matrix_regularization'] = args.rot_matrix_regularization
@@ -405,7 +407,7 @@ def get_rnn_config(args):
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
                                                     "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['angle_loss_type'],
-                                                    config['joint_prediction_model'],
+                                                    "sparse_" + config['joint_prediction_model'] if args.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     model_exp_name,
@@ -476,6 +478,7 @@ def get_stcn_config(args):
     config['residual_velocities'] = args.residual_velocities
     config['residual_velocities_type'] = args.residual_velocities_type
     config['joint_prediction_model'] = args.joint_prediction_model
+    config['use_sparse_fk_joints'] = args.use_sparse_fk_joints
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
     config['use_quat'] = args.use_quat
@@ -520,7 +523,7 @@ def get_stcn_config(args):
                                                     "-"+args.experiment_name if args.experiment_name is not None else "",
                                                     "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['angle_loss_type'],
-                                                    config['joint_prediction_model'],
+                                                    "sparse_" + config['joint_prediction_model'] if args.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     model_exp_name,
                                                     "-idrop_" + str(input_dropout) if not isinstance(input_dropout, dict) and input_dropout > 0 else "",
                                                     config['batch_size'],
@@ -543,11 +546,13 @@ def get_seq2seq_config(args):
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['optimizer'] = args.optimizer
     config['joint_prediction_model'] = args.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
+    config['use_sparse_fk_joints'] = args.use_sparse_fk_joints  # "plain", "separate_joints", "fk_joints"
     config['architecture'] = args.architecture
     config['source_seq_len'] = args.seq_length_in
     config['target_seq_len'] = args.seq_length_out
     config['rnn_size'] = args.cell_size
     config['num_layers'] = args.cell_layers
+    config['cell_type'] = args.cell_type
     config['grad_clip_by_norm'] = args.max_gradient_norm
     config['batch_size'] = args.batch_size
     config['learning_rate'] = args.learning_rate
@@ -556,10 +561,11 @@ def get_seq2seq_config(args):
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
     config['residual_velocities_type'] = args.residual_velocities_type
-    config['joint_prediction_model'] = args.joint_prediction_model  # currently ignored by seq2seq models
+    config['input_layer'] = dict()
+    config['input_layer']['dropout_rate'] = args.input_dropout_rate
     config['output_layer'] = dict()
-    config['output_layer']['num_layers'] = 0
-    config['output_layer']['size'] = 128
+    config['output_layer']['num_layers'] = args.output_layer_number
+    config['output_layer']['size'] = args.output_layer_size
     config['output_layer']['activation_fn'] = C.RELU
     config['angle_loss_type'] = args.angle_loss
     config['force_valid_rot'] = args.force_valid_rot
@@ -586,18 +592,21 @@ def get_seq2seq_config(args):
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-depth{}-size{}-{}{}"
+    input_dropout = config['input_layer'].get('dropout_rate', 0)
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
                                                     "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
+                                                    "sparse_" + config['joint_prediction_model'] if args.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
                                                     model_exp_name,
                                                     config['angle_loss_type'],
+                                                    args.cell_type,
+                                                    "-idrop_" + str(input_dropout) if not isinstance(input_dropout, dict) and input_dropout > 0 else "",
                                                     config['batch_size'],
                                                     args.seq_length_in,
                                                     args.seq_length_out,
                                                     args.architecture,
-                                                    '' if args.feed_error_to_encoder else 'no',
                                                     config['autoregressive_input'],
                                                     args.cell_layers,
                                                     args.cell_size,
