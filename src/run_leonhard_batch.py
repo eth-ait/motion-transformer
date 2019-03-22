@@ -158,9 +158,14 @@ experiment_list = [
 ]
 
 h36m_experiments = [
-    'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 256 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type lstm --use_h36m_martinez',
-    'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type lstm --use_h36m_martinez',
-'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type lstm --use_h36m_martinez'
+    'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --cell_type lstm --use_h36m_martinez --early_stopping_tolerance 25 ',
+
+
+    'python amass_training.py --experiment_name rlstmrot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 256 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --cell_type lstm --use_h36m_martinez --early_stopping_tolerance 25 ',
+
+    'python amass_training.py --experiment_name rgrurot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --cell_type gru --use_h36m_martinez --early_stopping_tolerance 25 ',
+
+    'python amass_training.py --experiment_name rgrurot --dynamic_validation_split --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 256 --output_layer_number 1 --batch_size 64 --model_type rnn --seq_length_in 50 --seq_length_out 10 --cell_type gru --use_h36m_martinez --early_stopping_tolerance 25 '
 ]
 
 for i, experiment in enumerate(h36m_experiments):
