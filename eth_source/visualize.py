@@ -10,6 +10,10 @@ from motion_metrics import is_valid_rotmat
 from motion_metrics import aa2rotmat
 
 
+_prop_cycle = plt.rcParams['axes.prop_cycle']
+_colors = _prop_cycle.by_key()['color']
+
+
 class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
@@ -105,7 +109,7 @@ class Visualizer(object):
         else:
             out_name = None
         visualize_positions(positions=[pred_pos, targ_pos],
-                            colors=['b', 'b'],
+                            colors=[_colors[0], _colors[0]],
                             titles=['prediction', 'target'],
                             fig_title=title,
                             parents=self.fk_engine.parents,
@@ -147,8 +151,8 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         idx = 0 if overlay else i
         ax = axes[idx]
         lines_j = [
-            ax.plot(joints[0:1, n,  0], joints[0:1, n, 1], joints[0:1, n, 2], '-o' + colors[i],
-                    markersize=3.0)[0] for n in range(1, n_joints)]
+            ax.plot(joints[0:1, n,  0], joints[0:1, n, 1], joints[0:1, n, 2], '-o',
+                    markersize=2.0, color=colors[i])[0] for n in range(1, n_joints)]
         all_lines.append(lines_j)
         ax.set_title(titles[i])
 
@@ -162,13 +166,29 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
 
     for ax in axes:
         ax.set_aspect('equal')
+        ax.axis('off')
 
         for xb, yb, zb in zip(Xb, Yb, Zb):
             ax.plot([xb], [yb], [zb], 'w')
 
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
+        # ax.set_xlabel('X')
+        # ax.set_ylabel('Y')
+        # ax.set_zlabel('Z')
+
+        ax.set_yticklabels([])
+        ax.set_xticklabels([])
+        ax.set_zticklabels([])
+
+        ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+        ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+        ax.zaxis.set_pane_color((0.5, 0.5, 0.5, 0.0))
+        # ax.zaxis.set_pane_color((0.5, 0.5, 0.5, 0.5))
+
+        ax.xaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+        ax.yaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+        ax.zaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+
+        ax.view_init(elev=0, azim=-56)
 
     def on_move(event):
         # find which axis triggered the event
@@ -205,7 +225,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                 points_j[k].set_data(p[:, :2].T)
                 points_j[k].set_3d_properties(p[:, 2].T)
                 if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
-                    points_j[k].set_color('r')
+                    points_j[k].set_color(_colors[2])
                 else:
                     points_j[k].set_color(colors[l])
 
@@ -219,10 +239,64 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                                        interval=1000/fps)
 
     if out_file is not None:
-        w = writers['ffmpeg']
-        writer = w(fps=fps, metadata={}, bitrate=1000)  # increase bitrate for higher quality
-        line_ani.save(out_file, writer=writer)
+        save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]],
+                       movie_fname=out_file, fps=fps)
+
+        # w = writers['ffmpeg']
+        # writer = w(fps=fps, metadata={}, bitrate=1000)  # increase bitrate for higher quality
+        # line_ani.save(out_file, writer=writer)
     else:
         # interactive
         plt.show()
     plt.close()
+
+
+def save_animation(fig, seq_length, update_func, update_func_args,
+                   start_recording=0, end_recording=None, movie_fname=None, keep_frames=False, fps=25):
+    """
+    Save animation as frames to disk and may be as movie.
+    :param fig: Figure where animation is displayed.
+    :param seq_length: Total length of the animation.
+    :param start_recording: Frame index where to start recording.
+    :param end_recording: Frame index where to stop recording (defaults to `seq_length`, exclusive).
+    :param update_func: Update function that is driving the animation.
+    :param update_func_args: Arguments for `update_func`
+    :param movie_fname: Path and name of the output movie file or `None` if no movie should be procuded.
+    :param keep_frames: Whether or not to clear the dumped frames.
+    :param fps: Frame rate.
+    """
+    tmp_path = movie_fname
+    if not os.path.exists(tmp_path):
+        os.makedirs(tmp_path)
+    # if os.path.exists(tmp_path):
+    #     shutil.rmtree(tmp_path, ignore_errors=True)
+    # os.makedirs(tmp_path)
+
+    start_frame = start_recording
+    end_frame = end_recording or seq_length
+
+    for j in range(start_frame, end_frame):
+        update_func(j, *update_func_args)
+        fig.savefig(os.path.join(tmp_path, 'frame_{:0>4}.png'.format(j)), transparent=True)
+
+    # if movie_fname:
+    #     #print('\nconverting to movie ...')
+    #     # create movie and save it to destination
+    #     if not movie_fname.endswith('.avi'):
+    #         out_file = '{}.avi'.format(movie_fname)
+    #     else:
+    #         out_file = movie_fname
+    #
+    #     command = ['ffmpeg',
+    #                '-start_number', str(start_frame), '-framerate', str(fps),
+    #                '-loglevel', 'panic',
+    #                '-i', os.path.join(tmp_path, 'frame_%04d.png'),
+    #                '-vcodec', 'mpeg4', '-b', '800k', '-y',
+    #                out_file]
+    #     FNULL = open(os.devnull, 'w')
+    #     subprocess.Popen(command, stdout=FNULL).wait()
+    #     FNULL.close()
+    #     print('saved to {}'.format(out_file))
+    #
+    # if not keep_frames:
+    #     shutil.rmtree(tmp_path, ignore_errors=True)

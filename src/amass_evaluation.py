@@ -171,7 +171,7 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
-                    # break  # TODO REMOVE
+                    break  # TODO REMOVE
 
             except tf.errors.OutOfRangeError:
                 pass
@@ -194,7 +194,8 @@ def evaluate(experiment_dir, config, args):
 
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            video_dir = experiment_dir if args.visualize_save else None
+            model_id = os.path.split(experiment_dir)[-1].split('-')[0]
+            video_dir = os.path.join("C:\\Users\\manuel\\tmp\\", model_id) if args.visualize_save else None
             visualizer = Visualizer(fk_engine, video_dir,
                                     rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             n_samples_viz = 20
