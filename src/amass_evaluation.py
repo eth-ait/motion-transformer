@@ -44,7 +44,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     else:
         test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
         extract_random_windows = False
-        windows_length = 0  # set to 0 so that dataset class works as intended
+        # window_length = 0  # set to 0 so that dataset class works as intended
 
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
@@ -194,15 +194,16 @@ def evaluate(experiment_dir, config, args):
 
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            model_id = os.path.split(experiment_dir)[-1].split('-')[0]
-            video_dir = os.path.join("C:\\Users\\manuel\\tmp\\", model_id) if args.visualize_save else None
-            visualizer = Visualizer(fk_engine, video_dir,
+            video_dir = experiment_dir if args.save_video else None
+            frames_dir = experiment_dir if args.save_frames else None
+            visualizer = Visualizer(fk_engine, video_dir, frames_dir,
                                     rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
-            n_samples_viz = 20
+            n_samples_viz = 30  # TODO change
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
-            for k in sample_keys:
+            for i, k in enumerate(sample_keys):
+                print("index: ", i)
                 visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k)
 
 
@@ -218,7 +219,8 @@ if __name__ == '__main__':
     parser.add_argument('--no_normalization', required=False, action="store_true", help='If set, do not use zero-mean unit-variance normalization.')
     parser.add_argument('--glog_entry', required=False, action="store_true", help='Write to the Google sheet.')
     parser.add_argument('--visualize', required=False, action="store_true", help='Visualize model predictions.')
-    parser.add_argument('--visualize_save', required=False, action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
+    parser.add_argument('--save_video', required=False, action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
+    parser.add_argument('--save_frames', required=False, action="store_true", help='Save the model predictions to individual pngs in a temporary folder')
     parser.add_argument('--dynamic_test_split', required=False, action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()

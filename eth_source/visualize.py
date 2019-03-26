@@ -1,4 +1,5 @@
 import os
+import subprocess
 import numpy as np
 import quaternion
 from matplotlib import pyplot as plt, animation as animation
@@ -18,13 +19,15 @@ class Visualizer(object):
     """
     Helper class to visualize SMPL joint angle input.
     """
-    def __init__(self, fk_engine, video_dir=None, rep="rot_mat", is_sparse=True):
+    def __init__(self, fk_engine, video_dir=None, frames_dir=None, rep="rot_mat", is_sparse=True):
         self.fk_engine = fk_engine
-        self.video_dir = video_dir
+        self.video_dir = video_dir  # if not None saves to mp4
+        self.frames_dir = frames_dir  # if not None dumps individual frames
         self.rep = rep
         self.is_sparse = is_sparse
         self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
         assert rep in ["rot_mat", "quat", "aa"]
+        assert not (self.video_dir and self.frames_dir), "can only either store to video or produce frames"
 
     def visualize(self, seed, prediction, target, title):
         """
@@ -102,10 +105,12 @@ class Visualizer(object):
         pred_pos = pred_pos[..., [0, 2, 1]]
         targ_pos = targ_pos[..., [0, 2, 1]]
 
+        f_name = title.replace('/', '.')
         if self.video_dir is not None:
             # save output animation to mp4
-            f_name = title.replace('/', '.') + '.mp4'
-            out_name = os.path.join(self.video_dir, f_name)
+            out_name = os.path.join(self.video_dir, f_name + '.mp4')
+        elif self.frames_dir is not None:
+            out_name = os.path.join(self.frames_dir, f_name)
         else:
             out_name = None
         visualize_positions(positions=[pred_pos, targ_pos],
@@ -128,7 +133,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         titles: list of titles for each entry in `positions`
         fig_title: title for the entire figure
         parents: skeleton structure
-        out_file: output file path if the visualization is to be saved as video.
+        out_file: output file path if the visualization is to be saved as video of frames
         fps: frames per second
         change_color_after_frame: after this frame id, the color of the plot is changed (for each entry in `positions`)
         overlay: if true, all entries in `positions` are plotted into the same subplot
@@ -138,7 +143,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
     pos = positions
 
     # create figure with as many subplots as we have skeletons
-    fig = plt.figure(figsize=(10, 5))
+    fig = plt.figure(figsize=(16, 9))
     plt.clf()
     n_axes = 1 if overlay else len(pos)
     axes = [fig.add_subplot(1, n_axes, i + 1, projection='3d') for i in range(n_axes)]
@@ -225,7 +230,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                 points_j[k].set_data(p[:, :2].T)
                 points_j[k].set_3d_properties(p[:, 2].T)
                 if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
-                    points_j[k].set_color(_colors[2])
+                    points_j[k].set_color(_colors[1])  # use _colors[2] for non-RNN-SPL models
                 else:
                     points_j[k].set_color(colors[l])
 
@@ -238,65 +243,76 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                                        fargs=(pos, all_lines, parents, colors + [colors[0]]),
                                        interval=1000/fps)
 
-    if out_file is not None:
-        save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]],
-                       movie_fname=out_file, fps=fps)
-
-        # w = writers['ffmpeg']
-        # writer = w(fps=fps, metadata={}, bitrate=1000)  # increase bitrate for higher quality
-        # line_ani.save(out_file, writer=writer)
-    else:
+    if out_file is None:
         # interactive
         plt.show()
+    elif out_file.endswith('.mp4'):
+        # save to video file
+        print('saving video to {}'.format(out_file))
+        # this gives weird errors
+        # w = writers['libx264']
+        # writer = w(fps=fps, metadata={}, bitrate=1000)  # increase bitrate for higher quality
+        # line_ani.save(out_file, writer=writer)
+        save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]],
+                       out_folder=out_file, create_mp4=True)
+    else:
+        # dump frames as vector-graphics (SVG)
+        print('dumping individual frames to {}'.format(out_file))
+        save_animation(fig, seq_length, update_frame, [pos, all_lines, parents, colors + [colors[0]]],
+                       out_folder=out_file, image_format='svg')
     plt.close()
 
 
-def save_animation(fig, seq_length, update_func, update_func_args,
-                   start_recording=0, end_recording=None, movie_fname=None, keep_frames=False, fps=25):
+def save_animation(fig, seq_length, update_func, update_func_args, out_folder, image_format="png",
+                   start_recording=0, end_recording=None, create_mp4=False, fps=60):
     """
-    Save animation as frames to disk and may be as movie.
-    :param fig: Figure where animation is displayed.
-    :param seq_length: Total length of the animation.
-    :param start_recording: Frame index where to start recording.
-    :param end_recording: Frame index where to stop recording (defaults to `seq_length`, exclusive).
-    :param update_func: Update function that is driving the animation.
-    :param update_func_args: Arguments for `update_func`
-    :param movie_fname: Path and name of the output movie file or `None` if no movie should be procuded.
-    :param keep_frames: Whether or not to clear the dumped frames.
-    :param fps: Frame rate.
+    Save animation as transparent pngs to disk.
+    Args:
+        fig: Figure where animation is displayed.
+        seq_length: Total length of the animation.
+        update_func: Update function that is driving the animation.
+        update_func_args: Arguments for `update_func`.
+        out_folder: Where to store the frames.
+        image_format: In which format to save the frames.
+        start_recording: Frame index where to start recording.
+        end_recording: Frame index where to stop recording (defaults to `seq_length`, exclusive).
+        create_mp4: Convert frames to a movie using ffmpeg.
+        fps: Input and output fps.
     """
-    tmp_path = movie_fname
+    if create_mp4:
+        assert image_format == "png"
+    tmp_path = out_folder
     if not os.path.exists(tmp_path):
         os.makedirs(tmp_path)
-    # if os.path.exists(tmp_path):
-    #     shutil.rmtree(tmp_path, ignore_errors=True)
-    # os.makedirs(tmp_path)
 
     start_frame = start_recording
     end_frame = end_recording or seq_length
 
     for j in range(start_frame, end_frame):
         update_func(j, *update_func_args)
-        fig.savefig(os.path.join(tmp_path, 'frame_{:0>4}.png'.format(j)), transparent=True)
+        fig.savefig(os.path.join(tmp_path, 'frame_{:0>4}.{}'.format(j, image_format)), dip=1000)
 
-    # if movie_fname:
-    #     #print('\nconverting to movie ...')
-    #     # create movie and save it to destination
-    #     if not movie_fname.endswith('.avi'):
-    #         out_file = '{}.avi'.format(movie_fname)
-    #     else:
-    #         out_file = movie_fname
-    #
-    #     command = ['ffmpeg',
-    #                '-start_number', str(start_frame), '-framerate', str(fps),
-    #                '-loglevel', 'panic',
-    #                '-i', os.path.join(tmp_path, 'frame_%04d.png'),
-    #                '-vcodec', 'mpeg4', '-b', '800k', '-y',
-    #                out_file]
-    #     FNULL = open(os.devnull, 'w')
-    #     subprocess.Popen(command, stdout=FNULL).wait()
-    #     FNULL.close()
-    #     print('saved to {}'.format(out_file))
-    #
-    # if not keep_frames:
-    #     shutil.rmtree(tmp_path, ignore_errors=True)
+    if create_mp4:
+        # create movie and save it to destination
+        counter = 0
+        movie_name = os.path.join(out_folder, "vid{}.mp4".format(counter))
+
+        while os.path.exists(movie_name):
+            counter += 1
+            movie_name = os.path.join(out_folder, "vid{}.mp4".format(counter))
+
+        command = ['ffmpeg',
+                   '-start_number', str(start_frame),
+                   '-framerate', str(fps),  # must be this early, otherwise it is not respected
+                   '-loglevel', 'panic',
+                   '-i', os.path.join(tmp_path, 'frame_%04d.png'),
+                   '-c:v', 'libx264',
+                   '-preset', 'slow',
+                   '-profile:v', 'high',
+                   '-level:v', '4.0',
+                   '-pix_fmt', 'yuv420p',
+                   '-y',
+                   movie_name]
+        FNULL = open(os.devnull, 'w')
+        subprocess.Popen(command, stdout=FNULL).wait()
+        FNULL.close()
