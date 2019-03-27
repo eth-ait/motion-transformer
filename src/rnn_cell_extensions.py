@@ -197,12 +197,13 @@ class StructuredOutputWrapper(RNNCell):
 
         for joint_key in sorted(self.structure.keys()):
             parent_joint_idx, joint_idx, joint_name = self.structure[joint_key]
-            joint_inputs = [prediction_context]
+            joint_inputs = []
             if self.is_sparse:
                 if parent_joint_idx >= 0:
                     joint_inputs.append(prediction[parent_joint_idx])
             else:
                 traverse_parents(self.structure, prediction, joint_inputs, parent_joint_idx)
+            joint_inputs.append(prediction_context)
             prediction.append(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.joint_size, joint_name))
 
         # Apply the multiplication to everything
