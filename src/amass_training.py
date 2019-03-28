@@ -163,6 +163,14 @@ def create_model(session):
     else:
         raise Exception("Unknown model type.")
 
+    if args.experiment_id is None:
+        experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
+    else:
+        experiment_dir = glob.glob(os.path.join(train_dir, args.experiment_id + "-*"), recursive=False)[0]
+        config = json.load(open(os.path.join(experiment_dir, "config.json")))
+    if not os.path.exists(experiment_dir):
+        os.mkdir(experiment_dir)
+
     # Naming.
     experiment_name += '{}_norm'.format('-no' if args.no_normalization else '')
     if args.rot_matrix_regularization:
@@ -274,12 +282,6 @@ def create_model(session):
     print("# of parameters: " + str(num_param))
     config["num_parameters"] = int(num_param)
 
-    if args.experiment_id is None:
-        experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
-    else:
-        experiment_dir = glob.glob(os.path.join(train_dir, args.experiment_id + "-*"), recursive=False)[0]
-    if not os.path.exists(experiment_dir):
-        os.mkdir(experiment_dir)
     json.dump(config, open(os.path.join(experiment_dir, 'config.json'), 'w'), indent=4, sort_keys=True)
     print("Experiment directory " + experiment_dir)
 
@@ -304,7 +306,6 @@ def create_model(session):
 
     # Load a pre-trained model.
     ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
-    print("Experiment directory: ", experiment_dir)
 
     if ckpt and ckpt.model_checkpoint_path:
         # Check if the specific checkpoint exists
