@@ -10,3 +10,4 @@ experiment-logger-*
 selected_experiments_amass/*
 experiments_h36m/
 experiments_amass_all/
+quaternet_results/

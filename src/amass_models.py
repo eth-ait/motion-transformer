@@ -305,6 +305,11 @@ class BaseModel(object):
 
             # Apply residual connection on the pose only.
             if self.residual_velocities:
+                # some debugging
+                # pose_prediction = tf.Print(pose_prediction, [tf.shape(pose_prediction)], "shape", summarize=100)
+                # pose_prediction = tf.Print(pose_prediction, [tf.linalg.norm(pose_prediction[0])], "norm[0]", summarize=135)
+                # pose_prediction = tf.Print(pose_prediction, [pose_prediction[0]], "pose_prediction[0]", summarize=135)
+                # pose_prediction = tf.Print(pose_prediction, [self.prediction_inputs[0, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]], "inputs[0]", summarize=135)
                 if self.residual_velocities_type == "plus":
                     pose_prediction += self.prediction_inputs[:, 0:tf.shape(pose_prediction)[1], :self.HUMAN_SIZE]
                 elif self.residual_velocities_type == "matmul":

@@ -27,7 +27,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
     # Create dataset.
     window_length = config["source_seq_len"] + config["target_seq_len"]
-    assert window_length <= 180, "TFRecords are hardcoded with length of 180."
     rep = "quat" if config.get('use_quat', False) else "aa" if config.get('use_aa') else "rotmat"
 
     data_path = os.environ["AMASS_DATA"]
@@ -39,12 +38,15 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
-        extract_random_windows = True
+        extract_random_windows = False if args.visualize else True
         test_data_path = os.path.join(data_path, rep, "test_dynamic", "amass-?????-of-?????")
     else:
+        assert window_length <= 180, "TFRecords are hardcoded with length of 180."
         test_data_path = os.path.join(data_path, rep, "test", "amass-?????-of-?????")
         extract_random_windows = False
         # window_length = 0  # set to 0 so that dataset class works as intended
+
+    print(test_data_path)
 
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
@@ -171,7 +173,7 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
-                    # break  # TODO REMOVE
+                    break  # TODO REMOVE
 
             except tf.errors.OutOfRangeError:
                 pass
@@ -199,12 +201,15 @@ def evaluate(experiment_dir, config, args):
             visualizer = Visualizer(fk_engine, video_dir, frames_dir,
                                     rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             n_samples_viz = 30  # TODO change
+            # selected_idxs = [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            selected_idxs = [24, 27]  # for the dynamic split
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
+
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for i, k in enumerate(sample_keys):
-                print("index: ", i)
-                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k)
+                if i in selected_idxs:
+                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
 
 
 if __name__ == '__main__':

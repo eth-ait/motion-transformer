@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt, animation as animation
 from matplotlib.animation import writers
 from mpl_toolkits.mplot3d import Axes3D
 
+from fk import SMPLForwardKinematics
 from motion_metrics import get_closest_rotmat
 from motion_metrics import is_valid_rotmat
 from motion_metrics import aa2rotmat
@@ -106,6 +107,7 @@ class Visualizer(object):
         targ_pos = targ_pos[..., [0, 2, 1]]
 
         f_name = title.replace('/', '.')
+        f_name = f_name.split('_')[0]  # reduce name otherwise stupid OSes (like all of them) can't handle it
         if self.video_dir is not None:
             # save output animation to mp4
             out_name = os.path.join(self.video_dir, f_name + '.mp4')
@@ -204,7 +206,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                 break
 
         # transfer rotation and zoom to all other axes
-        if source_ax == None:
+        if source_ax is None:
             return
 
         for i in range(len(axes)):
@@ -230,7 +232,7 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
                 points_j[k].set_data(p[:, :2].T)
                 points_j[k].set_3d_properties(p[:, 2].T)
                 if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
-                    points_j[k].set_color(_colors[1])  # use _colors[2] for non-RNN-SPL models
+                    points_j[k].set_color(_colors[2])  # use _colors[2] for non-RNN-SPL models
                 else:
                     points_j[k].set_color(colors[l])
 
@@ -304,6 +306,7 @@ def save_animation(fig, seq_length, update_func, update_func_args, out_folder, i
         command = ['ffmpeg',
                    '-start_number', str(start_frame),
                    '-framerate', str(fps),  # must be this early, otherwise it is not respected
+                   '-r', '30',  # output is 30 fps
                    '-loglevel', 'panic',
                    '-i', os.path.join(tmp_path, 'frame_%04d.png'),
                    '-c:v', 'libx264',
@@ -316,3 +319,46 @@ def save_animation(fig, seq_length, update_func, update_func_args, out_folder, i
         FNULL = open(os.devnull, 'w')
         subprocess.Popen(command, stdout=FNULL).wait()
         FNULL.close()
+
+
+def visualize_quaternet():
+    experiment_id = "1553184554"
+    is_longterm = True
+    results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\quaternet_results\\test_results_quaternet_{}{}.npz".format(experiment_id,
+                                                                                                                                "_longterm" if is_longterm else "")
+    d = dict(np.load(results_folder))
+
+    selected_idxs = []
+    if not is_longterm:
+        selected_labels = ["ACCAD/0/Male1General",
+                           "ACCAD/0/Male1Running",
+                           "ACCAD/0/Male2MartialArtsStances_c3dD12",
+                           "ACCAD/3/Male2General",
+                           "BioMotion/0/rub0030023",
+                           "BioMotion/1/rub0050003",
+                           "BioMotion/2/rub0120028",
+                           "BioMotion/4/rub0020002",
+                           "BioMotion/4/rub0220000",
+                           "BioMotion/5/rub0050000"]
+    else:
+        selected_labels = ["ACCAD/0/Male1Walking_c3dWalk_SB_B14"]
+
+    for s_label in selected_labels:
+        counter = 0
+        for idx, label in enumerate(d['labels']):
+            if label.startswith(s_label):
+                counter += 1
+                selected_idxs.append(idx)
+
+        assert counter == 1
+
+    fk_engine = SMPLForwardKinematics()
+    video_dir = os.path.join("C:\\Users\\manuel\\projects\\motion-modelling\\quaternet_results\\", experiment_id)
+    visualizer = Visualizer(fk_engine, video_dir, rep="quat")
+
+    for idx in selected_idxs:
+        visualizer.visualize(d['seed'][idx], d['prediction'][idx], d['target'][idx], title=d['labels'][idx])
+
+
+if __name__ == '__main__':
+    visualize_quaternet()
