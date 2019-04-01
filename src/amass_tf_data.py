@@ -34,10 +34,10 @@ class Dataset(object):
 
         if tf.executing_eagerly():
             self.iterator = self.tf_data.make_one_shot_iterator()
+            self.tf_samples = None
         else:
             self.iterator = self.tf_data.make_initializable_iterator()
-
-        self.tf_samples = self.iterator.get_next()
+            self.tf_samples = self.iterator.get_next()
 
     def load_meta_data(self, meta_data_path):
         """
@@ -314,8 +314,7 @@ if __name__ == '__main__':
         print("[{2}] min length: {0}, max length: {1}".format(stats["min_seq_len"], stats["max_seq_len"], tag))
         print("============")
 
-
-
+    """
     # some tests in eager mode.
     tf.enable_eager_execution()
     tfrecord_pattern = "../data/h3.6m/tfrecords/quat/srnn_poses/amass-?????-of-?????"
@@ -335,20 +334,34 @@ if __name__ == '__main__':
         i += 1
         print(i, batch[C.BATCH_INPUT].shape)
     print("Elapsed time {:.3f}".format(time.perf_counter() - start_time))
+    """
 
     # some tests in eager mode.
     tf.enable_eager_execution()
 
-    tfrecord_pattern = "../data/amass/tfrecords/rotmat/test/amass-?????-of-?????"
+    tfrecord_pattern = "../data/amass/tfrecords/quat/test/amass-?????-of-?????"
     dataset = TFRecordMotionDataset(data_path=tfrecord_pattern,
-                                    meta_data_path="../data/amass/tfrecords/rotmat/training/stats.npz",
+                                    meta_data_path="../data/amass/tfrecords/quat/training/stats.npz",
                                     batch_size=32,
                                     shuffle=False,
                                     extract_windows_of=0,
                                     extract_random_windows=False)
-    stats = dataset.meta_data
-    # log_stats(stats, "OnlineTFRecord")
+    train_iterator = dataset.get_iterator()
+    labels = []
+    try:
+        for batch in train_iterator:
+            # batch = next(train_iterator)
+            batch_ids = [s.numpy().decode("utf-8") for s in batch[C.BATCH_ID]]
+            labels.extend(batch_ids)
+    except tf.errors.OutOfRangeError:
+        print("Done")
 
+    print(len(labels))
+    for l in labels:
+        if l.startswith("ACCAD"):
+            print(l)
+
+    """
     train_iterator = dataset.get_iterator()
     sample = train_iterator.get_next()
     import time
@@ -358,3 +371,4 @@ if __name__ == '__main__':
         i += 1
         print(i, batch[C.BATCH_INPUT].shape)
     print("Elapsed time {:.3f}".format(time.perf_counter()-start_time))
+    """
