@@ -161,6 +161,24 @@ def aa2rotmat(angle_axes):
     return np.reshape(rots, orig_shape + (3, 3))
 
 
+def rotmat2aa(rotmats):
+    """
+    Convert rotation matrices to angle-axis using opencv's Rodrigues formula.
+    Args:
+        rotmats: A np array of shape (..., 3, 3)
+
+    Returns:
+        A np array of shape (..., 3)
+    """
+    assert rotmats.shape[-1] == 3 and rotmats.shape[-2] == 3 and len(rotmats.shape) >= 3, 'invalid input dimension'
+    orig_shape = rotmats.shape[:-2]
+    rots = np.reshape(rotmats, [-1, 3, 3])
+    aas = np.zeros([rots.shape[0], 3])
+    for i in range(rots.shape[0]):
+        aas[i] = np.squeeze(cv2.Rodrigues(rots[i])[0])
+    return np.reshape(aas, orig_shape + (3,))
+
+
 def get_closest_rotmat(rotmats):
     """
     Finds the rotation matrix that is closest to the inputs in terms of the Frobenius norm. For each input matrix

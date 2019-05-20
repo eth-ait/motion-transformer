@@ -201,15 +201,16 @@ def evaluate(experiment_dir, config, args):
             visualizer = Visualizer(fk_engine, video_dir, frames_dir,
                                     rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             n_samples_viz = 30  # TODO change
-            # selected_idxs = [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
-            selected_idxs = [24, 27]  # for the dynamic split
+            selected_idxs = [19]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            # selected_idxs = [24, 27]  # for the dynamic split
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
 
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for i, k in enumerate(sample_keys):
                 if i in selected_idxs:
-                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                    visualizer.visualize_dense_smpl(np.concatenate([eval_result[k][2], eval_result[k][1]], axis=0), k+"_i{}".format(i))
+                    # visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
 
 
 if __name__ == '__main__':

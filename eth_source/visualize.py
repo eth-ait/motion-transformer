@@ -5,12 +5,17 @@ import quaternion
 from matplotlib import pyplot as plt, animation as animation
 from matplotlib.animation import writers
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from fk import SMPLForwardKinematics
 from motion_metrics import get_closest_rotmat
 from motion_metrics import is_valid_rotmat
 from motion_metrics import aa2rotmat
-
+from motion_metrics import rotmat2aa
+from smpl import sparse_to_full
+from smpl import SMPL_MAJOR_JOINTS
+from smpl import SMPL_NR_JOINTS
+from smpl import SMPL_PARENTS
 
 _prop_cycle = plt.rcParams['axes.prop_cycle']
 _colors = _prop_cycle.by_key()['color']
@@ -29,6 +34,47 @@ class Visualizer(object):
         self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
         assert rep in ["rot_mat", "quat", "aa"]
         assert not (self.video_dir and self.frames_dir), "can only either store to video or produce frames"
+
+    def visualize_dense_smpl(self, joint_angles, name):
+        """
+        Visualize the dense SMPL surface from the given joint angles.
+        Args:
+            joint_angles: A numpy array of shape (seq_length, n_joints*dof)
+        """
+        assert isinstance(self.fk_engine, SMPLForwardKinematics)
+        if self.rep == "quat":
+            raise NotImplementedError()
+        elif self.rep == "rot_mat":
+            rotmats = np.reshape(joint_angles, [joint_angles.shape[0], -1, 3, 3])
+            aas = rotmat2aa(rotmats)
+            aas = np.reshape(aas, [joint_angles.shape[0], -1])
+        else:
+            # this is angle-axis, nothing to do
+            aas = joint_angles
+
+        aas_full = sparse_to_full(aas, SMPL_MAJOR_JOINTS, SMPL_NR_JOINTS, rep="aa")
+
+        # TODO(kamanuel) make this more efficient and less hacky
+        # load the SMPL model
+        try:
+            import sys
+            sys.path.append('../external/smpl_py3')
+            from smpl_webuser.serialization import load_model
+        except:
+            print("SMPL model not available.")
+
+        dense = False
+        smpl_m = load_model('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
+        save_to = os.path.join('../smpl_images/{}'.format('dense' if dense else 'skeleton'), name)
+        if not os.path.exists(save_to):
+            os.makedirs(save_to)
+
+        for fr in range(aas_full.shape[0]):
+            one_pose = aas_full[fr]
+            smpl_m.pose[:] = one_pose
+            visualize_smpl_mesh(smpl_m.r.copy(), smpl_m.f, smpl_m.J_transformed.r.copy(), show=False,
+                                save_to=os.path.join(save_to, 'frame_{:0>4}.png'.format(fr)), dense=dense,
+                                alpha=0.2 if dense else 0.0)
 
     def visualize(self, seed, prediction, target, title):
         """
@@ -319,6 +365,63 @@ def save_animation(fig, seq_length, update_func, update_func_args, out_folder, i
         FNULL = open(os.devnull, 'w')
         subprocess.Popen(command, stdout=FNULL).wait()
         FNULL.close()
+
+
+def visualize_smpl_mesh(vertices, faces, joints, alpha=0.2, show=True, save_to=None, dense=True):
+
+    # flip y and z
+    vertices[:, 1], vertices[:, 2] = vertices[:, 2], np.copy(vertices[:, 1])
+    joints[:, 1], joints[:, 2] = joints[:, 2], np.copy(joints[:, 1])
+
+    fig = plt.figure(figsize=(16, 9))
+    ax = fig.add_subplot(111, projection='3d')
+
+    mesh = Poly3DCollection(vertices[faces], alpha=alpha, linewidths=(0.25,))
+    face_color = (141 / 255, 184 / 255, 226 / 255)
+    edge_color = (50 / 255, 50 / 255, 50 / 255)
+    mesh.set_edgecolor(edge_color)
+
+    # from matplotlib.colors import LightSource
+    # from matplotlib import cm
+    # ls = LightSource(270, 45)
+    # rgb = ls.shade(vertices[:, 2], cmap=cm.gist_earth, vert_exag=0.1, blend_mode='soft')
+    mesh.set_facecolor(face_color)
+    ax.add_collection3d(mesh)
+    for i in range(1, len(SMPL_PARENTS)):
+        a = joints[i]
+        b = joints[SMPL_PARENTS[i]]
+        p = np.vstack([b, a])
+        ax.plot(p[:, 0], p[:, 1], p[:, 2], '-o',
+                markersize=2.0, color='r')
+
+    # ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], color='r')
+
+    # dirty hack to get equal axes behaviour
+    # min_val = np.amin(vertices, axis=0)
+    # max_val = np.amax(vertices, axis=0)
+    min_val = np.array([-1.0, -1.0, -1.5])
+    max_val = np.array([1.0, 0.5, 0.5])
+    max_range = (max_val - min_val).max()
+    Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][0].flatten() + 0.5 * (max_val[0] + min_val[0])
+    Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][1].flatten() + 0.5 * (max_val[1] + min_val[1])
+    Zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][2].flatten() + 0.5 * (max_val[2] + min_val[2])
+
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    for xb, yb, zb in zip(Xb, Yb, Zb):
+        ax.plot([xb], [yb], [zb], 'w')
+
+    ax.view_init(elev=0, azim=41)
+
+    # cam_equal_aspect_3d(ax, vertices)
+    if show:
+        plt.show()
+    else:
+        assert save_to
+        fig.savefig(save_to, dip=1000)
+
+    plt.close()
 
 
 def visualize_quaternet():
