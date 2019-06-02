@@ -182,5 +182,5 @@ def _test_rotmat2aa():
 
 if __name__ == '__main__':
     _test_aa2rot()
-    _test_quat2rot()
+    # _test_quat2rot()
     # _test_rotmat2aa()

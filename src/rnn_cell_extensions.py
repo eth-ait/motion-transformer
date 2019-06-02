@@ -128,6 +128,25 @@ class LinearSpaceDecoderWrapper(RNNCell):
         return output, new_state
 
 
+class InputEncoderWrapper(RNNCell):
+    """Adds dense layer to inputs of the RNN cell."""
+
+    def __init__(self, cell, hidden_size, reuse):
+        self._cell = cell
+        self._dense = tf.layers.Dense(hidden_size, reuse=reuse)
+
+    @property
+    def state_size(self):
+        return self._cell.state_size
+
+    @property
+    def output_size(self):
+        return self._cell.output_size
+
+    def __call__(self, inputs, state, scope=None):
+        return self._cell(self._dense(inputs), state, scope)
+
+
 class StructuredOutputWrapper(RNNCell):
     """Given a structure, implements structured outputs."""
 

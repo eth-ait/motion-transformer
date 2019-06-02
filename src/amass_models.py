@@ -153,6 +153,7 @@ class BaseModel(object):
 
     def build_graph(self):
         self.build_network()
+        self.build_loss()
 
     def build_network(self):
         pass
@@ -509,6 +510,7 @@ class Seq2SeqModel(BaseModel):
         self.num_layers = self.config["num_layers"]
         self.architecture = self.config["architecture"]
         self.rnn_size = self.config["rnn_size"]
+        self.input_layer_size = self.config["input_layer_size"]
         self.states = None
 
         if self.reuse is False:
@@ -517,11 +519,6 @@ class Seq2SeqModel(BaseModel):
 
         # === Transform the inputs ===
         with tf.name_scope("inputs"):
-            """
-            encoder_inputs[i, :, 0:self.input_size] = data_sel[0:self.source_seq_len - 1, :]
-            decoder_inputs[i, :, 0:self.input_size] = data_sel[self.source_seq_len - 1:self.source_seq_len + self.target_seq_len - 1, :]
-            decoder_outputs[i, :, 0:self.input_size] = data_sel[self.source_seq_len:, 0:self.input_size]
-            """
             self.encoder_inputs = self.data_inputs[:, 0:self.source_seq_len - 1]
             self.decoder_inputs = self.data_inputs[:, self.source_seq_len - 1:-1]
             self.decoder_outputs = self.data_inputs[:, self.source_seq_len:]
@@ -574,6 +571,10 @@ class Seq2SeqModel(BaseModel):
             if self.residual_velocities:
                 cell = rnn_cell_extensions.ResidualWrapper(cell)
 
+            # Add an input layer before the residual connection
+            if self.input_layer_size is not None and self.input_layer_size > 0:
+                cell = rnn_cell_extensions.InputEncoderWrapper(cell, self.input_layer_size, reuse=self.reuse)
+
             # Define the loss function
             if self.is_eval:
                 self.autoregressive_input = "sampling_based"
@@ -605,7 +606,6 @@ class Seq2SeqModel(BaseModel):
         self.outputs_mu = tf.transpose(tf.stack(outputs), (1, 0, 2))  # (N, seq_length, n_joints*dof)
         self.outputs_mu = self.build_valid_rot_layer(self.outputs_mu)
         self.outputs = self.outputs_mu
-        self.build_loss()
 
     def step(self, session):
         """Run a step of the model feeding the given inputs.
@@ -675,6 +675,50 @@ class Seq2SeqModel(BaseModel):
         prediction = session.run(self.outputs, feed_dict={self.encoder_inputs: encoder_input,
                                                           self.decoder_inputs: decoder_input})
         return prediction
+
+
+class AGED(Seq2SeqModel):
+    """
+    Implementation of Adversarial Geometry-Aware Human Motion Prediction:
+    http://openaccess.thecvf.com/content_ECCV_2018/papers/Liangyan_Gui_Adversarial_Geometry-Aware_Human_ECCV_2018_paper.pdf
+    """
+    def __init__(self,
+                 config,
+                 data_pl,
+                 mode,
+                 reuse,
+                 dtype=tf.float32,
+                 **kwargs):
+        assert config['input_layer_size'] > 0, 'need input layer for AGED model'
+
+        super(AGED, self).__init__(config=config, data_pl=data_pl, mode=mode, reuse=reuse,
+                                   dtype=dtype, **kwargs)
+
+    def build_network(self):
+        # Build the predictor
+        super(AGED, self).build_network()
+
+        # Build adversarial components
+
+        # Build
+
+    def build_fidelity_d(self, inputs, reuse=False):
+        # TODO(kamanuel) implement
+        pass
+
+    def build_continuity_d(self, inputs, reuse=False):
+        # TODO(kamanuel) implement
+        pass
+
+    def build_loss(self):
+        # TODO(kamanuel) implement
+        pass
+
+
+
+
+
+
 
 
 class Wavenet(BaseModel):
@@ -772,7 +816,6 @@ class Wavenet(BaseModel):
 
         self.output_width = tf.shape(self.prediction_representation)[1]
         self.build_output_layer()
-        self.build_loss()
 
     def build_temporal_block(self, input_layer, num_layers, reuse, kernel_size=2):
         current_layer = input_layer
@@ -1146,7 +1189,6 @@ class STCN(Wavenet):
 
         self.output_width = tf.shape(self.prediction_representation)[1]
         self.build_output_layer()
-        self.build_loss()
 
     def build_loss(self):
         super(STCN, self).build_loss()
@@ -1222,7 +1264,6 @@ class StructuredSTCN(STCN):
 
         self.output_width = tf.shape(self.latent_samples[0])[1]
         self.build_output_layer()
-        self.build_loss()
 
     def build_output_layer(self):
         """
@@ -1344,7 +1385,6 @@ class RNN(BaseModel):
                                                                  dtype=tf.float32)
             self.prediction_representation = self.rnn_outputs
         self.build_output_layer()
-        self.build_loss()
 
     def build_loss(self):
         super(RNN, self).build_loss()
@@ -1466,7 +1506,6 @@ class VRNN(RNN):
 
         self.cell.register_sequence_components(self.rnn_outputs)
         self.build_output_layer()
-        self.build_loss()
 
     def build_loss(self):
         super(VRNN, self).build_loss()
@@ -1500,7 +1539,6 @@ class ASimpleYetEffectiveBaseline(Seq2SeqModel):
         self.outputs = self.outputs_mu
         # dummy variable
         self._dummy = tf.Variable(0.0, name="imadummy")
-        self.build_loss()
 
     def build_loss(self):
         d = self._dummy - self._dummy
