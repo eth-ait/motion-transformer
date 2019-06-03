@@ -142,23 +142,15 @@ def create_model(session):
         # this makes only sense if we use rotation matrices
         assert rep == "rotmat"
 
-    if args.model_type == "seq2seq":
+    if args.model_type in ["seq2seq", "seq2seq_feedback", "aged"]:
         model_cls, config, experiment_name = get_seq2seq_config(args)
     elif args.model_type == "simple_baseline":
         # get a dummy config from seq2seq
         model_cls, config, _ = get_seq2seq_config(args)
         experiment_name = "25041990-a-simple-yet-effective-baseline"
-    elif args.model_type == "stcn":
+    elif args.model_type in ["stcn", "wavenet", "structured_stcn"]:
         model_cls, config, experiment_name = get_stcn_config(args)
-    elif args.model_type == "wavenet":
-        model_cls, config, experiment_name = get_stcn_config(args)
-    elif args.model_type == "seq2seq_feedback":
-        model_cls, config, experiment_name = get_seq2seq_config(args)
-    elif args.model_type == "structured_stcn":
-        model_cls, config, experiment_name = get_stcn_config(args)
-    elif args.model_type == "rnn":
-        model_cls, config, experiment_name = get_rnn_config(args)
-    elif args.model_type == "vrnn":
+    elif args.model_type in ["rnn", "vrnn"]:
         model_cls, config, experiment_name = get_rnn_config(args)
     else:
         raise Exception("Unknown model type.")
@@ -493,7 +485,7 @@ def get_stcn_config(args):
     model_exp_name = ""
     if args.use_h36m_only:
         model_exp_name = "h36m"
-    elif args.use_h36m_only:
+    elif args.use_h36m_martinez:
         model_exp_name = "h36m_martinez"
 
     if args.model_type == "stcn":
@@ -577,10 +569,20 @@ def get_seq2seq_config(args):
     config['use_h36m_only'] = args.use_h36m_only
     config['use_h36m_martinez'] = args.use_h36m_martinez
 
+    # default values for AGED
+    config['input_layer_size'] = 1024
+    config['discriminator_weight'] = 0.6
+    config['fidelity_input_layer_size'] = 1024
+    config['fidelity_cell_size'] = 1024
+    config['fidelity_cell_type'] = C.GRU
+    config['continuity_input_layer_size'] = 1024
+    config['continuity_cell_size'] = 1024
+    config['continuity_cell_type'] = C.GRU
+
     model_exp_name = ""
     if args.use_h36m_only:
         model_exp_name = "h36m"
-    elif args.use_h36m_only:
+    elif args.use_h36m_martinez:
         model_exp_name = "h36m_martinez"
 
     if args.model_type == "seq2seq":
@@ -590,6 +592,8 @@ def get_seq2seq_config(args):
         config['feed_error_to_encoder'] = args.feed_error_to_encoder
     elif args.model_type == "simple_baseline":
         model_cls = models.ASimpleYetEffectiveBaseline
+    elif args.model_type == "aged":
+        model_cls = models.AGED
     else:
         raise ValueError("'{}' model unknown".format(args.model_type))
 

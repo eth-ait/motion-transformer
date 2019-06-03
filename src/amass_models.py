@@ -16,6 +16,7 @@ from tf_rnn_cells import LatentCell
 from tf_loss_quat import quaternion_norm
 from tf_loss_quat import quaternion_loss
 from tf_loss import logli_normal_isotropic
+from tf_rot_conversions import aa2rotmat
 from motion_metrics import get_closest_rotmat
 
 
@@ -567,13 +568,13 @@ class Seq2SeqModel(BaseModel):
             else:
                 cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
 
+            # Add an input layer the residual connection
+            if self.input_layer_size is not None and self.input_layer_size > 0:
+                cell = rnn_cell_extensions.InputEncoderWrapper(cell, self.input_layer_size, reuse=self.reuse)
+
             # Finally, wrap everything in a residual layer if we want to model velocities
             if self.residual_velocities:
                 cell = rnn_cell_extensions.ResidualWrapper(cell)
-
-            # Add an input layer before the residual connection
-            if self.input_layer_size is not None and self.input_layer_size > 0:
-                cell = rnn_cell_extensions.InputEncoderWrapper(cell, self.input_layer_size, reuse=self.reuse)
 
             # Define the loss function
             if self.is_eval:
@@ -689,36 +690,226 @@ class AGED(Seq2SeqModel):
                  reuse,
                  dtype=tf.float32,
                  **kwargs):
-        assert config['input_layer_size'] > 0, 'need input layer for AGED model'
-
         super(AGED, self).__init__(config=config, data_pl=data_pl, mode=mode, reuse=reuse,
                                    dtype=dtype, **kwargs)
 
+        self.d_weight = config['discriminator_weight']
+        self.fidelity_real = None
+        self.fidelity_fake = None
+        self.continuity_real = None
+        self.continuity_fake = None
+        self.g_loss = None
+        self.fidelity_loss = None
+        self.continuity_loss = None
+        self.d_loss = None
+        self.g_param_update = None
+        self.d_param_update = None
+        self.g_gradient_norms = None
+        self.d_gradient_norms = None
+
     def build_network(self):
         # Build the predictor
-        super(AGED, self).build_network()
+        with tf.variable_scope("AGED/generator", reuse=self.reuse):
+            super(AGED, self).build_network()
 
-        # Build adversarial components
+        # Fidelity Discriminator
+        # real inputs
+        self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
+        # fake inputs
+        self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
 
-        # Build
+        # Continuity Discriminator
+        # real inputs
+        self.continuity_real = self.continuity_discriminator(self.data_inputs, reuse=not self.is_training)
+        # fake inputs (real seed + prediction)
+        c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
+        self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
 
-    def build_fidelity_d(self, inputs, reuse=False):
-        # TODO(kamanuel) implement
-        pass
+    def fidelity_discriminator(self, inputs, reuse=False):
+        """Judges fidelity of predictions"""
+        input_hidden = self.config['fidelity_input_layer_size']
+        cell_size = self.config['fidelity_cell_size']
+        cell_type = self.config['fidelity_cell_type']
 
-    def build_continuity_d(self, inputs, reuse=False):
-        # TODO(kamanuel) implement
-        pass
+        with tf.variable_scope("AGED/discriminator/fidelity", reuse=reuse):
+            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
+        return logits
+
+    def continuity_discriminator(self, inputs, reuse=False):
+        """Judges continuity of the entire motion sequence."""
+        input_hidden = self.config['continuity_input_layer_size']
+        cell_size = self.config['continuity_cell_size']
+        cell_type = self.config['continuity_cell_type']
+
+        with tf.variable_scope("AGED/discriminator/continuity", reuse=reuse):
+            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
+        return logits
+
+    def _build_discriminator_rnn(self, inputs, cell_type, cell_size, reuse):
+        if cell_type == C.GRU:
+            cell = tf.nn.rnn_cell.GRUCell(cell_size, reuse=reuse, name="cell")
+        elif cell_type == C.LSTM:
+            cell = tf.nn.rnn_cell.LSTMCell(cell_size, reuse=reuse, name="cell")
+        else:
+            raise Exception("Cell type unknown.")
+
+        _, final_state = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32)
+        logits = tf.layers.dense(final_state, 1, reuse=reuse, name="out")
+        return logits
 
     def build_loss(self):
-        # TODO(kamanuel) implement
-        pass
+        # generator loss uses the geodesic loss
+        self.g_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
 
+        # fidelity discriminator loss
+        f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
+                                                         labels=tf.ones_like(self.fidelity_real))
+        f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                         labels=tf.zeros_like(self.fidelity_fake))
+        self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
 
+        # continuity discriminator loss
+        c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
+                                                         labels=tf.ones_like(self.continuity_real))
+        c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
+                                                         labels=tf.zeros_like(self.continuity_fake))
+        self.continuity_loss = tf.reduce_mean(c_real + c_fake)
+        self.d_loss = self.d_weight * (self.continuity_loss + self.fidelity_loss)
+        self.loss = self.g_loss + self.d_loss
 
+    def geodesic_loss(self, predictions, targets):
+        # convert to rotation matrices
+        assert self.use_aa
+        pred = tf.reshape(predictions, [self.batch_size, -1, self.NUM_JOINTS, 3])
+        targ = tf.reshape(targets, [self.batch_size, -1, self.NUM_JOINTS, 3])
 
+        pred_rot = aa2rotmat(pred)
+        targ_rot = aa2rotmat(targ)
 
+        A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
+        A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
 
+        # The norm of A is equivalent to sin(theta)
+        A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
+        theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+        geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+        return geodesic_loss
+
+    def optimization_routines(self):
+        self._generator_optimizer()
+        self._discriminator_optimizer()
+
+    def _get_optimizer(self):
+        if self.config["optimizer"] == C.OPTIMIZER_ADAM:
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        elif self.config["optimizer"] == C.OPTIMIZER_SGD:
+            optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
+        else:
+            raise Exception("Optimization not found.")
+        return optimizer
+
+    def _generator_optimizer(self):
+        """Optimizer for the generator."""
+        optimizer = self._get_optimizer()
+        g_vars = tf.trainable_variables(scope="AGED/generator")
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope="AGED/generator")):
+            # update the generator variables w.r.t. the total loss
+            gradients = tf.gradients(self.loss, g_vars)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.g_gradient_norms = tf.clip_by_global_norm(gradients,
+                                                                          self.config.get('grad_clip_by_norm'))
+            else:
+                self.g_gradient_norms = tf.global_norm(gradients)
+            self.g_param_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, g_vars),
+                                                            global_step=self.global_step)
+
+    def _discriminator_optimizer(self):
+        """Optimizer for both discriminators."""
+        optimizer = self._get_optimizer()
+        d_vars = tf.trainable_variables(scope="AGED/discriminator")
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope="AGED/discriminator")):
+            # update the generator variables w.r.t. the total loss
+            gradients = tf.gradients(self.d_loss, d_vars)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.d_gradient_norms = tf.clip_by_global_norm(gradients,
+                                                                          self.config.get('grad_clip_by_norm'))
+            else:
+                self.d_gradient_norms = tf.global_norm(gradients)
+            self.d_param_update = optimizer.apply_gradients(
+                grads_and_vars=zip(gradients, d_vars))
+
+    def summary_routines(self):
+        # Note that summary_routines are called outside of the self.mode name_scope. Hence, self.mode should be
+        # prepended to summary name if needed.
+        if self.mle_normal:
+            tf.summary.scalar(self.mode + "/likelihood", -self.loss, collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/avg_sigma", tf.reduce_mean(self.outputs_sigma), collections=[self.mode + "/model_summary"])
+        elif self.use_quat:
+            tf.summary.scalar(self.mode + "/loss_quat", self.loss, collections=[self.mode + "/model_summary"])
+        else:
+            tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
+            tf.summary.scalar(self.mode +"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode+"/d_fid_loss", self.fidelity_loss, collections=[self.mode+"/model_summary"])
+            tf.summary.scalar(self.mode+"/d_con_loss", self.continuity_loss, collections=[self.mode+"/model_summary"])
+
+        if self.is_training:
+            tf.summary.scalar(self.mode + "/learning_rate",
+                              self.learning_rate,
+                              collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/g_gradient_norms",
+                              self.g_gradient_norms,
+                              collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/d_gradient_norms",
+                              self.d_gradient_norms,
+                              collections=[self.mode + "/model_summary"])
+
+        if self.input_dropout_rate is not None and self.is_training:
+            tf.summary.scalar(self.mode + "/input_dropout_rate",
+                              self.input_dropout_rate,
+                              collections=[self.mode + "/model_summary"])
+
+        self.summary_update = tf.summary.merge_all(self.mode+"/model_summary")
+
+    def step(self, session):
+        """Run a step of the model feeding the given inputs.
+
+        Args
+          session: tensorflow session to use.
+          encoder_inputs: list of numpy vectors to feed as encoder inputs.
+          decoder_inputs: list of numpy vectors to feed as decoder inputs.
+          decoder_outputs: list of numpy vectors that are the expected decoder outputs.
+        Returns
+          A triple consisting of gradient norm (or None if we did not do backward),
+          mean squared error, and the outputs.
+        Raises
+          ValueError: if length of encoder_inputs, decoder_inputs, or
+            target_weights disagrees with bucket size for the specified bucket_id.
+        """
+        # Output feed: depends on whether we do a backward step or not.
+        if self.is_training:
+            # Training step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs,
+                           self.g_param_update,
+                           self.d_param_update]
+            outputs = session.run(output_feed)
+            return outputs[0], outputs[1], outputs[2]
+        else:
+            # Evaluation step
+            output_feed = [self.loss,  # Loss for this batch.
+                           self.summary_update,
+                           self.outputs,
+                           self.g_loss,
+                           self.continuity_loss,
+                           self.d_loss]
+            outputs = session.run(output_feed)
+            # TODO(kamanuel) shall we return generator and discriminator losses?
+            return outputs[0], outputs[1], outputs[2]
 
 
 class Wavenet(BaseModel):

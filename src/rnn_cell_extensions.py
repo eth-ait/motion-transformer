@@ -133,7 +133,7 @@ class InputEncoderWrapper(RNNCell):
 
     def __init__(self, cell, hidden_size, reuse):
         self._cell = cell
-        self._dense = tf.layers.Dense(hidden_size, reuse=reuse)
+        self._dense = tf.layers.Dense(hidden_size, activation=tf.nn.relu, _reuse=reuse)
 
     @property
     def state_size(self):
