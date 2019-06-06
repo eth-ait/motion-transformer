@@ -79,6 +79,8 @@ def create_and_restore_model(session, experiment_dir, config, args):
         model_cls = models.RNN
     elif config['model_type'] == "vrnn":
         model_cls = models.VRNN
+    elif config['model_type'] == 'aged':
+        model_cls = models.AGED
     else:
         raise Exception("Unknown model type.")
 
@@ -173,7 +175,7 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
-                    break  # TODO REMOVE
+                    # break  # TODO REMOVE
 
             except tf.errors.OutOfRangeError:
                 pass
@@ -209,8 +211,8 @@ def evaluate(experiment_dir, config, args):
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for i, k in enumerate(sample_keys):
                 if i in selected_idxs:
-                    visualizer.visualize_dense_smpl(np.concatenate([eval_result[k][2], eval_result[k][1]], axis=0), k+"_i{}".format(i))
-                    # visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                    # visualizer.visualize_dense_smpl(np.concatenate([eval_result[k][2], eval_result[k][1]], axis=0), k+"_i{}".format(i))
+                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
 
 
 if __name__ == '__main__':

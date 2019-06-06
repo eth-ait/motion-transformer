@@ -83,6 +83,7 @@ tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation sampl
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
 tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
 tf.app.flags.DEFINE_boolean("use_25fps", True, "Use downsampled Martinez data")
+tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
 
 args = tf.app.flags.FLAGS
 
@@ -193,7 +194,7 @@ def create_model(session):
     with tf.name_scope("validation_data"):
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
                                            meta_data_path=meta_data_path,
-                                           batch_size=args.batch_size,
+                                           batch_size=args.batch_size*2,
                                            shuffle=False,
                                            extract_windows_of=window_length,
                                            extract_random_windows=extract_random_windows,
@@ -205,7 +206,7 @@ def create_model(session):
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=args.batch_size,
+                                          batch_size=256,  # to speedup inference
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           extract_random_windows=False,
@@ -219,7 +220,9 @@ def create_model(session):
             data_pl=train_pl,
             mode=C.TRAIN,
             reuse=False,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            var_channel=train_data.var_channel if train_data.normalize else None,
+            mean_channel=train_data.mean_channel if train_data.normalize else None)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -228,7 +231,9 @@ def create_model(session):
             data_pl=valid_pl,
             mode=C.SAMPLE,
             reuse=True,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            var_channel=valid_data.var_channel if valid_data.normalize else None,
+            mean_channel=valid_data.mean_channel if valid_data.normalize else None)
         valid_model.build_graph()
 
     with tf.name_scope(C.TEST):
@@ -237,7 +242,9 @@ def create_model(session):
             data_pl=test_pl,
             mode=C.SAMPLE,
             reuse=True,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            var_channel=test_data.var_channel if test_data.normalize else None,
+            mean_channel=test_data.mean_channel if test_data.normalize else None)
         test_model.build_graph()
 
     if args.use_h36m_martinez:
@@ -271,6 +278,7 @@ def create_model(session):
     num_param = 0
     for v in tf.trainable_variables():
         num_param += np.prod(v.shape.as_list())
+        print(v.name)
     print("# of parameters: " + str(num_param))
     config["num_parameters"] = int(num_param)
 
@@ -570,14 +578,15 @@ def get_seq2seq_config(args):
     config['use_h36m_martinez'] = args.use_h36m_martinez
 
     # default values for AGED
-    config['input_layer_size'] = 1024
+    config['input_layer_size'] = 0
     config['discriminator_weight'] = 0.6
     config['fidelity_input_layer_size'] = 1024
     config['fidelity_cell_size'] = 1024
-    config['fidelity_cell_type'] = C.GRU
+    config['fidelity_cell_type'] = args.cell_type
     config['continuity_input_layer_size'] = 1024
     config['continuity_cell_size'] = 1024
-    config['continuity_cell_type'] = C.GRU
+    config['continuity_cell_type'] = args.cell_type
+    config['use_adversarial'] = args.aged_adversarial
 
     model_exp_name = ""
     if args.use_h36m_only:
@@ -598,7 +607,7 @@ def get_seq2seq_config(args):
         raise ValueError("'{}' model unknown".format(args.model_type))
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
@@ -616,7 +625,8 @@ def get_seq2seq_config(args):
                                                     args.cell_layers,
                                                     args.cell_size,
                                                     'residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else 'not_residual_vel',
-                                                    '-force_rot' if args.force_valid_rot else '')
+                                                    '-force_rot' if args.force_valid_rot else '',
+                                                    '-adv' if args.model_type == "aged" and config['use_adversarial'] else "")
     return model_cls, config, experiment_name
 
 

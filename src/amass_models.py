@@ -19,6 +19,10 @@ from tf_loss import logli_normal_isotropic
 from tf_rot_conversions import aa2rotmat
 from motion_metrics import get_closest_rotmat
 
+import tf_tr_quat
+import tf_tr_axisangle
+import tf_tr_rotmat
+
 
 class BaseModel(object):
     def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
@@ -151,6 +155,9 @@ class BaseModel(object):
                                                              name="input_dropout_rate")
             elif config["input_layer"].get("dropout_rate", 0) > 0:
                 self.input_dropout_rate = config["input_layer"].get("dropout_rate")
+
+        self.normalization_var = kwargs.get('var_channel', None)
+        self.normalization_mean = kwargs.get('mean_channel', None)
 
     def build_graph(self):
         self.build_network()
@@ -694,6 +701,7 @@ class AGED(Seq2SeqModel):
                                    dtype=dtype, **kwargs)
 
         self.d_weight = config['discriminator_weight']
+        self.use_adversarial = config['use_adversarial']
         self.fidelity_real = None
         self.fidelity_fake = None
         self.continuity_real = None
@@ -712,18 +720,19 @@ class AGED(Seq2SeqModel):
         with tf.variable_scope("AGED/generator", reuse=self.reuse):
             super(AGED, self).build_network()
 
-        # Fidelity Discriminator
-        # real inputs
-        self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
-        # fake inputs
-        self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
+        if self.use_adversarial:
+            # Fidelity Discriminator
+            # real inputs
+            self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
+            # fake inputs
+            self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
 
-        # Continuity Discriminator
-        # real inputs
-        self.continuity_real = self.continuity_discriminator(self.data_inputs, reuse=not self.is_training)
-        # fake inputs (real seed + prediction)
-        c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
-        self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
+            # Continuity Discriminator
+            # real inputs
+            self.continuity_real = self.continuity_discriminator(self.data_inputs, reuse=not self.is_training)
+            # fake inputs (real seed + prediction)
+            c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
+            self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
 
     def fidelity_discriminator(self, inputs, reuse=False):
         """Judges fidelity of predictions"""
@@ -763,43 +772,63 @@ class AGED(Seq2SeqModel):
         # generator loss uses the geodesic loss
         self.g_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
 
-        # fidelity discriminator loss
-        f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
-                                                         labels=tf.ones_like(self.fidelity_real))
-        f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                         labels=tf.zeros_like(self.fidelity_fake))
-        self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
+        if self.use_adversarial:
+            # fidelity discriminator loss
+            f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
+                                                             labels=tf.ones_like(self.fidelity_real))
+            f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                             labels=tf.zeros_like(self.fidelity_fake))
+            self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
 
-        # continuity discriminator loss
-        c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
-                                                         labels=tf.ones_like(self.continuity_real))
-        c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
-                                                         labels=tf.zeros_like(self.continuity_fake))
-        self.continuity_loss = tf.reduce_mean(c_real + c_fake)
-        self.d_loss = self.d_weight * (self.continuity_loss + self.fidelity_loss)
-        self.loss = self.g_loss + self.d_loss
+            # continuity discriminator loss
+            c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
+                                                             labels=tf.ones_like(self.continuity_real))
+            c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
+                                                             labels=tf.zeros_like(self.continuity_fake))
+            self.continuity_loss = tf.reduce_mean(c_real + c_fake)
+            self.d_loss = self.d_weight * (self.continuity_loss + self.fidelity_loss)
+            self.loss = self.g_loss + self.d_loss
+        else:
+            self.loss = self.g_loss
 
     def geodesic_loss(self, predictions, targets):
         # convert to rotation matrices
         assert self.use_aa
-        pred = tf.reshape(predictions, [self.batch_size, -1, self.NUM_JOINTS, 3])
-        targ = tf.reshape(targets, [self.batch_size, -1, self.NUM_JOINTS, 3])
 
-        pred_rot = aa2rotmat(pred)
-        targ_rot = aa2rotmat(targ)
+        # must unnormalize before computing the geodesic loss
+        pred = self._unnormalize(predictions)
+        targ = self._unnormalize(targets)
 
-        A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
-        A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
+        pred = tf.reshape(pred, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        targ = tf.reshape(targ, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
 
-        # The norm of A is equivalent to sin(theta)
-        A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
-        theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+        pred_rot = tf_tr_quat.from_axis_angle(pred)
+        targ_rot = tf_tr_quat.from_axis_angle(targ)
+        # pred_rot = aa2rotmat(pred)
+        # targ_rot = aa2rotmat(targ)
+
+        # A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
+        # A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
+        #
+        # # The norm of A is equivalent to sin(theta)
+        # A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
+        # theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+        # geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
+        theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
         geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
         return geodesic_loss
 
+    def _unnormalize(self, data):
+        if self.normalization_var is not None:
+            return data*self.normalization_var + self.normalization_mean
+        else:
+            return data
+
     def optimization_routines(self):
         self._generator_optimizer()
-        self._discriminator_optimizer()
+        if self.use_adversarial:
+            self._discriminator_optimizer()
 
     def _get_optimizer(self):
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
@@ -852,9 +881,10 @@ class AGED(Seq2SeqModel):
             tf.summary.scalar(self.mode + "/loss_quat", self.loss, collections=[self.mode + "/model_summary"])
         else:
             tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
-            tf.summary.scalar(self.mode +"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
-            tf.summary.scalar(self.mode+"/d_fid_loss", self.fidelity_loss, collections=[self.mode+"/model_summary"])
-            tf.summary.scalar(self.mode+"/d_con_loss", self.continuity_loss, collections=[self.mode+"/model_summary"])
+            tf.summary.scalar(self.mode+"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
+            if self.use_adversarial:
+                tf.summary.scalar(self.mode+"/d_fid_loss", self.fidelity_loss, collections=[self.mode+"/model_summary"])
+                tf.summary.scalar(self.mode+"/d_con_loss", self.continuity_loss, collections=[self.mode+"/model_summary"])
 
         if self.is_training:
             tf.summary.scalar(self.mode + "/learning_rate",
@@ -863,9 +893,10 @@ class AGED(Seq2SeqModel):
             tf.summary.scalar(self.mode + "/g_gradient_norms",
                               self.g_gradient_norms,
                               collections=[self.mode + "/model_summary"])
-            tf.summary.scalar(self.mode + "/d_gradient_norms",
-                              self.d_gradient_norms,
-                              collections=[self.mode + "/model_summary"])
+            if self.use_adversarial:
+                tf.summary.scalar(self.mode + "/d_gradient_norms",
+                                  self.d_gradient_norms,
+                                  collections=[self.mode + "/model_summary"])
 
         if self.input_dropout_rate is not None and self.is_training:
             tf.summary.scalar(self.mode + "/input_dropout_rate",
@@ -892,11 +923,17 @@ class AGED(Seq2SeqModel):
         # Output feed: depends on whether we do a backward step or not.
         if self.is_training:
             # Training step
-            output_feed = [self.loss,
-                           self.summary_update,
-                           self.outputs,
-                           self.g_param_update,
-                           self.d_param_update]
+            if self.use_adversarial:
+                output_feed = [self.loss,
+                               self.summary_update,
+                               self.outputs,
+                               self.g_param_update,
+                               self.d_param_update]
+            else:
+                output_feed = [self.loss,
+                               self.summary_update,
+                               self.outputs,
+                               self.g_param_update]
             outputs = session.run(output_feed)
             return outputs[0], outputs[1], outputs[2]
         else:
@@ -908,7 +945,6 @@ class AGED(Seq2SeqModel):
                            self.continuity_loss,
                            self.d_loss]
             outputs = session.run(output_feed)
-            # TODO(kamanuel) shall we return generator and discriminator losses?
             return outputs[0], outputs[1], outputs[2]
 
 
