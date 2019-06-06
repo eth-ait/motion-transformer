@@ -701,6 +701,7 @@ class AGED(Seq2SeqModel):
         self.fidelity_fake = None
         self.continuity_real = None
         self.continuity_fake = None
+        self.pred_loss = None
         self.g_loss = None
         self.fidelity_loss = None
         self.continuity_loss = None
@@ -764,8 +765,8 @@ class AGED(Seq2SeqModel):
         return logits
 
     def build_loss(self):
-        # generator loss uses the geodesic loss
-        self.g_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
+        # compute prediction loss using the geodesic loss
+        self.pred_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
 
         if self.use_adversarial:
             # fidelity discriminator loss
@@ -781,10 +782,18 @@ class AGED(Seq2SeqModel):
             c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
                                                              labels=tf.zeros_like(self.continuity_fake))
             self.continuity_loss = tf.reduce_mean(c_real + c_fake)
-            self.d_loss = self.d_weight * (self.continuity_loss + self.fidelity_loss)
-            self.loss = self.g_loss + self.d_loss
+            self.d_loss = self.continuity_loss + self.fidelity_loss
+
+            fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.ones_like(self.fidelity_fake))
+
+            con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.ones_like(self.continuity_fake))
+
+            self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
+            self.loss = self.pred_loss + self.d_weight*self.g_loss
         else:
-            self.loss = self.g_loss
+            self.loss = self.pred_loss
 
     def geodesic_loss(self, predictions, targets):
         # convert to rotation matrices
@@ -875,9 +884,13 @@ class AGED(Seq2SeqModel):
         elif self.use_quat:
             tf.summary.scalar(self.mode + "/loss_quat", self.loss, collections=[self.mode + "/model_summary"])
         else:
+            # total generator loss
             tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
-            tf.summary.scalar(self.mode+"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
             if self.use_adversarial:
+                # prediction loss only
+                tf.summary.scalar(self.mode+"/pred_loss", self.pred_loss, collections=[self.mode + "/model_summary"])
+                # adversarial loss for generator
+                tf.summary.scalar(self.mode+"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
                 tf.summary.scalar(self.mode+"/d_fid_loss", self.fidelity_loss, collections=[self.mode+"/model_summary"])
                 tf.summary.scalar(self.mode+"/d_con_loss", self.continuity_loss, collections=[self.mode+"/model_summary"])
 

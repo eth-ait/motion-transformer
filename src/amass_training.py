@@ -585,10 +585,10 @@ def get_seq2seq_config(args):
     config['discriminator_weight'] = 0.6
     config['fidelity_input_layer_size'] = 1024
     config['fidelity_cell_size'] = 1024
-    config['fidelity_cell_type'] = args.cell_type
+    config['fidelity_cell_type'] = C.GRU
     config['continuity_input_layer_size'] = 1024
     config['continuity_cell_size'] = 1024
-    config['continuity_cell_type'] = args.cell_type
+    config['continuity_cell_type'] = C.GRU
     config['use_adversarial'] = args.aged_adversarial
 
     model_exp_name = ""
