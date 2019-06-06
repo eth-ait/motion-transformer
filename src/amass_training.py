@@ -4,6 +4,9 @@ from __future__ import print_function
 
 # dirty hack so that it works on the server
 import sys
+
+import amass_conv_models
+
 sys.path.append('../eth_source')
 
 import os
@@ -497,12 +500,12 @@ def get_stcn_config(args):
         model_exp_name = "h36m_martinez"
 
     if args.model_type == "stcn":
-        model_cls = models.STCN
+        model_cls = amass_conv_models.STCN
         kld_weight = config['latent_layer']['kld_weight']
         kld_txt = str(int(kld_weight)) if isinstance(kld_weight, float) or isinstance(kld_weight, int) else "a"
         model_exp_name = "-kld_{}".format(kld_txt)
     elif args.model_type == "wavenet":
-        model_cls = models.Wavenet
+        model_cls = amass_conv_models.Wavenet
         if not(config['decoder_use_enc_skip'] or config['decoder_use_enc_last'] or config['decoder_use_raw_inputs']):
             config['decoder_use_enc_last'] = True
         model_exp_name = "-use"
@@ -514,7 +517,7 @@ def get_stcn_config(args):
             model_exp_name += "_raw"
         del config["latent_layer"]
     elif args.model_type == "structured_stcn":
-        model_cls = models.StructuredSTCN
+        model_cls = amass_conv_models.StructuredSTCN
     else:
         raise Exception()
 

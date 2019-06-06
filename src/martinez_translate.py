@@ -15,7 +15,7 @@ import tensorflow as tf
 
 import data_utils
 import cv2
-import models
+import martinez_models
 
 # ETH imports
 from constants import Constants as C
@@ -213,7 +213,7 @@ def create_rnn_model(actions, sampling=False):
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
     if FLAGS.model_type == "rnn":
-        model_cls = models.RNN
+        model_cls = martinez_models.RNN
     else:
         raise Exception()
 
@@ -299,14 +299,14 @@ def create_stcn_model(actions, sampling=False):
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
 
     if FLAGS.model_type == "stcn":
-        model_cls = models.STCN
+        model_cls = martinez_models.STCN
     elif FLAGS.model_type == "wavenet":
-        model_cls = models.Wavenet
+        model_cls = martinez_models.Wavenet
         if not(config['decoder_use_enc_skip'] or config['decoder_use_enc_last'] or config['decoder_use_raw_inputs']):
             config['decoder_use_enc_last'] = True
         del config["latent_layer"]
     elif FLAGS.model_type == "structured_stcn":
-        model_cls = models.StructuredSTCN
+        model_cls = martinez_models.StructuredSTCN
     else:
         raise Exception()
 
@@ -368,9 +368,9 @@ def create_seq2seq_model(actions, sampling=False):
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
 
     if FLAGS.model_type == "seq2seq":
-        model_cls = models.Seq2SeqModel
+        model_cls = martinez_models.Seq2SeqModel
     elif FLAGS.model_type == "seq2seq_feedback":
-        model_cls = models.Seq2SeqFeedbackModel
+        model_cls = martinez_models.Seq2SeqFeedbackModel
         config['feed_error_to_encoder'] = FLAGS.feed_error_to_encoder
     else:
         raise ValueError("'{}' model unknown".format(FLAGS.model_type))

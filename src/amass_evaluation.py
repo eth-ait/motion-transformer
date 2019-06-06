@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 import tensorflow as tf
 
+import amass_conv_models
 import amass_models as models
 from amass_tf_data import TFRecordMotionDataset
 from logger import GoogleSheetLogger
@@ -68,9 +69,9 @@ def create_and_restore_model(session, experiment_dir, config, args):
     elif config['model_type'] == "simple_baseline":
         model_cls = models.ASimpleYetEffectiveBaseline
     elif config['model_type'] == "stcn":
-        model_cls = models.STCN
+        model_cls = amass_conv_models.STCN
     elif config['model_type'] == "wavenet":
-        model_cls = models.Wavenet
+        model_cls = amass_conv_models.Wavenet
     elif config['model_type'] == "seq2seq_feedback":
         raise NotImplementedError()
     elif config['model_type'] == "structured_stcn":

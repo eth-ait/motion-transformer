@@ -7,9 +7,9 @@ from __future__ import print_function
 import numpy as np
 import tensorflow as tf
 
-import translate
+import martinez_translate
 import data_utils
-from translate import create_seq2seq_model
+from martinez_translate import create_seq2seq_model
 
 
 # Dummy object to create parameters for also-dummy model
@@ -159,7 +159,7 @@ def main():
 
         omit_one_hot = FLAGS.omit_one_hot[0]
         # Load the data
-        _, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = translate.read_all_data(
+        _, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = martinez_translate.read_all_data(
             actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not omit_one_hot,
             FLAGS.new_preprocessing[0])
 
