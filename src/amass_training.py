@@ -87,6 +87,9 @@ tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training 
 tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
 tf.app.flags.DEFINE_boolean("use_25fps", True, "Use downsampled Martinez data")
 tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
+tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
+tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
+
 
 args = tf.app.flags.FLAGS
 
@@ -581,15 +584,15 @@ def get_seq2seq_config(args):
     config['use_h36m_martinez'] = args.use_h36m_martinez
 
     # default values for AGED
-    config['input_layer_size'] = 0
-    config['discriminator_weight'] = 0.6
+    config['input_layer_size'] = args.aged_input_layer_size
+    config['use_adversarial'] = args.aged_adversarial
+    config['discriminator_weight'] = args.aged_d_weight
     config['fidelity_input_layer_size'] = 1024
     config['fidelity_cell_size'] = 1024
     config['fidelity_cell_type'] = C.GRU
     config['continuity_input_layer_size'] = 1024
     config['continuity_cell_size'] = 1024
     config['continuity_cell_type'] = C.GRU
-    config['use_adversarial'] = args.aged_adversarial
 
     model_exp_name = ""
     if args.use_h36m_only:
@@ -610,7 +613,7 @@ def get_seq2seq_config(args):
         raise ValueError("'{}' model unknown".format(args.model_type))
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
@@ -629,7 +632,8 @@ def get_seq2seq_config(args):
                                                     args.cell_size,
                                                     'residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else 'not_residual_vel',
                                                     '-force_rot' if args.force_valid_rot else '',
-                                                    '-adv' if args.model_type == "aged" and config['use_adversarial'] else "")
+                                                    '-i{}'.format(args.aged_input_layer_size) if args.model_type == "aged" else "",
+                                                    '-adv{}'.format(args.aged_d_weight) if args.model_type == "aged" and config['use_adversarial'] else "")
     return model_cls, config, experiment_name
 
 

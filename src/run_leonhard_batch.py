@@ -6,7 +6,7 @@ The working directory must be the same with python file's directory.
 """
 
 NUM_CPU = 8
-MEMORY = 1024
+MEMORY = 2048
 NUM_GPU = 1
 WALL_TIME = 4
 cluster_command_format = 'bsub -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
@@ -58,27 +58,47 @@ best_configuration = [
 # --dynamic_validation_split --no_normalization --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 --angle_loss joint_sum --joint_prediction_model plain --residual_velocities --batch_size 64 --model_type wavenet --seq_length_in 100 --seq_length_out 60
 # --experiment_name 400ms --dynamic_validation_split --input_dropout_rate 0.1 --optimizer sgd --learning_rate 0.005 --angle_loss all_mean --batch_size 16 --model_type seq2seq --autoregressive_input sampling_based --seq_length_in 100 --seq_length_out 24 --residual_velocities
 
+#
+
 experiment_list = [
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --batch_size 64 --model_type seq2seq --residual_velocities '
-    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 --use_aa --autoregressive_input sampling_based ',
+    # AGED without adversarial but with SPL
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 1024',
 
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.0 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --batch_size 64 --model_type seq2seq --residual_velocities '
-    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 --use_aa --autoregressive_input supervised ',
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 0',
 
-    'python amass_training.py --dynamic_validation_split '
-    '--input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 '
-    '--angle_loss joint_sum --output_layer_size 64 --output_layer_number 1 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--joint_prediction_model fk_joints --batch_size 64 --model_type seq2seq --residual_velocities '
-    '--seq_length_in 120 --seq_length_out 24 --max_gradient_norm 1 --use_aa --autoregressive_input supervised ',
+    # AGED with adversarial loss without SPL
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 0 --aged_adversarial --aged_d_weight 0.6',
+
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 1024 --aged_adversarial --aged_d_weight 0.6',
+
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 0 --aged_adversarial --aged_d_weight 0.1',
+
+    'python amass_training.py --angle_loss joint_sum --joint_prediction_model plain --output_layer_size 64 '
+    '--output_layer_number 1 --batch_size 64 --architecture tied --learning_rate 0.001 --max_gradient_norm 5.0 '
+    '--autoregressive_input sampling_based --residual_velocities --dynamic_validation_split --model_type aged '
+    '--num_epochs 200 --use_aa --test_every 500 --seq_length_in 120 --seq_length_out 24 --cell_type lstm '
+    '--aged_input_layer_size 0 --aged_adversarial --aged_d_weight 2.0'
+
 ]
 
 

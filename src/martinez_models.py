@@ -12,8 +12,8 @@ import rnn_cell_extensions  # my extensions of the tf repos
 from constants import Constants as C
 from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
-from tf_rnn_cells import LatentCell, GaussianLatentCell
 from data_utils import softmax
+import tf_tr_quat
 
 
 class BaseModel(object):
@@ -108,6 +108,9 @@ class BaseModel(object):
                 self.learning_rate = config.get('learning_rate')
             else:
                 raise Exception("Invalid learning rate type")
+
+        self.normalization_std = kwargs.get('std', None)
+        self.normalization_mean = kwargs.get('mean', None)
 
     def build_graph(self):
         self.build_network()
@@ -270,7 +273,9 @@ class BaseModel(object):
             self.gradient_norm_summary = tf.summary.scalar(self.mode+"/gradient_norms", self.gradient_norms, collections=[self.mode+"/model_summary"])
 
         self.summary_update = tf.summary.merge_all(self.mode+"/model_summary")
+        self.euler_summaris()
 
+    def euler_summaris(self):
         # === variables for loss in Euler Angles -- for each action
         if self.is_eval:
             with tf.name_scope("euler_error_all_mean"):
@@ -808,6 +813,277 @@ class Seq2SeqModel(BaseModel):
         """
         assert self.is_eval, "Only works in sampling mode."
         return self.step(encoder_inputs, decoder_inputs, decoder_outputs)[2]
+
+
+class AGED(Seq2SeqModel):
+    """
+    Implementation of Adversarial Geometry-Aware Human Motion Prediction:
+    http://openaccess.thecvf.com/content_ECCV_2018/papers/Liangyan_Gui_Adversarial_Geometry-Aware_Human_ECCV_2018_paper.pdf
+    """
+    def __init__(self,
+                 config,
+                 session,
+                 mode,
+                 reuse,
+                 dtype=tf.float32,
+                 **kwargs):
+        super(AGED, self).__init__(config=config, session=session, mode=mode, reuse=reuse,
+                                   dtype=dtype, **kwargs)
+
+        self.d_weight = config['discriminator_weight']
+        self.use_adversarial = config['use_adversarial']
+        self.fidelity_real = None
+        self.fidelity_fake = None
+        self.continuity_real = None
+        self.continuity_fake = None
+        self.pred_loss = None
+        self.g_loss = None
+        self.fidelity_loss = None
+        self.continuity_loss = None
+        self.d_loss = None
+        self.g_param_update = None
+        self.d_param_update = None
+        self.g_gradient_norms = None
+        self.d_gradient_norms = None
+
+    def build_network(self):
+        # Build the predictor
+        with tf.variable_scope("AGED/generator", reuse=self.reuse):
+            super(AGED, self).build_network()
+
+        # TODO(kamanuel) are input dimensions correct here?
+        if self.use_adversarial:
+            # Fidelity Discriminator
+            # real inputs
+            self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
+            # fake inputs
+            self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
+
+            # Continuity Discriminator
+            # real inputs
+            data_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs, self.decoder_outputs[:, -1:]], axis=1)
+            self.continuity_real = self.continuity_discriminator(data_inputs, reuse=not self.is_training)
+            # fake inputs (real seed + prediction)
+            c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
+            self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
+
+    def fidelity_discriminator(self, inputs, reuse=False):
+        """Judges fidelity of predictions"""
+        input_hidden = self.config['fidelity_input_layer_size']
+        cell_size = self.config['fidelity_cell_size']
+        cell_type = self.config['fidelity_cell_type']
+
+        with tf.variable_scope("AGED/discriminator/fidelity", reuse=reuse):
+            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
+        return logits
+
+    def continuity_discriminator(self, inputs, reuse=False):
+        """Judges continuity of the entire motion sequence."""
+        input_hidden = self.config['continuity_input_layer_size']
+        cell_size = self.config['continuity_cell_size']
+        cell_type = self.config['continuity_cell_type']
+
+        with tf.variable_scope("AGED/discriminator/continuity", reuse=reuse):
+            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
+        return logits
+
+    def _build_discriminator_rnn(self, inputs, cell_type, cell_size, reuse):
+        if cell_type == C.GRU:
+            cell = tf.nn.rnn_cell.GRUCell(cell_size, reuse=reuse, name="cell")
+        elif cell_type == C.LSTM:
+            cell = tf.nn.rnn_cell.LSTMCell(cell_size, reuse=reuse, name="cell")
+        else:
+            raise Exception("Cell type unknown.")
+
+        _, final_state = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32)
+        logits = tf.layers.dense(final_state, 1, reuse=reuse, name="out")
+        return logits
+
+    def build_loss(self):
+        # compute prediction loss using the geodesic loss
+        self.pred_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
+
+        if self.use_adversarial:
+            # fidelity discriminator loss
+            f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
+                                                             labels=tf.ones_like(self.fidelity_real))
+            f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                             labels=tf.zeros_like(self.fidelity_fake))
+            self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
+
+            # continuity discriminator loss
+            c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
+                                                             labels=tf.ones_like(self.continuity_real))
+            c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
+                                                             labels=tf.zeros_like(self.continuity_fake))
+            self.continuity_loss = tf.reduce_mean(c_real + c_fake)
+            self.d_loss = self.continuity_loss + self.fidelity_loss
+
+            fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.ones_like(self.fidelity_fake))
+
+            con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.ones_like(self.continuity_fake))
+
+            self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
+            self.loss = self.pred_loss + self.d_weight*self.g_loss
+        else:
+            self.loss = self.pred_loss
+
+    def geodesic_loss(self, predictions, targets):
+        # convert to rotation matrices
+        # assert self.use_aa
+
+        # must unnormalize before computing the geodesic loss
+        # TODO(kamanuel) is unnormalization correct also when using one-hot encoded inputs? We probably need dim_to_ignore
+        pred = self._unnormalize(tf.stack(predictions, axis=0))
+        targ = self._unnormalize(targets)
+
+        pred = tf.reshape(pred, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        targ = tf.reshape(targ, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+
+        pred_rot = tf_tr_quat.from_axis_angle(pred)
+        targ_rot = tf_tr_quat.from_axis_angle(targ)
+        # pred_rot = aa2rotmat(pred)
+        # targ_rot = aa2rotmat(targ)
+
+        # A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
+        # A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
+        #
+        # # The norm of A is equivalent to sin(theta)
+        # A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
+        # theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+        # geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
+        theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
+        geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+        return geodesic_loss
+
+    def _unnormalize(self, data):
+        if self.normalization_std is not None:
+            return data*self.normalization_std + self.normalization_mean
+        else:
+            return data
+
+    def optimization_routines(self):
+        self._generator_optimizer()
+        if self.use_adversarial:
+            self._discriminator_optimizer()
+
+    def _get_optimizer(self):
+        if self.config["optimizer"] == C.OPTIMIZER_ADAM:
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        elif self.config["optimizer"] == C.OPTIMIZER_SGD:
+            optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
+        else:
+            raise Exception("Optimization not found.")
+        return optimizer
+
+    def _generator_optimizer(self):
+        """Optimizer for the generator."""
+        optimizer = self._get_optimizer()
+        g_vars = tf.trainable_variables(scope="AGED/generator")
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope="AGED/generator")):
+            # update the generator variables w.r.t. the total loss
+            gradients = tf.gradients(self.loss, g_vars)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.g_gradient_norms = tf.clip_by_global_norm(gradients,
+                                                                          self.config.get('grad_clip_by_norm'))
+            else:
+                self.g_gradient_norms = tf.global_norm(gradients)
+            self.g_param_update = optimizer.apply_gradients(grads_and_vars=zip(gradients, g_vars),
+                                                            global_step=self.global_step)
+
+    def _discriminator_optimizer(self):
+        """Optimizer for both discriminators."""
+        optimizer = self._get_optimizer()
+        d_vars = tf.trainable_variables(scope="AGED/discriminator")
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope="AGED/discriminator")):
+            # update the generator variables w.r.t. the total loss
+            gradients = tf.gradients(self.d_loss, d_vars)
+            if self.config.get('grad_clip_by_norm', 0) > 0:
+                gradients, self.d_gradient_norms = tf.clip_by_global_norm(gradients,
+                                                                          self.config.get('grad_clip_by_norm'))
+            else:
+                self.d_gradient_norms = tf.global_norm(gradients)
+            self.d_param_update = optimizer.apply_gradients(
+                grads_and_vars=zip(gradients, d_vars))
+
+    def summary_routines(self):
+        # Note that summary_routines are called outside of the self.mode name_scope. Hence, self.mode should be
+        # prepended to summary name if needed.
+        # Note that summary_routines are called outside of the self.mode name_scope. Hence, self.mode should be
+        # prepended to summary name if needed.
+        tf.summary.scalar(self.mode+"/loss", self.loss, collections=[self.mode+"/model_summary"])
+
+        if self.use_adversarial:
+            # prediction loss only
+            tf.summary.scalar(self.mode+"/pred_loss", self.pred_loss, collections=[self.mode + "/model_summary"])
+            # adversarial loss for generator
+            tf.summary.scalar(self.mode+"/g_loss", self.g_loss, collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode+"/d_fid_loss", self.fidelity_loss, collections=[self.mode+"/model_summary"])
+            tf.summary.scalar(self.mode+"/d_con_loss", self.continuity_loss, collections=[self.mode+"/model_summary"])
+
+        if self.is_training:
+            tf.summary.scalar(self.mode + "/learning_rate",
+                              self.learning_rate,
+                              collections=[self.mode + "/model_summary"])
+            tf.summary.scalar(self.mode + "/g_gradient_norms",
+                              self.g_gradient_norms,
+                              collections=[self.mode + "/model_summary"])
+            if self.use_adversarial:
+                tf.summary.scalar(self.mode + "/d_gradient_norms",
+                                  self.d_gradient_norms,
+                                  collections=[self.mode + "/model_summary"])
+
+        self.summary_update = tf.summary.merge_all(self.mode+"/model_summary")
+        self.euler_summaris()
+
+    def step(self, encoder_inputs, decoder_inputs, decoder_outputs):
+        """Run a step of the model feeding the given inputs.
+
+        Args
+          session: tensorflow session to use.
+          encoder_inputs: list of numpy vectors to feed as encoder inputs.
+          decoder_inputs: list of numpy vectors to feed as decoder inputs.
+          decoder_outputs: list of numpy vectors that are the expected decoder outputs.
+        Returns
+          A triple consisting of gradient norm (or None if we did not do backward),
+          mean squared error, and the outputs.
+        Raises
+          ValueError: if length of encoder_inputs, decoder_inputs, or
+            target_weights disagrees with bucket size for the specified bucket_id.
+        """
+        input_feed = {self.encoder_inputs: encoder_inputs,
+                      self.decoder_inputs: decoder_inputs,
+                      self.decoder_outputs: decoder_outputs}
+
+        # Output feed: depends on whether we do a backward step or not.
+        if self.is_training:
+            # Training step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs,
+                           self.g_param_update]
+            if self.use_adversarial:
+                output_feed.append(self.d_param_update)
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[0], outputs[1], outputs[2]
+        else:
+            # Evaluation step
+            output_feed = [self.loss,
+                           self.summary_update,
+                           self.outputs]
+            if self.use_adversarial:
+                output_feed.extend([self.g_loss,
+                                    self.continuity_loss,
+                                    self.d_loss])
+            outputs = self.session.run(output_feed, input_feed)
+            return outputs[0], outputs[1], outputs[2]
 
 
 class Seq2SeqFeedbackModel(Seq2SeqModel):

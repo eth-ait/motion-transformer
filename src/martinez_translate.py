@@ -70,6 +70,9 @@ tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or 
 tf.app.flags.DEFINE_string("action_loss", "none", "cross_entropy, l2 or none.")
 tf.app.flags.DEFINE_boolean("use_rotmat", False, "Convert everything to rotation matrices.")
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix to be valid before feeding it back to the model")  # TODO(kamanuel) implement this for all models
+tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
+tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
+tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -77,11 +80,13 @@ FLAGS = tf.app.flags.FLAGS
 experiment_timestamp = str(int(time.time()))
 
 
-def create_model(session, actions, sampling=False):
+def create_model(session, actions, data_mean, data_std, sampling=False):
     # Global step variable.
     global_step = tf.Variable(1, trainable=False, name='global_step')
 
     if FLAGS.model_type == "seq2seq":
+        model_cls, config, experiment_name = create_seq2seq_model(actions, sampling)
+    elif FLAGS.model_type == "aged":
         model_cls, config, experiment_name = create_seq2seq_model(actions, sampling)
     elif FLAGS.model_type == "stcn":
         model_cls, config, experiment_name = create_stcn_model(actions, sampling)
@@ -102,7 +107,9 @@ def create_model(session, actions, sampling=False):
             session=session,
             mode=C.TRAIN,
             reuse=False,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            std=data_std,
+            mean=data_mean)
         train_model.build_graph()
 
     with tf.name_scope(C.SAMPLE):
@@ -111,7 +118,9 @@ def create_model(session, actions, sampling=False):
             session=session,
             mode=C.SAMPLE,
             reuse=True,
-            dtype=tf.float32)
+            dtype=tf.float32,
+            std=data_std,
+            mean=data_mean)
         eval_model.build_graph()
 
     experiment_name += "{}{}".format("-rotmat" if FLAGS.use_rotmat else "",
@@ -120,6 +129,7 @@ def create_model(session, actions, sampling=False):
     num_param = 0
     for v in tf.global_variables():
         num_param += np.prod(v.shape.as_list())
+        print(v.name)
     print("# of parameters: " + str(int(num_param)))
     config["num_parameters"] = num_param
 
@@ -364,11 +374,25 @@ def create_seq2seq_model(actions, sampling=False):
     config['angle_loss_type'] = FLAGS.angle_loss
     config['rep'] = "rot_mat" if FLAGS.use_rotmat else "aa"
     config['action_loss_type'] = C.LOSS_ACTION_L2
+
+    # default values for AGED
+    config['input_layer_size'] = FLAGS.aged_input_layer_size
+    config['use_adversarial'] = FLAGS.aged_adversarial
+    config['discriminator_weight'] = FLAGS.aged_d_weight
+    config['fidelity_input_layer_size'] = 1024
+    config['fidelity_cell_size'] = 1024
+    config['fidelity_cell_type'] = C.GRU
+    config['continuity_input_layer_size'] = 1024
+    config['continuity_cell_size'] = 1024
+    config['continuity_cell_type'] = C.GRU
+
     if FLAGS.action_loss != C.LOSS_ACTION_L2:
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
 
     if FLAGS.model_type == "seq2seq":
         model_cls = martinez_models.Seq2SeqModel
+    elif FLAGS.model_type == "aged":
+        model_cls = martinez_models.AGED
     elif FLAGS.model_type == "seq2seq_feedback":
         model_cls = martinez_models.Seq2SeqFeedbackModel
         config['feed_error_to_encoder'] = FLAGS.feed_error_to_encoder
@@ -380,7 +404,7 @@ def create_seq2seq_model(actions, sampling=False):
     else:
         autoregressive_input = "sampling_based"
 
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     FLAGS.model_type,
                                                     FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
@@ -397,7 +421,9 @@ def create_seq2seq_model(actions, sampling=False):
                                                     FLAGS.num_layers,
                                                     FLAGS.size,
                                                     'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel',
-                                                    config['action_loss_type'])
+                                                    config['action_loss_type'],
+                                                    '-i{}'.format(FLAGS.aged_input_layer_size) if FLAGS.model_type == "aged" else "",
+                                                    '-adv{}'.format(FLAGS.aged_d_weight) if FLAGS.model_type == "aged" and config['use_adversarial'] else "")
     return model_cls, config, experiment_name
 
 
@@ -417,7 +443,10 @@ def train():
     device_count = {"GPU": 0} if FLAGS.use_cpu else {"GPU": 1}
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count=device_count)) as sess:
         # === Create the model ===
-        train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions)
+        train_model, eval_model, saver, global_step, experiment_dir = create_model(sess, actions,
+                                                                                   data_mean[dim_to_use],
+                                                                                   data_std[dim_to_use])
+
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
         train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
