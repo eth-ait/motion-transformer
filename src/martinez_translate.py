@@ -48,9 +48,6 @@ tf.app.flags.DEFINE_integer("output_layer_number", 1, "Number of output layer.")
 tf.app.flags.DEFINE_string("cell_type", C.LSTM, "RNN cell type: gru, lstm, layernormbasiclstmcell")
 tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
-# Directories
-tf.app.flags.DEFINE_string("data_dir", os.path.normpath("../data/h3.6m/dataset"), "Data directory")
-tf.app.flags.DEFINE_string("train_dir", os.path.normpath("../experiments_h36m/"), "Training directory.")
 
 tf.app.flags.DEFINE_string("action", "all", "The action to train on. all actions")
 tf.app.flags.DEFINE_string("autoregressive_input", "sampling_based", "The type of decoder inputs, supervised or sampling_based")
@@ -73,11 +70,21 @@ tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix 
 tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
 tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
 tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
+tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 
 FLAGS = tf.app.flags.FLAGS
 
-# Unique timestamp to distinguish experiments with the same configuration.
+DATA_DIR = os.environ["AMASS_DATA"]
+DATA_DIR = os.path.join(DATA_DIR, "../../h3.6m/dataset")
+
+SAVE_DIR = os.environ["AMASS_EXPERIMENTS"]
+SAVE_DIR = os.path.join(SAVE_DIR, "../experiments_h36m")
+
 experiment_timestamp = str(int(time.time()))
+if FLAGS.new_experiment_id is not None:
+    if len(FLAGS.new_experiment_id) != 10:
+        raise Exception("Experiment ID must be 10 digits.")
+    experiment_timestamp = FLAGS.new_experiment_id
 
 
 def create_model(session, actions, data_mean, data_std, sampling=False):
@@ -134,9 +141,9 @@ def create_model(session, actions, data_mean, data_std, sampling=False):
     config["num_parameters"] = num_param
 
     if FLAGS.experiment_id is None:
-        experiment_dir = os.path.normpath(os.path.join(FLAGS.train_dir, experiment_name))
+        experiment_dir = os.path.normpath(os.path.join(SAVE_DIR, experiment_name))
     else:
-        experiment_dir = glob.glob(os.path.join(FLAGS.train_dir, FLAGS.experiment_id + "-*"), recursive=False)[0]
+        experiment_dir = glob.glob(os.path.join(SAVE_DIR, FLAGS.experiment_id + "-*"), recursive=False)[0]
     if not os.path.exists(experiment_dir):
         os.mkdir(experiment_dir)
     if not sampling:
@@ -435,7 +442,7 @@ def train():
     train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(actions,
                                                                                         FLAGS.seq_length_in,
                                                                                         FLAGS.seq_length_out,
-                                                                                        FLAGS.data_dir,
+                                                                                        DATA_DIR,
                                                                                         not FLAGS.omit_one_hot,
                                                                                         FLAGS.new_preprocessing)
     # Limit TF to take a fraction of the GPU memory
@@ -963,7 +970,7 @@ def sample():
 
         # Load all the data
         train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use = read_all_data(
-            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, FLAGS.data_dir, not FLAGS.omit_one_hot,
+            actions, FLAGS.seq_length_in, FLAGS.seq_length_out, DATA_DIR, not FLAGS.omit_one_hot,
             FLAGS.new_preprocessing)
 
         # === Read and denormalize the gt with srnn's seeds, as we'll need them

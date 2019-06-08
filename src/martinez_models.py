@@ -112,8 +112,14 @@ class BaseModel(object):
         self.normalization_std = kwargs.get('std', None)
         self.normalization_mean = kwargs.get('mean', None)
 
+        if self.normalization_std is not None:
+            # if we are using one hot encoded vectors, pad
+            self.normalization_std = np.concatenate([self.normalization_std, [1.0]*self.number_of_actions])
+            self.normalization_mean = np.concatenate([self.normalization_mean, [0.0]*self.number_of_actions])
+
     def build_graph(self):
         self.build_network()
+        self.build_loss()
 
     def build_network(self):
         pass
@@ -750,7 +756,6 @@ class Seq2SeqModel(BaseModel):
                 raise (ValueError, "Unknown architecture: %s" % self.architecture)
 
         self.outputs_tensor = tf.stack(self.outputs)
-        self.build_loss()
 
     def optimization_routines(self):
         # Gradients and SGD update operation for training the model.
@@ -851,20 +856,23 @@ class AGED(Seq2SeqModel):
         with tf.variable_scope("AGED/generator", reuse=self.reuse):
             super(AGED, self).build_network()
 
+        self.outputs_tensor = tf.transpose(self.outputs_tensor, [1, 0, 2])
+
         # TODO(kamanuel) are input dimensions correct here?
         if self.use_adversarial:
             # Fidelity Discriminator
             # real inputs
-            self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
+            self.fidelity_real = self.fidelity_discriminator(tf.transpose(self.prediction_targets, [1, 0, 2]),
+                                                             reuse=not self.is_training)
             # fake inputs
-            self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
+            self.fidelity_fake = self.fidelity_discriminator(self.outputs_tensor, reuse=True)
 
             # Continuity Discriminator
             # real inputs
             data_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs, self.decoder_outputs[:, -1:]], axis=1)
             self.continuity_real = self.continuity_discriminator(data_inputs, reuse=not self.is_training)
             # fake inputs (real seed + prediction)
-            c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
+            c_inputs = tf.concat([self.encoder_inputs, self.decoder_inputs[:, :1], self.outputs_tensor], axis=1)
             self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
 
     def fidelity_discriminator(self, inputs, reuse=False):
@@ -903,7 +911,8 @@ class AGED(Seq2SeqModel):
 
     def build_loss(self):
         # compute prediction loss using the geodesic loss
-        self.pred_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
+        self.pred_loss = self.geodesic_loss(self.outputs_tensor,
+                                            tf.transpose(self.prediction_targets, [1, 0, 2]))
 
         if self.use_adversarial:
             # fidelity discriminator loss
@@ -937,12 +946,11 @@ class AGED(Seq2SeqModel):
         # assert self.use_aa
 
         # must unnormalize before computing the geodesic loss
-        # TODO(kamanuel) is unnormalization correct also when using one-hot encoded inputs? We probably need dim_to_ignore
-        pred = self._unnormalize(tf.stack(predictions, axis=0))
+        pred = self._unnormalize(predictions)
         targ = self._unnormalize(targets)
 
-        pred = tf.reshape(pred, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
-        targ = tf.reshape(targ, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        pred = tf.reshape(pred[:, :, :-self.number_of_actions], [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        targ = tf.reshape(targ[:, :, :-self.number_of_actions], [-1, self.target_seq_len, self.NUM_JOINTS, 3])
 
         pred_rot = tf_tr_quat.from_axis_angle(pred)
         targ_rot = tf_tr_quat.from_axis_angle(targ)

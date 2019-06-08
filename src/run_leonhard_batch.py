@@ -6,10 +6,10 @@ The working directory must be the same with python file's directory.
 """
 
 NUM_CPU = 8
-MEMORY = 2048
+MEMORY = 1024
 NUM_GPU = 1
 WALL_TIME = 4
-cluster_command_format = 'bsub -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
+cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
 
 """
 --joint_prediction_model [plain, fk_joints]
@@ -101,8 +101,45 @@ experiment_list = [
 
 ]
 
+experiment_list_h36m = [
+    'python martinez_translate.py --input_dropout_rate 0.0 --learning_rate 0.001 '
+    '--optimizer sgd --angle_loss joint_sum --model_type aged --action_loss none '
+    '--joint_prediction_model plain --learning_rate_decay_rate 1.0 '
+    '--seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type gru --experiment_name aged '
+    '--autoregressive_input sampling_based --omit_one_hot --aged_input_layer_size 1024 '
+    '--aged_adversarial --aged_d_weight 0.6 ',
 
-for i, experiment in enumerate(experiment_list):
+    'python martinez_translate.py --input_dropout_rate 0.0 --learning_rate 0.005 '
+    '--optimizer sgd --angle_loss joint_sum --model_type aged --action_loss none '
+    '--joint_prediction_model plain --learning_rate_decay_rate 1.0 '
+    '--seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type gru --experiment_name aged '
+    '--autoregressive_input sampling_based --omit_one_hot --aged_input_layer_size 1024 '
+    '--aged_adversarial --aged_d_weight 0.4 ',
+
+    'python martinez_translate.py --input_dropout_rate 0.0 --learning_rate 0.005 '
+    '--optimizer sgd --angle_loss joint_sum --model_type aged --action_loss none '
+    '--joint_prediction_model plain --learning_rate_decay_rate 1.0 '
+    '--seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type gru --experiment_name aged '
+    '--autoregressive_input sampling_based --omit_one_hot --aged_input_layer_size 1024 '
+    '--aged_adversarial --aged_d_weight 0.8 ',
+
+    'python martinez_translate.py --input_dropout_rate 0.0 --learning_rate 0.005 '
+    '--optimizer sgd --angle_loss joint_sum --model_type aged --action_loss none '
+    '--joint_prediction_model plain --learning_rate_decay_rate 1.0 '
+    '--seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type gru --experiment_name aged '
+    '--autoregressive_input sampling_based --omit_one_hot --aged_input_layer_size 1024 '
+    '--aged_adversarial --aged_d_weight 0.1 ',
+
+    'python martinez_translate.py --input_dropout_rate 0.0 --learning_rate 0.005 '
+    '--optimizer sgd --angle_loss joint_sum --model_type aged --action_loss none '
+    '--joint_prediction_model plain '
+    '--seq_length_in 50 --seq_length_out 10 --residual_velocities --cell_type gru --experiment_name aged '
+    '--autoregressive_input sampling_based --omit_one_hot --aged_input_layer_size 1024 '
+    '--aged_adversarial --aged_d_weight 1.0 ',
+]
+
+
+for i, experiment in enumerate(experiment_list_h36m):
     # print(experiment)
     # Create a unique experiment timestamp.
     time.sleep(2)
