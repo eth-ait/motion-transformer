@@ -13,6 +13,7 @@ from constants import Constants as C
 from tf_model_utils import get_activation_fn, get_rnn_cell
 from tf_models import LatentLayer
 from data_utils import softmax
+from tf_rot_conversions import aa2rotmat
 import tf_tr_quat
 
 
@@ -837,6 +838,7 @@ class AGED(Seq2SeqModel):
 
         self.d_weight = config['discriminator_weight']
         self.use_adversarial = config['use_adversarial']
+        self.use_rotmat_loss = config['aged_rotmat_loss']
         self.fidelity_real = None
         self.fidelity_fake = None
         self.continuity_real = None
@@ -949,24 +951,31 @@ class AGED(Seq2SeqModel):
         pred = self._unnormalize(predictions)
         targ = self._unnormalize(targets)
 
-        pred = tf.reshape(pred[:, :, :-self.number_of_actions], [-1, self.target_seq_len, self.NUM_JOINTS, 3])
-        targ = tf.reshape(targ[:, :, :-self.number_of_actions], [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        if self.number_of_actions > 0:
+            pred = pred[:, :, :-self.number_of_actions]
+            targ = targ[:, :, :-self.number_of_actions]
 
-        pred_rot = tf_tr_quat.from_axis_angle(pred)
-        targ_rot = tf_tr_quat.from_axis_angle(targ)
-        # pred_rot = aa2rotmat(pred)
-        # targ_rot = aa2rotmat(targ)
+        pred = tf.reshape(pred, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
+        targ = tf.reshape(targ, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
 
-        # A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
-        # A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
-        #
-        # # The norm of A is equivalent to sin(theta)
-        # A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
-        # theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
-        # geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+        if self.use_rotmat_loss:
+            pred_rot = aa2rotmat(pred)
+            targ_rot = aa2rotmat(targ)
 
-        theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
-        geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+            A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
+            A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
+
+            # The norm of A is equivalent to sin(theta)
+            A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
+            theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+            geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
+        else:
+            pred_rot = tf_tr_quat.from_axis_angle(pred)
+            targ_rot = tf_tr_quat.from_axis_angle(targ)
+            theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
+            geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
         return geodesic_loss
 
     def _unnormalize(self, data):

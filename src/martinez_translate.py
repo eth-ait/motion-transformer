@@ -70,6 +70,7 @@ tf.app.flags.DEFINE_boolean("force_valid_rot", False, "Forces a rotation matrix 
 tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
 tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
 tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
+tf.app.flags.DEFINE_boolean("aged_rotmat_loss", False, "If true uses rotation matrices to compute the geodesic loss instead of quaternions.")
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 
 FLAGS = tf.app.flags.FLAGS
@@ -235,21 +236,24 @@ def create_rnn_model(actions, sampling=False):
         raise Exception()
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
-    experiment_name_format = "{}-{}{}-{}-{}{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
-    experiment_name = experiment_name_format.format(experiment_timestamp,
-                                                    FLAGS.model_type,
-                                                    "-"+FLAGS.experiment_name if FLAGS.experiment_name is not None else "",
-                                                    config['angle_loss_type'],
-                                                    "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
-                                                    "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
-                                                    config['batch_size'],
-                                                    config['cell']['cell_size'],
-                                                    config['cell']['cell_type'],
-                                                    '-residual_vel' if FLAGS.residual_velocities else '',
-                                                    FLAGS.seq_length_in,
-                                                    FLAGS.seq_length_out,
-                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
-                                                    config['action_loss_type'])
+
+    if FLAGS.experiment_name is not None:
+        experiment_name = FLAGS.experiment_name
+    else:
+        experiment_name_format = "{}-{}{}-{}{}-b{}-{}@{}{}-in{}_out{}-{}-{}"
+        experiment_name = experiment_name_format.format(experiment_timestamp,
+                                                        FLAGS.model_type,
+                                                        config['angle_loss_type'],
+                                                        "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
+                                                        "-idrop_" + str(input_dropout) if input_dropout > 0 else "",
+                                                        config['batch_size'],
+                                                        config['cell']['cell_size'],
+                                                        config['cell']['cell_type'],
+                                                        '-residual_vel' if FLAGS.residual_velocities else '',
+                                                        FLAGS.seq_length_in,
+                                                        FLAGS.seq_length_out,
+                                                        'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                        config['action_loss_type'])
     return model_cls, config, experiment_name
 
 
@@ -392,6 +396,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['continuity_input_layer_size'] = 1024
     config['continuity_cell_size'] = 1024
     config['continuity_cell_type'] = C.GRU
+    config['aged_rotmat_loss'] = FLAGS.aged_rotmat_loss
 
     if FLAGS.action_loss != C.LOSS_ACTION_L2:
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
@@ -411,26 +416,29 @@ def create_seq2seq_model(actions, sampling=False):
     else:
         autoregressive_input = "sampling_based"
 
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}{}{}"
-    experiment_name = experiment_name_format.format(experiment_timestamp,
-                                                    FLAGS.model_type,
-                                                    FLAGS.action if FLAGS.experiment_name is None else FLAGS.experiment_name + "_" + FLAGS.action,
-                                                    config['angle_loss_type'],
-                                                    "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
-                                                    config["cell_type"],
-                                                    config['batch_size'],
-                                                    FLAGS.seq_length_in,
-                                                    FLAGS.seq_length_out,
-                                                    FLAGS.architecture,
-                                                    '' if FLAGS.feed_error_to_encoder else 'no',
-                                                    autoregressive_input,
-                                                    'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
-                                                    FLAGS.num_layers,
-                                                    FLAGS.size,
-                                                    'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel',
-                                                    config['action_loss_type'],
-                                                    '-i{}'.format(FLAGS.aged_input_layer_size) if FLAGS.model_type == "aged" else "",
-                                                    '-adv{}'.format(FLAGS.aged_d_weight) if FLAGS.model_type == "aged" and config['use_adversarial'] else "")
+    if FLAGS.experiment_name is not None:
+        experiment_name = '{}-{}-{}'.format(experiment_timestamp, FLAGS.model_type, FLAGS.experiment_name)
+    else:
+        experiment_name_format = "{}-{}-{}-{}-{}-{}-b{}-in{}_out{}-{}-enc{}feed-{}-{}-depth{}-size{}-{}-{}{}{}"
+        experiment_name = experiment_name_format.format(experiment_timestamp,
+                                                        FLAGS.model_type,
+                                                        FLAGS.action,
+                                                        config['angle_loss_type'],
+                                                        "sparse_" + config['joint_prediction_model'] if FLAGS.use_sparse_fk_joints and config['joint_prediction_model'] == "fk_joints" else config['joint_prediction_model'],
+                                                        config["cell_type"],
+                                                        config['batch_size'],
+                                                        FLAGS.seq_length_in,
+                                                        FLAGS.seq_length_out,
+                                                        FLAGS.architecture,
+                                                        '' if FLAGS.feed_error_to_encoder else 'no',
+                                                        autoregressive_input,
+                                                        'omit_one_hot' if FLAGS.omit_one_hot else 'one_hot',
+                                                        FLAGS.num_layers,
+                                                        FLAGS.size,
+                                                        'residual_vel' if FLAGS.residual_velocities else 'not_residual_vel',
+                                                        config['action_loss_type'],
+                                                        '-i{}'.format(FLAGS.aged_input_layer_size) if FLAGS.model_type == "aged" else "",
+                                                        '-adv{}'.format(FLAGS.aged_d_weight) if FLAGS.model_type == "aged" and config['use_adversarial'] else "")
     return model_cls, config, experiment_name
 
 
