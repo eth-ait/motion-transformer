@@ -285,6 +285,23 @@ class BaseModel(object):
             output_list.append(self.get_joint_prediction(parent_id))
             self.traverse_parents(output_list, self.structure_indexed[parent_id][0])
 
+    def traverse_parents_stop_gradients(self, output_list, parent_id, stop_gradients=False):
+        """
+        Collects joint predictions recursively by following the kinematic chain but optionally stops gradients.
+        Args:
+            output_list:
+            parent_id:
+            stop_gradients:
+
+        """
+        if parent_id >= 0:
+            parent_prediction = self.get_joint_prediction(parent_id)
+            if stop_gradients:
+                parent_prediction = tf.stop_gradient(parent_prediction)
+            output_list.append(parent_prediction)
+            # after the first call we always stop gradients as we want gradients to flow only for the direct parent
+            self.traverse_parents_stop_gradients(output_list, self.structure_indexed[parent_id][0], stop_gradients=True)
+
     def build_output_layer(self):
         """
         Builds layers to make predictions.
@@ -334,7 +351,12 @@ class BaseModel(object):
 
             elif self.joint_prediction_model == "fk_joints_stop_gradients":
                 # same as 'fk_joints' but gradients are stopped after the direct parent of each joint
-                raise NotImplementedError()
+                for joint_key in sorted(self.structure_indexed.keys()):
+                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                    joint_inputs = [self.prediction_representation]
+                    self.traverse_parents_stop_gradients(joint_inputs, parent_joint_idx, stop_gradients=False)
+                    self.parse_outputs(
+                        self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
 
             else:
                 raise Exception("Joint prediction model '{}' unknown.".format(self.joint_prediction_model))
