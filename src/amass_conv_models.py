@@ -124,7 +124,7 @@ class Wavenet(BaseModel):
 
         return temporal_blocks, temporal_blocks_no_res
 
-    def build_predictions(self, inputs, output_size, name):
+    def build_predictions(self, inputs, output_size, name, share=False):
         """
         Builds the output layers given the inputs. First, creates a number of hidden layers if set in the config and
         then makes the prediction without applying an activation function.

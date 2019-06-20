@@ -66,7 +66,13 @@ class BaseModel(object):
         # (2) "separate_joints": each latent variable is transformed into a joint prediction by using separate networks.
         # (3) "fk_joints": latent samples on the forward kinematic chain are concatenated and used as in (2).
         self.joint_prediction_model = config.get('joint_prediction_model', "plain")
-        self.use_sparse_fk_joints = config.get('use_sparse_fk_joints', False)
+        if config.get('use_sparse_fk_joints', False):
+            # legacy, only used so that evaluation of old models can still work
+            self.joint_prediction_model = "fk_joints_sparse"
+
+        assert self.joint_prediction_model in ["plain", "separate_joints", "fk_joints",
+                                               "fk_joints_sparse", "fk_joints_stop_gradients",
+                                               "fk_joints_sparse_shared"]
 
         # Set by the child model class.
         self.outputs_mu = None  # Mu tensor of predicted frames (Normal distribution).
@@ -86,6 +92,8 @@ class BaseModel(object):
         self.summary_update = None
 
         self.loss_summary = None
+
+        self.prediction_norm = None
 
         # Hard-coded parameters.
         self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa else 9
@@ -292,17 +300,45 @@ class BaseModel(object):
                     self.parse_outputs(self.build_predictions(self.prediction_representation, self.JOINT_SIZE, joint_name))
 
             elif self.joint_prediction_model == "fk_joints":
+                # each joint receives direct input from each ancestor in the kinematic chain
                 for joint_key in sorted(self.structure_indexed.keys()):
                     parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
                     joint_inputs = [self.prediction_representation]
-                    if self.use_sparse_fk_joints:
-                        if parent_joint_idx >= 0:
-                            joint_inputs.append(self.outputs_mu_joints[parent_joint_idx])
-                    else:
-                        self.traverse_parents(joint_inputs, parent_joint_idx)
+                    self.traverse_parents(joint_inputs, parent_joint_idx)
                     self.parse_outputs(self.build_predictions(tf.concat(joint_inputs, axis=-1), self.JOINT_SIZE, joint_name))
+
+            elif self.joint_prediction_model.startswith("fk_joints_sparse"):
+                # each joint only receives the direct parent joint as input
+                created_non_root_weights = False
+                for joint_key in sorted(self.structure_indexed.keys()):
+                    parent_joint_idx, joint_idx, joint_name = self.structure_indexed[joint_key]
+                    joint_inputs = [self.prediction_representation]
+                    if parent_joint_idx >= 0:
+                        joint_inputs.append(self.outputs_mu_joints[parent_joint_idx])
+
+                    if self.joint_prediction_model == "fk_joints_sparse_shared":
+                        if parent_joint_idx == -1:
+                            # this joint has no parent, so create its own layer
+                            name = joint_name
+                            share_weights = False
+                        else:
+                            # always share except for the first joint because we must create at least one layer
+                            name = "non_root_shared"
+                            share_weights = created_non_root_weights
+                            if not created_non_root_weights:
+                                created_non_root_weights = True
+                    else:
+                        name = joint_name
+                        share_weights = False
+                    self.parse_outputs(self.build_predictions(tf.concat(joint_inputs, axis=-1),
+                                                              self.JOINT_SIZE, name, share_weights))
+
+            elif self.joint_prediction_model == "fk_joints_stop_gradients":
+                # same as 'fk_joints' but gradients are stopped after the direct parent of each joint
+                raise NotImplementedError()
+
             else:
-                raise Exception("Prediction model not recognized.")
+                raise Exception("Joint prediction model '{}' unknown.".format(self.joint_prediction_model))
 
             self.aggregate_outputs()
             pose_prediction = self.outputs_mu
@@ -310,6 +346,7 @@ class BaseModel(object):
             # Apply residual connection on the pose only.
             if self.residual_velocities:
                 # some debugging
+                self.prediction_norm = tf.linalg.norm(pose_prediction)
                 # pose_prediction = tf.Print(pose_prediction, [tf.shape(pose_prediction)], "shape", summarize=100)
                 # pose_prediction = tf.Print(pose_prediction, [tf.linalg.norm(pose_prediction[0])], "norm[0]", summarize=135)
                 # pose_prediction = tf.Print(pose_prediction, [pose_prediction[0]], "pose_prediction[0]", summarize=135)
@@ -438,7 +475,7 @@ class BaseModel(object):
         else:
             return self.get_closest_rotmats(input_)
 
-    def build_predictions(self, inputs, output_size, name):
+    def build_predictions(self, inputs, output_size, name, share=False):
         """
         Builds dense output layers given the inputs. First, creates a number of hidden layers if set in the config and
         then makes the prediction without applying an activation function.
@@ -446,6 +483,7 @@ class BaseModel(object):
             inputs (tf.Tensor):
             output_size (int):
             name (str):
+            share (bool): If true all joints share the same weights.
         Returns:
             (tf.Tensor) prediction.
         """
@@ -455,15 +493,15 @@ class BaseModel(object):
         prediction = dict()
         current_layer = inputs
         for layer_idx in range(num_hidden_layers):
-            with tf.variable_scope('out_dense_' + name + "_" + str(layer_idx), reuse=self.reuse):
+            with tf.variable_scope('out_dense_' + name + "_" + str(layer_idx), reuse=share or self.reuse):
                 current_layer = tf.layers.dense(inputs=current_layer, units=hidden_size, activation=self.activation_fn)
 
-        with tf.variable_scope('out_dense_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+        with tf.variable_scope('out_dense_' + name + "_" + str(num_hidden_layers), reuse=share or self.reuse):
             prediction["mu"] = tf.layers.dense(inputs=current_layer, units=output_size,
                                                activation=self.prediction_activation)
 
         if self.mle_normal:
-            with tf.variable_scope('out_dense_sigma_' + name + "_" + str(num_hidden_layers), reuse=self.reuse):
+            with tf.variable_scope('out_dense_sigma_' + name + "_" + str(num_hidden_layers), reuse=share or self.reuse):
                 sigma = tf.layers.dense(inputs=current_layer,
                                         units=output_size,
                                         activation=tf.nn.softplus)
@@ -493,6 +531,11 @@ class BaseModel(object):
         if self.input_dropout_rate is not None and self.is_training:
             tf.summary.scalar(self.mode + "/input_dropout_rate",
                               self.input_dropout_rate,
+                              collections=[self.mode + "/model_summary"])
+
+        if self.prediction_norm is not None:
+            tf.summary.scalar(self.mode + "/prediction_norm_before_residual",
+                              self.prediction_norm,
                               collections=[self.mode + "/model_summary"])
 
         self.summary_update = tf.summary.merge_all(self.mode+"/model_summary")

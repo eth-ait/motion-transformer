@@ -198,6 +198,8 @@ class BaseModel(object):
         with tf.variable_scope('output_layer', reuse=self.reuse):
             prediction = []
 
+            # TODO(kamanuel) update with changes from amass_models
+
             if self.joint_prediction_model == "plain":
                 prediction.append(self.build_predictions(self.prediction_representation, self.HUMAN_SIZE, "all"))
 
@@ -860,7 +862,6 @@ class AGED(Seq2SeqModel):
 
         self.outputs_tensor = tf.transpose(self.outputs_tensor, [1, 0, 2])
 
-        # TODO(kamanuel) are input dimensions correct here?
         if self.use_adversarial:
             # Fidelity Discriminator
             # real inputs
