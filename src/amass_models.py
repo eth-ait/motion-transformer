@@ -180,36 +180,35 @@ class BaseModel(object):
             seq_len = tf.shape(self.outputs)[1]
 
         with tf.name_scope("loss_angles"):
-            if self.use_quat:
-                # TODO(kamanuel) for now use the loss that is equivalent to log(R*R^T)
-                loss_type = "quat_l2"
-                loss_per_frame = quaternion_loss(targets_pose, predictions_pose, loss_type)
+            diff = targets_pose - predictions_pose
+            if self.angle_loss_type == "quat_l2":
+                assert self.use_quat
+                # this is equivalent to log(R*R^T)
+                loss_per_frame = quaternion_loss(targets_pose, predictions_pose, self.angle_loss_type)
                 loss_per_sample = tf.reduce_sum(loss_per_frame, axis=-1)
                 loss_per_batch = tf.reduce_mean(loss_per_sample)
                 self.loss = loss_per_batch
+            elif self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
+                pose_loss = tf.reduce_mean(tf.square(diff))
+                self.loss = pose_loss
+            elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                self.loss = per_joint_loss
+            elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
+                per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
+                per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
+                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                self.loss = per_joint_loss
+            elif self.angle_loss_type == C.LOSS_POSE_NORMAL:
+                pose_likelihood = logli_normal_isotropic(targets_pose, self.outputs_mu, self.outputs_sigma)
+                pose_likelihood = tf.reduce_sum(pose_likelihood, axis=[1, 2])
+                pose_likelihood = tf.reduce_mean(pose_likelihood)
+                self.loss = -pose_likelihood
             else:
-                diff = targets_pose - predictions_pose
-                if self.angle_loss_type == C.LOSS_POSE_ALL_MEAN:
-                    pose_loss = tf.reduce_mean(tf.square(diff))
-                    self.loss = pose_loss
-                elif self.angle_loss_type == C.LOSS_POSE_JOINT_MEAN:
-                    per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                    per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                    per_joint_loss = tf.reduce_mean(per_joint_loss)
-                    self.loss = per_joint_loss
-                elif self.angle_loss_type == C.LOSS_POSE_JOINT_SUM:
-                    per_joint_loss = tf.reshape(tf.square(diff), (-1, seq_len, self.NUM_JOINTS, self.JOINT_SIZE))
-                    per_joint_loss = tf.sqrt(tf.reduce_sum(per_joint_loss, axis=-1))
-                    per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
-                    per_joint_loss = tf.reduce_mean(per_joint_loss)
-                    self.loss = per_joint_loss
-                elif self.angle_loss_type == C.LOSS_POSE_NORMAL:
-                    pose_likelihood = logli_normal_isotropic(targets_pose, self.outputs_mu, self.outputs_sigma)
-                    pose_likelihood = tf.reduce_sum(pose_likelihood, axis=[1, 2])
-                    pose_likelihood = tf.reduce_mean(pose_likelihood)
-                    self.loss = -pose_likelihood
-                else:
-                    raise Exception("Unknown angle loss.")
+                raise Exception("Unknown angle loss.")
 
         if self.residual_velocities_reg is not None:
             self.loss += self.residual_velocities_reg
@@ -367,7 +366,8 @@ class BaseModel(object):
 
             # Enforce valid rotations as the very last step, this currently doesn't do anything with rotation matrices.
             # TODO(eaksan) Not sure how to handle probabilistic predictions. For now we use only the mu predictions.
-            pose_prediction = self.build_valid_rot_layer(pose_prediction)
+            if self.force_valid_rot:
+                pose_prediction = self.build_valid_rot_layer(pose_prediction)
             self.outputs_mu = pose_prediction
             self.outputs = self.get_joint_prediction(joint_idx=-1)
 
@@ -405,27 +405,24 @@ class BaseModel(object):
             A tensor of the same shape as `rotmats` containing the closest rotation matrices.
         """
         assert not self.use_quat and not self.use_aa
-        if self.force_valid_rot:
-            # reshape to (N, seq_len, n_joints, 3, 3)
-            seq_length = tf.shape(rotmats)[1]
-            dof = rotmats.get_shape()[-1].value
-            rots = tf.reshape(rotmats, [-1, seq_length, dof//9, 3, 3])
+        # reshape to (N, seq_len, n_joints, 3, 3)
+        seq_length = tf.shape(rotmats)[1]
+        dof = rotmats.get_shape()[-1].value
+        rots = tf.reshape(rotmats, [-1, seq_length, dof//9, 3, 3])
 
-            # add tanh activation function to map to [-1, 1]
-            rots = tf.tanh(rots)
+        # add tanh activation function to map to [-1, 1]
+        rots = tf.tanh(rots)
 
-            # compute SVD
-            # This is problematic when done on the GPU, see https://github.com/tensorflow/tensorflow/issues/13603
-            s, u, v = tf.svd(rots, full_matrices=True)
-            closest_rot = tf.matmul(u, v, transpose_b=True)
-            closest_rot = tf.Print(closest_rot, [closest_rot], "done with SVD")
+        # compute SVD
+        # This is problematic when done on the GPU, see https://github.com/tensorflow/tensorflow/issues/13603
+        s, u, v = tf.svd(rots, full_matrices=True)
+        closest_rot = tf.matmul(u, v, transpose_b=True)
+        closest_rot = tf.Print(closest_rot, [closest_rot], "done with SVD")
 
-            # TODO(kamanuel) should we make sure that det == 1?
+        # TODO(kamanuel) should we make sure that det == 1?
 
-            raise ValueError("SVD on GPU is super slow, not recommended to use.")
-            # return tf.reshape(closest_rot, [-1, seq_length, dof])
-        else:
-            return rotmats
+        raise ValueError("SVD on GPU is super slow, not recommended to use.")
+        # return tf.reshape(closest_rot, [-1, seq_length, dof])
 
     def normalize_quaternions(self, quats):
         """

@@ -77,7 +77,7 @@ tf.app.flags.DEFINE_string("joint_prediction_model", "plain", "plain, separate_j
 tf.app.flags.DEFINE_string("angle_loss", "joint_sum", "joint_sum, joint_mean or all_mean.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_boolean("rot_matrix_regularization", False, "If set, apply regularization term.")
-tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations")
+tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations - only recommended in use with --use_quat")
 tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
 tf.app.flags.DEFINE_boolean("use_aa", False, "Use angle-axis instead of rotation matrices")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
@@ -108,10 +108,6 @@ def create_model(session):
     use_aa = args.use_aa
 
     assert not (use_quat and use_aa), 'must choose between quat or aa'
-
-    if use_quat:
-        assert args.no_normalization, 'we normalize quaternions on the output, so it does not make sense ' \
-                                      'to use normalization'
 
     # if use_aa:
     #    assert args.use_h36m_only or args.use_h36m_martinez, 'currently only H3.6M is in angle-axis format'
