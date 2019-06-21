@@ -471,8 +471,8 @@ class BaseModel(object):
         # if the magnitude is too small, replace the quaternion with the identity
         quat_ident = tf.concat([tf.ones_like(mag)] + [tf.zeros_like(mag)]*3, axis=-1)
         is_zero = tf.less_equal(mag, 1e-16)
-        tf.summary.scalar(self.mode + "/n_zero_quats", tf.reduce_sum(is_zero) / tf.reduce_prod(tf.shape(is_zero)),
-                          collections=[self.mode + "/model_summary"])
+        perc_zero =  tf.reduce_sum(tf.cast(is_zero, tf.float32)) / tf.cast(tf.reduce_prod(tf.shape(is_zero)), tf.float32)
+        tf.summary.scalar(self.mode + "/n_zero_quats", perc_zero, collections=[self.mode + "/model_summary"])
         is_zero = tf.concat([is_zero]*4, axis=-1)
         quats_normalized = tf.where(is_zero, quat_ident, quats_normalized)
 
