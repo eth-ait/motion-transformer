@@ -17,7 +17,7 @@ from tf_loss_quat import quaternion_loss
 from tf_loss import logli_normal_isotropic
 
 import tf_tr_quat
-
+import tf_tr_utils_assert
 
 class BaseModel(object):
     def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
@@ -465,7 +465,18 @@ class BaseModel(object):
         else:
             quats = quats
 
-        quats_normalized = tf.linalg.l2_normalize(quats, axis=-1)
+        mag = tf.sqrt(tf.reduce_sum(quats*quats, axis=-1, keepdims=True))
+        quats_normalized = quats / mag
+
+        # if the magnitude is too small, replace the quaternion with the identity
+        quat_ident = tf.concat([tf.ones_like(mag)] + [tf.zeros_like(mag)]*3, axis=-1)
+        is_zero = tf.less_equal(mag, 1e-16)
+        tf.summary.scalar(self.mode + "/n_zero_quats", tf.reduce_sum(is_zero) / tf.reduce_prod(tf.shape(is_zero)),
+                          collections=[self.mode + "/model_summary"])
+        is_zero = tf.concat([is_zero]*4, axis=-1)
+        quats_normalized = tf.where(is_zero, quat_ident, quats_normalized)
+
+        quats_normalized = tf_tr_utils_assert.assert_normalized(quats_normalized, eps=1e-12)
         quats_normalized = tf.reshape(quats_normalized, ori_shape)
         return quats_normalized
 

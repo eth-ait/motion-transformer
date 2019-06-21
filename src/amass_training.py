@@ -157,14 +157,6 @@ def create_model(session):
     else:
         raise Exception("Unknown model type.")
 
-    if args.experiment_id is None:
-        experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
-    else:
-        experiment_dir = glob.glob(os.path.join(train_dir, args.experiment_id + "-*"), recursive=False)[0]
-        config = json.load(open(os.path.join(experiment_dir, "config.json")))
-    if not os.path.exists(experiment_dir):
-        os.mkdir(experiment_dir)
-
     # Naming.
     experiment_name += '{}_norm'.format('-no' if args.no_normalization else '')
     if args.rot_matrix_regularization:
@@ -173,6 +165,14 @@ def create_model(session):
     window_length = args.seq_length_in + args.seq_length_out
     experiment_name += "{}".format("-h36m" if args.use_h36m_only else "")
     experiment_name += "{}".format("-h36martinez" if args.use_h36m_martinez else "")
+
+    if args.experiment_id is None:
+        experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
+    else:
+        experiment_dir = glob.glob(os.path.join(train_dir, args.experiment_id + "-*"), recursive=False)[0]
+        config = json.load(open(os.path.join(experiment_dir, "config.json")))
+    if not os.path.exists(experiment_dir):
+        os.mkdir(experiment_dir)
 
     with tf.name_scope("training_data"):
         train_data = TFRecordMotionDataset(data_path=train_data_path,
