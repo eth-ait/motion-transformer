@@ -841,6 +841,8 @@ class AGED(Seq2SeqModel):
         self.d_weight = config['discriminator_weight']
         self.use_adversarial = config['use_adversarial']
         self.use_rotmat_loss = config['aged_rotmat_loss']
+        self.use_ce_loss = config['aged_binary_ce_loss']
+        self.min_g = config['aged_min_g']
         self.fidelity_real = None
         self.fidelity_fake = None
         self.continuity_real = None
@@ -918,29 +920,53 @@ class AGED(Seq2SeqModel):
                                             tf.transpose(self.prediction_targets, [1, 0, 2]))
 
         if self.use_adversarial:
-            # fidelity discriminator loss
-            f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
-                                                             labels=tf.ones_like(self.fidelity_real))
-            f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                             labels=tf.zeros_like(self.fidelity_fake))
-            self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
+            if self.use_ce_loss:
+                # fidelity discriminator loss
+                f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
+                                                                 labels=tf.ones_like(self.fidelity_real))
+                f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.zeros_like(self.fidelity_fake))
+                self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
 
-            # continuity discriminator loss
-            c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
-                                                             labels=tf.ones_like(self.continuity_real))
-            c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
-                                                             labels=tf.zeros_like(self.continuity_fake))
-            self.continuity_loss = tf.reduce_mean(c_real + c_fake)
-            self.d_loss = self.continuity_loss + self.fidelity_loss
+                # continuity discriminator loss
+                c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
+                                                                 labels=tf.ones_like(self.continuity_real))
+                c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
+                                                                 labels=tf.zeros_like(self.continuity_fake))
+                self.continuity_loss = tf.reduce_mean(c_real + c_fake)
+                self.d_loss = self.continuity_loss + self.fidelity_loss
 
-            fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                                 labels=tf.ones_like(self.fidelity_fake))
+                # generator loss
+                fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                     labels=tf.ones_like(self.fidelity_fake))
 
-            con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                                 labels=tf.ones_like(self.continuity_fake))
+                con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                     labels=tf.ones_like(self.continuity_fake))
 
-            self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
-            self.loss = self.pred_loss + self.d_weight*self.g_loss
+                self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
+                self.loss = self.pred_loss + self.d_weight*self.g_loss
+
+            else:
+                f_real_logits = tf.nn.sigmoid(self.fidelity_real)
+                f_fake_logits = tf.nn.sigmoid(self.fidelity_fake)
+                self.fidelity_loss = -tf.reduce_mean(tf.log(f_real_logits) + tf.log(1. - f_fake_logits))
+
+                c_real_logits = tf.nn.sigmoid(self.continuity_real)
+                c_fake_logits = tf.nn.sigmoid(self.continuity_fake)
+                self.continuity_loss = -tf.reduce_mean(tf.log(c_real_logits) + tf.log(1. - c_fake_logits))
+                self.d_loss = self.continuity_loss + self.fidelity_loss
+
+                if self.min_g:
+                    # minimize log(1 - d(g))
+                    fid_loss_g = tf.reduce_mean(1. - tf.log(f_fake_logits))
+                    con_loss_g = tf.reduce_mean(1. - tf.log(c_fake_logits))
+                else:
+                    # maximize log(d(g))
+                    fid_loss_g = -tf.reduce_mean(tf.log(f_fake_logits))
+                    con_loss_g = -tf.reduce_mean(tf.log(c_fake_logits))
+                self.g_loss = fid_loss_g + con_loss_g
+                self.loss = self.pred_loss + self.d_weight*self.g_loss
+
         else:
             self.loss = self.pred_loss
 
