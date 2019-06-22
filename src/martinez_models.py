@@ -947,23 +947,24 @@ class AGED(Seq2SeqModel):
                 self.loss = self.pred_loss + self.d_weight*self.g_loss
 
             else:
+                eps = 1e-6
                 f_real_logits = tf.nn.sigmoid(self.fidelity_real)
                 f_fake_logits = tf.nn.sigmoid(self.fidelity_fake)
-                self.fidelity_loss = -tf.reduce_mean(tf.log(f_real_logits) + tf.log(1. - f_fake_logits))
+                self.fidelity_loss = -tf.reduce_mean(tf.log(f_real_logits + eps) + tf.log(1. - f_fake_logits + eps))
 
                 c_real_logits = tf.nn.sigmoid(self.continuity_real)
                 c_fake_logits = tf.nn.sigmoid(self.continuity_fake)
-                self.continuity_loss = -tf.reduce_mean(tf.log(c_real_logits) + tf.log(1. - c_fake_logits))
+                self.continuity_loss = -tf.reduce_mean(tf.log(c_real_logits + eps) + tf.log(1. - c_fake_logits + eps))
                 self.d_loss = self.continuity_loss + self.fidelity_loss
 
                 if self.min_g:
                     # minimize log(1 - d(g))
-                    fid_loss_g = tf.reduce_mean(1. - tf.log(f_fake_logits))
-                    con_loss_g = tf.reduce_mean(1. - tf.log(c_fake_logits))
+                    fid_loss_g = tf.reduce_mean(tf.log(1.0 - f_fake_logits + eps))
+                    con_loss_g = tf.reduce_mean(tf.log(1.0 - c_fake_logits + eps))
                 else:
                     # maximize log(d(g))
-                    fid_loss_g = -tf.reduce_mean(tf.log(f_fake_logits))
-                    con_loss_g = -tf.reduce_mean(tf.log(c_fake_logits))
+                    fid_loss_g = -tf.reduce_mean(tf.log(f_fake_logits + eps))
+                    con_loss_g = -tf.reduce_mean(tf.log(c_fake_logits + eps))
                 self.g_loss = fid_loss_g + con_loss_g
                 self.loss = self.pred_loss + self.d_weight*self.g_loss
 

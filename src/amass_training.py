@@ -280,7 +280,7 @@ def create_model(session):
     for v in tf.trainable_variables():
         n_params = np.prod(v.shape.as_list())
         num_param += n_params
-        print(v.name, n_params)
+        print(v.name, v.shape.as_list())
     print("# of parameters:", num_param)
     config["num_parameters"] = int(num_param)
 
