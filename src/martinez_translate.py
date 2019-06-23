@@ -139,7 +139,7 @@ def create_model(session, actions, data_mean, data_std, sampling=False):
     num_param = 0
     for v in tf.global_variables():
         num_param += np.prod(v.shape.as_list())
-        print(v.name)
+        print(v.name, v.shape.as_list())
     print("# of parameters: " + str(int(num_param)))
     config["num_parameters"] = num_param
 

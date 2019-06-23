@@ -88,6 +88,9 @@ tf.app.flags.DEFINE_boolean("use_25fps", True, "Use downsampled Martinez data")
 tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
 tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
 tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
+tf.app.flags.DEFINE_boolean("aged_rotmat_loss", False, "If true uses rotation matrices to compute the geodesic loss instead of quaternions.")
+tf.app.flags.DEFINE_boolean("aged_log_loss", False, "If true computes the loss using logarithm directly rather then binary CE.")
+tf.app.flags.DEFINE_boolean("aged_min_g", False, "If true minimizes log(1-d(g)) rather than maximizing log(d(g))")
 
 
 args = tf.app.flags.FLAGS
@@ -582,10 +585,13 @@ def get_seq2seq_config(args):
     config['discriminator_weight'] = args.aged_d_weight
     config['fidelity_input_layer_size'] = 1024
     config['fidelity_cell_size'] = 1024
-    config['fidelity_cell_type'] = C.GRU
+    config['fidelity_cell_type'] = args.cell_type
     config['continuity_input_layer_size'] = 1024
     config['continuity_cell_size'] = 1024
-    config['continuity_cell_type'] = C.GRU
+    config['continuity_cell_type'] = args.cell_type
+    config['aged_rotmat_loss'] = args.aged_rotmat_loss
+    config['aged_binary_ce_loss'] = not args.aged_log_loss
+    config['aged_min_g'] = args.aged_min_g
 
     model_exp_name = ""
     if args.use_h36m_only:

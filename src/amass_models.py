@@ -15,9 +15,11 @@ from tf_rnn_cells import LatentCell
 from tf_loss_quat import quaternion_norm
 from tf_loss_quat import quaternion_loss
 from tf_loss import logli_normal_isotropic
+from tf_rot_conversions import aa2rotmat
 
 import tf_tr_quat
 import tf_tr_utils_assert
+
 
 class BaseModel(object):
     def __init__(self, config, data_pl, mode, reuse, dtype, **kwargs):
@@ -630,7 +632,8 @@ class Seq2SeqModel(BaseModel):
 
         with tf.variable_scope("seq2seq", reuse=self.reuse):
             # === Add space decoder ===
-            if self.joint_prediction_model == "fk_joints":
+            if self.joint_prediction_model.startswith("fk_joints"):
+                is_sparse = self.joint_prediction_model == "fk_joints_sparse"
                 cell = rnn_cell_extensions.StructuredOutputWrapper(cell,
                                                                    self.structure_indexed,
                                                                    hidden_size=self.output_layer_config.get('size', 0),
@@ -639,7 +642,7 @@ class Seq2SeqModel(BaseModel):
                                                                    joint_size=self.JOINT_SIZE,
                                                                    human_size=self.HUMAN_SIZE,
                                                                    reuse=self.reuse,
-                                                                   is_sparse=self.use_sparse_fk_joints)
+                                                                   is_sparse=is_sparse)
             else:
                 cell = rnn_cell_extensions.LinearSpaceDecoderWrapper(cell, self.input_size)
 
@@ -770,6 +773,9 @@ class AGED(Seq2SeqModel):
 
         self.d_weight = config['discriminator_weight']
         self.use_adversarial = config['use_adversarial']
+        self.use_rotmat_loss = config['aged_rotmat_loss']
+        self.use_ce_loss = config['aged_binary_ce_loss']
+        self.min_g = config['aged_min_g']
         self.fidelity_real = None
         self.fidelity_fake = None
         self.continuity_real = None
@@ -842,29 +848,54 @@ class AGED(Seq2SeqModel):
         self.pred_loss = self.geodesic_loss(self.outputs, self.prediction_targets)
 
         if self.use_adversarial:
-            # fidelity discriminator loss
-            f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
-                                                             labels=tf.ones_like(self.fidelity_real))
-            f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                             labels=tf.zeros_like(self.fidelity_fake))
-            self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
+            if self.use_ce_loss:
+                # fidelity discriminator loss
+                f_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_real,
+                                                                 labels=tf.ones_like(self.fidelity_real))
+                f_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                 labels=tf.zeros_like(self.fidelity_fake))
+                self.fidelity_loss = tf.reduce_mean(f_real + f_fake)
 
-            # continuity discriminator loss
-            c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
-                                                             labels=tf.ones_like(self.continuity_real))
-            c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
-                                                             labels=tf.zeros_like(self.continuity_fake))
-            self.continuity_loss = tf.reduce_mean(c_real + c_fake)
-            self.d_loss = self.continuity_loss + self.fidelity_loss
+                # continuity discriminator loss
+                c_real = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_real,
+                                                                 labels=tf.ones_like(self.continuity_real))
+                c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
+                                                                 labels=tf.zeros_like(self.continuity_fake))
+                self.continuity_loss = tf.reduce_mean(c_real + c_fake)
+                self.d_loss = self.continuity_loss + self.fidelity_loss
 
-            fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                                 labels=tf.ones_like(self.fidelity_fake))
+                # generator loss
+                fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                     labels=tf.ones_like(self.fidelity_fake))
 
-            con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
-                                                                 labels=tf.ones_like(self.continuity_fake))
+                con_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,
+                                                                     labels=tf.ones_like(self.continuity_fake))
 
-            self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
-            self.loss = self.pred_loss + self.d_weight*self.g_loss
+                self.g_loss = tf.reduce_mean(con_loss_g + fid_loss_g)
+                self.loss = self.pred_loss + self.d_weight*self.g_loss
+
+            else:
+                eps = 1e-6
+                f_real_logits = tf.nn.sigmoid(self.fidelity_real)
+                f_fake_logits = tf.nn.sigmoid(self.fidelity_fake)
+                self.fidelity_loss = -tf.reduce_mean(tf.log(f_real_logits + eps) + tf.log(1. - f_fake_logits + eps))
+
+                c_real_logits = tf.nn.sigmoid(self.continuity_real)
+                c_fake_logits = tf.nn.sigmoid(self.continuity_fake)
+                self.continuity_loss = -tf.reduce_mean(tf.log(c_real_logits + eps) + tf.log(1. - c_fake_logits + eps))
+                self.d_loss = self.continuity_loss + self.fidelity_loss
+
+                if self.min_g:
+                    # minimize log(1 - d(g))
+                    fid_loss_g = tf.reduce_mean(tf.log(1.0 - f_fake_logits + eps))
+                    con_loss_g = tf.reduce_mean(tf.log(1.0 - c_fake_logits + eps))
+                else:
+                    # maximize log(d(g))
+                    fid_loss_g = -tf.reduce_mean(tf.log(f_fake_logits + eps))
+                    con_loss_g = -tf.reduce_mean(tf.log(c_fake_logits + eps))
+                self.g_loss = fid_loss_g + con_loss_g
+                self.loss = self.pred_loss + self.d_weight*self.g_loss
+
         else:
             self.loss = self.pred_loss
 
@@ -879,21 +910,25 @@ class AGED(Seq2SeqModel):
         pred = tf.reshape(pred, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
         targ = tf.reshape(targ, [-1, self.target_seq_len, self.NUM_JOINTS, 3])
 
-        pred_rot = tf_tr_quat.from_axis_angle(pred)
-        targ_rot = tf_tr_quat.from_axis_angle(targ)
-        # pred_rot = aa2rotmat(pred)
-        # targ_rot = aa2rotmat(targ)
+        if self.use_rotmat_loss:
+            pred_rot = aa2rotmat(pred)
+            targ_rot = aa2rotmat(targ)
 
-        # A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot, transpose_b=True)) / 2.0
-        # A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
-        #
-        # # The norm of A is equivalent to sin(theta)
-        # A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
-        # theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
-        # geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+            A = (tf.matmul(pred_rot, targ_rot, transpose_b=True) - tf.matmul(targ_rot, pred_rot,
+                                                                             transpose_b=True)) / 2.0
+            A = tf.stack([-A[:, :, :, 1, 2], A[:, :, :, 0, 0], -A[:, :, :, 0, 1]], axis=-1)
 
-        theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
-        geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+            # The norm of A is equivalent to sin(theta)
+            A_norm = tf.sqrt(tf.maximum(tf.reduce_sum(tf.multiply(A, A), axis=-1), 1e-12))
+            theta = tf.asin(tf.clip_by_value(A_norm, -1.0, 1.0))
+            geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
+        else:
+            pred_rot = tf_tr_quat.from_axis_angle(pred)
+            targ_rot = tf_tr_quat.from_axis_angle(targ)
+            theta = tf_tr_quat.relative_angle(pred_rot, targ_rot)
+            geodesic_loss = tf.reduce_mean(tf.reduce_sum(theta, axis=(1, 2)))
+
         return geodesic_loss
 
     def _unnormalize(self, data):
