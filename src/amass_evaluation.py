@@ -233,11 +233,23 @@ if __name__ == '__main__':
     parser.add_argument('--dynamic_test_split', required=False, action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
-    try:
-        experiment_dir = glob.glob(os.path.join(args.save_dir, args.model_id + "-*"), recursive=False)[0]
-    except IndexError:
-        raise Exception("Model " + str(args.model_id) + " is not found in " + str(args.save_dir))
+    if ',' in args.model_id:
+        model_ids = args.model_id.split(',')
+    else:
+        model_ids = args.model_id
 
-    config = json.load(open(os.path.abspath(os.path.join(experiment_dir, 'config.json')), 'r'))
-    evaluate(experiment_dir, config, args)
+    for model_id in model_ids:
+        try:
+            experiment_dir = glob.glob(os.path.join(args.save_dir, model_id + "-*"), recursive=False)[0]
+        except IndexError:
+            print("Model " + str(model_id) + " is not found in " + str(args.save_dir))
+            continue
+
+        try:
+            tf.reset_default_graph()
+            config = json.load(open(os.path.abspath(os.path.join(experiment_dir, 'config.json')), 'r'))
+            evaluate(experiment_dir, config, args)
+        except Exception:
+            print("something went wrong when evaluating model {}".format(model_id))
+
 

@@ -798,13 +798,13 @@ class AGED(Seq2SeqModel):
         if self.use_adversarial:
             # Fidelity Discriminator
             # real inputs
-            self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=not self.is_training)
+            self.fidelity_real = self.fidelity_discriminator(self.prediction_targets, reuse=self.reuse)
             # fake inputs
             self.fidelity_fake = self.fidelity_discriminator(self.outputs, reuse=True)
 
             # Continuity Discriminator
             # real inputs
-            self.continuity_real = self.continuity_discriminator(self.data_inputs, reuse=not self.is_training)
+            self.continuity_real = self.continuity_discriminator(self.data_inputs, reuse=self.reuse)
             # fake inputs (real seed + prediction)
             c_inputs = tf.concat([self.encoder_inputs, self.outputs], axis=1)
             self.continuity_fake = self.continuity_discriminator(c_inputs, reuse=True)
