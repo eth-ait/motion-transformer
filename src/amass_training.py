@@ -612,7 +612,7 @@ def get_seq2seq_config(args):
         raise ValueError("'{}' model unknown".format(args.model_type))
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
@@ -632,7 +632,8 @@ def get_seq2seq_config(args):
                                                     'residual_vel_{}'.format(args.residual_velocities_type) if args.residual_velocities else 'not_residual_vel',
                                                     '-force_rot' if args.force_valid_rot else '',
                                                     '-i{}'.format(args.aged_input_layer_size) if args.model_type == "aged" else "",
-                                                    '-adv{}'.format(args.aged_d_weight) if args.model_type == "aged" and config['use_adversarial'] else "")
+                                                    '-adv{}'.format(args.aged_d_weight) if args.model_type == "aged" and config['use_adversarial'] else "",
+                                                    '-lr{}'.format(args.learning_rate))
     return model_cls, config, experiment_name
 
 

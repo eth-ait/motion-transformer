@@ -842,6 +842,7 @@ class AGED(Seq2SeqModel):
         self.use_adversarial = config['use_adversarial']
         self.use_rotmat_loss = config['aged_rotmat_loss']
         self.use_ce_loss = config['aged_binary_ce_loss']
+        self.unnormalize_d = config['aged_unnormalize_d']
         self.min_g = config['aged_min_g']
         self.fidelity_real = None
         self.fidelity_fake = None
@@ -886,8 +887,13 @@ class AGED(Seq2SeqModel):
         cell_size = self.config['fidelity_cell_size']
         cell_type = self.config['fidelity_cell_type']
 
+        if self.unnormalize_d:
+            in_ = self._unnormalize(inputs)
+        else:
+            in_ = inputs
+
         with tf.variable_scope("AGED/discriminator/fidelity", reuse=reuse):
-            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            inputs = tf.layers.dense(in_, input_hidden, activation=tf.nn.relu, reuse=reuse)
             logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
         return logits
 
@@ -897,8 +903,13 @@ class AGED(Seq2SeqModel):
         cell_size = self.config['continuity_cell_size']
         cell_type = self.config['continuity_cell_type']
 
+        if self.unnormalize_d:
+            in_ = self._unnormalize(inputs)
+        else:
+            in_ = inputs
+
         with tf.variable_scope("AGED/discriminator/continuity", reuse=reuse):
-            inputs = tf.layers.dense(inputs, input_hidden, activation=tf.nn.relu, reuse=reuse)
+            inputs = tf.layers.dense(in_, input_hidden, activation=tf.nn.relu, reuse=reuse)
             logits = self._build_discriminator_rnn(inputs, cell_type, cell_size, reuse)
         return logits
 
@@ -934,7 +945,7 @@ class AGED(Seq2SeqModel):
                 c_fake = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.continuity_fake,
                                                                  labels=tf.zeros_like(self.continuity_fake))
                 self.continuity_loss = tf.reduce_mean(c_real + c_fake)
-                self.d_loss = self.continuity_loss + self.fidelity_loss
+                self.d_loss = self.d_weight(self.continuity_loss + self.fidelity_loss)
 
                 # generator loss
                 fid_loss_g = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.fidelity_fake,

@@ -73,6 +73,7 @@ tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator lo
 tf.app.flags.DEFINE_boolean("aged_rotmat_loss", False, "If true uses rotation matrices to compute the geodesic loss instead of quaternions.")
 tf.app.flags.DEFINE_boolean("aged_log_loss", False, "If true computes the loss using logarithm directly rather then binary CE.")
 tf.app.flags.DEFINE_boolean("aged_min_g", False, "If true minimizes log(1-d(g)) rather than maximizing log(d(g))")
+tf.app.flags.DEFINE_boolean("aged_unnormalize_d", False, "If true unnormalizes the inputs to the discriminator")
 tf.app.flags.DEFINE_string("new_experiment_id", None, "10 digit unique experiment id given externally.")
 
 FLAGS = tf.app.flags.FLAGS
@@ -401,6 +402,7 @@ def create_seq2seq_model(actions, sampling=False):
     config['aged_rotmat_loss'] = FLAGS.aged_rotmat_loss
     config['aged_binary_ce_loss'] = not FLAGS.aged_log_loss
     config['aged_min_g'] = FLAGS.aged_min_g
+    config['aged_unnormalize_d'] = FLAGS.aged_unnormalize_d
 
     if FLAGS.action_loss != C.LOSS_ACTION_L2:
         print("!!!Only L2 action loss is implemented for seq2seq models!!!")
