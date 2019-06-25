@@ -612,12 +612,14 @@ def get_seq2seq_config(args):
         raise ValueError("'{}' model unknown".format(args.model_type))
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
-    experiment_name_format = "{}-{}-{}-{}-{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}{}{}"
+    experiment_name_format = "{}-{}-{}-{}-{}_{}x{}-{}-{}-{}{}-b{}-in{}_out{}-{}-{}-depth{}-size{}-{}{}{}{}{}"
     experiment_name = experiment_name_format.format(experiment_timestamp,
                                                     args.model_type,
                                                     "" if args.experiment_name is None else args.experiment_name,
                                                     "quat" if args.use_quat else "aa" if args.use_aa else "rotmat",
                                                     config['joint_prediction_model'],
+                                                    config['output_layer']['num_layers'],
+                                                    config['output_layer']['size'],
                                                     model_exp_name,
                                                     config['angle_loss_type'],
                                                     args.cell_type,
