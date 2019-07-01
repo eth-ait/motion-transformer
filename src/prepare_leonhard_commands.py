@@ -41,13 +41,14 @@ def prepare_amass():
                    '--optimizer {} --angle_loss joint_sum --model_type aged --output_layer_size 64 --output_layer_number {} ' \
                    '--joint_prediction_model {} --cell_type {} --cell_size 1024 --cell_layers 1 --test_every 500 ' \
                    '--seq_length_in 120 --seq_length_out 24 --residual_velocities --dynamic_validation_split ' \
-                   '--autoregressive_input sampling_based --aged_input_layer_size 1024 {} --use_aa '
+                   '--autoregressive_input sampling_based --aged_input_layer_size 1024 {} --use_aa ' \
+                   '--early_stopping_tolerance 50 '
 
-    lrs = [0.005, 0.0001, 0.00005]
-    batch_sizes = [16, 64, 128]
+    lrs = [0.0001]
+    batch_sizes = [64, 128]
     aged_weight = [0.0]
-    joint_prediction = ['fk_joints', 'plain']
-    cell_type = ['gru', 'lstm']
+    joint_prediction = ['plain']
+    cell_type = ['gru']
     optimizer = ['adam']
 
     all_commands = []
@@ -62,6 +63,9 @@ def prepare_amass():
                                 aged = '--aged_adversarial --aged_d_weight {} --aged_log_loss --aged_min_g'.format(d_weight)
                             else:
                                 aged = ''
+
+                            # if lr == 0.0001 and optim == 'adam':
+                            #     continue
 
                             if jpr == 'plain':
                                 out_size = 0
