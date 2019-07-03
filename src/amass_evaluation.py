@@ -233,11 +233,7 @@ if __name__ == '__main__':
     parser.add_argument('--dynamic_test_split', required=False, action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
-    if ',' in args.model_id:
-        model_ids = args.model_id.split(',')
-    else:
-        model_ids = args.model_id
-
+    model_ids = args.model_id.split(',')
     for model_id in model_ids:
         try:
             experiment_dir = glob.glob(os.path.join(args.save_dir, model_id + "-*"), recursive=False)[0]
