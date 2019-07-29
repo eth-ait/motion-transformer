@@ -176,6 +176,7 @@ def create_model(session):
     window_length = args.seq_length_in + args.seq_length_out
     experiment_name += "{}".format("-h36m" if args.use_h36m_only else "")
     experiment_name += "{}".format("-h36martinez" if args.use_h36m_martinez else "")
+    experiment_name += "{}".format("-dip" if args.use_dip else "")
 
     if args.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
