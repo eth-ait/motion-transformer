@@ -143,7 +143,7 @@ class TFRecordMotionDataset(Dataset):
                 self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_randomly),
                                                 num_parallel_calls=self.num_parallel_calls)
             else:
-                self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_from_beginning),
+                self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_middle),
                                                 num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_normalization(self):
@@ -197,8 +197,18 @@ class TFRecordMotionDataset(Dataset):
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 
-    def __pp_get_windows_from_beginning(self, sample):
+    def __pp_get_windows_beginning(self, sample):
+        # Extract a window from the beginning of the sequence.
         sample["poses"] = sample["poses"][0:self.extract_windows_of, :]
+        sample["shape"] = tf.shape(sample["poses"])
+        return sample
+
+    def __pp_get_windows_middle(self, sample):
+        # Window is located at the center of the sequence.
+        seq_len = tf.shape(sample["poses"])[0]
+        start = tf.maximum((seq_len//2) - (self.extract_windows_of//2), 0)
+        end = start + self.extract_windows_of
+        sample["poses"] = sample["poses"][start:end, :]
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 
@@ -257,7 +267,7 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
         self.tf_data = self.tf_data.prefetch(self.batch_size*10)
 
         if self.extract_windows_of > 0:
-            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_from_beginning),
+            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_middle),
                                             num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_to_model(self):
@@ -266,11 +276,20 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
         self.tf_data = self.tf_data.padded_batch(self.batch_size, padded_shapes=self.tf_data.output_shapes)
         self.tf_data = self.tf_data.prefetch(2)
 
-    def __pp_get_windows_from_beginning(self, sample):
+    def __pp_get_windows_beginning(self, sample):
         sample["poses"] = sample["poses"][0:self.extract_windows_of, :]
         sample["shape"] = tf.shape(sample["poses"])
         sample["euler_targets"] = sample["euler_targets"][0:self.extract_windows_of, :]
         sample["euler_shape"] = tf.shape(sample["euler_targets"])
+        return sample
+
+    def __pp_get_windows_middle(self, sample):
+        # Window is located at the center of the sequence.
+        seq_len = tf.shape(sample["poses"])[0]
+        start = tf.maximum((seq_len//2) - (self.extract_windows_of//2), 0)
+        end = start + self.extract_windows_of
+        sample["poses"] = sample["poses"][start:end, :]
+        sample["shape"] = tf.shape(sample["poses"])
         return sample
 
     def __to_model_inputs(self, tf_sample_dict):

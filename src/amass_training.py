@@ -36,6 +36,7 @@ from visualize import Visualizer
 
 
 # Learning
+tf.app.flags.DEFINE_integer("seed", 1234, "Seed value.")
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_rate", 0.95, "Learning rate mutiplier. 1 means no decay.")
 tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning rate decay type.")
@@ -178,6 +179,7 @@ def create_model(session):
     experiment_name += "{}".format("-h36martinez" if args.use_h36m_martinez else "")
     experiment_name += "{}".format("-dip" if args.use_dip else "")
 
+    tf.random.set_random_seed(config["seed"])
     if args.experiment_id is None:
         experiment_dir = os.path.normpath(os.path.join(train_dir, experiment_name))
     else:
@@ -199,7 +201,7 @@ def create_model(session):
 
     assert window_length <= 180, "TFRecords are hardcoded with length of 180."
     if args.dynamic_validation_split:
-        extract_random_windows = True
+        extract_random_windows = False
     else:
         window_length = 0
         extract_random_windows = False
@@ -357,7 +359,7 @@ def get_rnn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['model_type'] = args.model_type
-    config['seed'] = 1234
+    config['seed'] = args.seed
     config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_type'] = 'exponential'
@@ -439,7 +441,7 @@ def get_stcn_config(args):
     """Create translation model and initialize or load parameters in session."""
     config = dict()
     config['model_type'] = args.model_type
-    config['seed'] = 1234
+    config['seed'] = args.seed
     config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = 0.98
     config['learning_rate_decay_steps'] = 1000
@@ -559,7 +561,7 @@ def get_seq2seq_config(args):
 
     config = dict()
     config['model_type'] = args.model_type
-    config['seed'] = 1234
+    config['seed'] = args.seed
     config['loss_on_encoder_outputs'] = False  # Only valid for Wavenet variants.
     config['optimizer'] = args.optimizer
     config['joint_prediction_model'] = args.joint_prediction_model  # "plain", "separate_joints", "fk_joints"
