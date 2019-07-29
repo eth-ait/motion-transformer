@@ -85,6 +85,7 @@ tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation sampl
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
 tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
 tf.app.flags.DEFINE_boolean("use_25fps", True, "Use downsampled Martinez data")
+tf.app.flags.DEFINE_boolean("use_dip", False, "Use data as preprocessed from DIP.")
 tf.app.flags.DEFINE_boolean("aged_adversarial", False, "Use adversarial loss with AGED model.")
 tf.app.flags.DEFINE_integer("aged_input_layer_size", 0, "Use dense layer of this size before the recurrent cell.")
 tf.app.flags.DEFINE_float("aged_d_weight", 0.6, "Weight for the discriminator loss.")
@@ -121,10 +122,17 @@ def create_model(session):
     data_path = os.environ["AMASS_DATA"]
     if args.use_h36m_only:
         assert not args.use_h36m_martinez
+        assert not args.use_dip
         data_path = os.path.join(data_path, '../per_db/h36m')
 
     if args.use_h36m_martinez:
+        assert not args.use_dip
         data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
+
+    if args.use_dip:
+        assert not args.use_h36m_martinez
+        assert not args.use_h36m_only
+        data_path = os.path.join(data_path, '../../from_dip')
 
     train_data_path = os.path.join(data_path, rep, "training", "amass-?????-of-?????")
     if args.dynamic_validation_split:
@@ -392,6 +400,7 @@ def get_rnn_config(args):
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
     config['use_h36m_martinez'] = args.use_h36m_martinez
+    config['use_dip'] = args.use_dip
 
     model_exp_name = ""
     if args.model_type == "rnn":
@@ -491,6 +500,7 @@ def get_stcn_config(args):
     config['no_normalization'] = args.no_normalization
     config['use_h36m_only'] = args.use_h36m_only
     config['use_h36m_martinez'] = args.use_h36m_martinez
+    config['use_dip'] = args.use_dip
 
     input_dropout = config['input_layer'].get('dropout_rate', 0)
     model_exp_name = ""
@@ -498,6 +508,8 @@ def get_stcn_config(args):
         model_exp_name = "h36m"
     elif args.use_h36m_martinez:
         model_exp_name = "h36m_martinez"
+    elif args.use_dip:
+        model_exp_name = "dip"
 
     if args.model_type == "stcn":
         model_cls = amass_conv_models.STCN
@@ -578,6 +590,7 @@ def get_seq2seq_config(args):
     config['use_aa'] = args.use_aa
     config['use_h36m_only'] = args.use_h36m_only
     config['use_h36m_martinez'] = args.use_h36m_martinez
+    config['use_dip'] = args.use_dip
 
     # default values for AGED
     config['input_layer_size'] = args.aged_input_layer_size
@@ -598,6 +611,8 @@ def get_seq2seq_config(args):
         model_exp_name = "h36m"
     elif args.use_h36m_martinez:
         model_exp_name = "h36m_martinez"
+    elif args.use_dip:
+        model_exp_name = "dip"
 
     if args.model_type == "seq2seq":
         model_cls = models.Seq2SeqModel

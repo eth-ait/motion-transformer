@@ -37,6 +37,9 @@ def create_and_restore_model(session, experiment_dir, config, args):
     if config.get('use_h36m_martinez', False):
         data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
+    if config.get('use_dip', False):
+        data_path = os.path.join(data_path, '../../from_dip')
+
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
         extract_random_windows = False if args.visualize else True
@@ -236,7 +239,7 @@ if __name__ == '__main__':
     if ',' in args.model_id:
         model_ids = args.model_id.split(',')
     else:
-        model_ids = args.model_id
+        model_ids = [args.model_id]
 
     for model_id in model_ids:
         try:
@@ -249,7 +252,8 @@ if __name__ == '__main__':
             tf.reset_default_graph()
             config = json.load(open(os.path.abspath(os.path.join(experiment_dir, 'config.json')), 'r'))
             evaluate(experiment_dir, config, args)
-        except Exception:
+        except Exception as e:
             print("something went wrong when evaluating model {}".format(model_id))
+            raise Exception(e)
 
 

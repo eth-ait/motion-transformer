@@ -338,7 +338,7 @@ class MetricsEngine(object):
         if "pck" in self.which:
             self.which.pop(self.which.index("pck"))
             for t in self.pck_threshs:
-                self.which.append("pck_{}".format(int(t*100)))
+                self.which.append("pck_{}".format(int(t*100) if t*100 >= 1 else t*100))
         self.metrics_agg = {k: None for k in self.which}
         self.summaries = {k: {t: None for t in target_lengths} for k in self.which}
 

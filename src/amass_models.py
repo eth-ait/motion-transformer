@@ -588,7 +588,7 @@ class Seq2SeqModel(BaseModel):
         self.num_layers = self.config["num_layers"]
         self.architecture = self.config["architecture"]
         self.rnn_size = self.config["rnn_size"]
-        self.input_layer_size = self.config["input_layer_size"]
+        self.input_layer_size = self.config.get("input_layer_size", None)
         self.states = None
 
         if self.reuse is False:

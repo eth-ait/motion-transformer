@@ -108,5 +108,5 @@ class Constants(object):
     METRIC_TARGET_LENGTHS_AMASS = [5, 10, 19, 24, 34, 60]  # @ 60 Hz, in ms: 83.3, 166.7, 316.7, 400, 566.7, 1000
     METRIC_TARGET_LENGTHS_MARTINEZ = [4, 8, 16, 20, 28, 50]  # @ 50 Hz, in ms: [80, 160, 320, 400, 560, 1000]
     METRIC_TARGET_LENGTHS_MARTINEZ_25FPS = [2, 4, 8, 10, 14, 25]  # @ 25 Hz, in ms: [80, 160, 320, 400, 560, 1000]
-    METRIC_PCK_THRESHS = [0.02, 0.05, 0.1, 0.15, 0.2, 0.3]
+    METRIC_PCK_THRESHS = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3]
 

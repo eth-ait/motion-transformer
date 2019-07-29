@@ -96,6 +96,7 @@ class TFRecordMotionDataset(Dataset):
     Dataset class for AMASS dataset stored as TFRecord files.
     """
     def __init__(self, data_path, meta_data_path, batch_size, shuffle, **kwargs):
+        print("Loading motion data from {}".format(os.path.abspath(data_path)))
         # Extract a window randomly. If the sequence is shorter, ignore it.
         self.extract_windows_of = kwargs.get("extract_windows_of", 0)
         # Whether to extract windows randomly or from the beginning of the sequence.
