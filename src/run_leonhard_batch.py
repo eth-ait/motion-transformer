@@ -8,7 +8,7 @@ The working directory must be the same with python file's directory.
 NUM_CPU = 8
 MEMORY = 2048
 NUM_GPU = 1
-WALL_TIME = 12
+WALL_TIME = 8
 cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
 
 """
@@ -102,8 +102,55 @@ experiment_list = [
 ]
 
 experiment_list_h36m = [
-    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 0.0001 --batch_size 64 --optimizer adam --angle_loss joint_sum --model_type aged --output_layer_size 64 --output_layer_number 0 --joint_prediction_model plain --cell_type gru --cell_size 1024 --cell_layers 1 --test_every 500 --seq_length_in 120 --seq_length_out 24 --residual_velocities --dynamic_validation_split --autoregressive_input sampling_based --aged_input_layer_size 1024  --use_aa --early_stopping_tolerance 50 ',
-    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 0.0001 --batch_size 128 --optimizer adam --angle_loss joint_sum --model_type aged --output_layer_size 64 --output_layer_number 0 --joint_prediction_model plain --cell_type gru --cell_size 1024 --cell_layers 1 --test_every 500 --seq_length_in 120 --seq_length_out 24 --residual_velocities --dynamic_validation_split --autoregressive_input sampling_based --aged_input_layer_size 1024  --use_aa --early_stopping_tolerance 50 ']
+    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 1e-04 '
+    '--batch_size 256 --optimizer adam --angle_loss joint_sum '
+    '--model_type aged --joint_prediction_model fk_joints '
+    '--output_layer_size 64 --output_layer_number 2 '
+    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
+    '--residual_velocities --dynamic_validation_split '
+    '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
+    '--aged_input_layer_size 1024 --use_aa',
+
+    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 1e-04 '
+    '--batch_size 256 --optimizer adam --angle_loss joint_sum '
+    '--model_type aged --joint_prediction_model fk_joints '
+    '--output_layer_size 128 --output_layer_number 1 '
+    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
+    '--residual_velocities --dynamic_validation_split '
+    '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
+    '--aged_input_layer_size 1024 --use_aa',
+
+    # 'python amass_training.py --input_dropout_rate 0.0 --learning_rate 5e-04 '
+    # '--batch_size 128 --optimizer adam --angle_loss joint_sum '
+    # '--model_type aged --joint_prediction_model fk_joints '
+    # '--output_layer_size 64 --output_layer_number 2 '
+    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
+    # '--residual_velocities --dynamic_validation_split '
+    # '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
+    # '--aged_input_layer_size 1024 --use_aa',
+    #
+    # 'python amass_training.py --input_dropout_rate 0.0 --learning_rate 5e-04 '
+    # '--batch_size 128 --optimizer adam --angle_loss joint_sum '
+    # '--model_type aged --joint_prediction_model fk_joints '
+    # '--output_layer_size 128 --output_layer_number 1 '
+    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
+    # '--residual_velocities --dynamic_validation_split '
+    # '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
+    # '--aged_input_layer_size 1024 --use_aa',
+    #
+    # 'python amass_training.py --input_dropout_rate 0.1 --learning_rate 1e-03 '
+    # '--batch_size 64 --optimizer adam --angle_loss joint_sum '
+    # '--model_type rnn --joint_prediction_model fk_joints '
+    # '--output_layer_size 64 --output_layer_number 1 '
+    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
+    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
+    # '--residual_velocities --dynamic_validation_split '
+    # '--early_stopping_tolerance 50 ',
+]
 
 for i, experiment in enumerate(experiment_list_h36m):
     # print(experiment)
