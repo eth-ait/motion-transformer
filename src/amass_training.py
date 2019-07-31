@@ -161,7 +161,7 @@ def create_model(session):
     elif args.model_type == "simple_baseline":
         # get a dummy config from seq2seq
         model_cls, config, _ = get_seq2seq_config(args)
-        experiment_name = "25041990-a-simple-yet-effective-baseline"
+        experiment_name = "{}-zero-velocity".format(experiment_timestamp)
     elif args.model_type in ["stcn", "wavenet", "structured_stcn"]:
         model_cls, config, experiment_name = get_stcn_config(args)
     elif args.model_type in ["rnn", "vrnn"]:

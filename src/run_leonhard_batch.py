@@ -54,12 +54,6 @@ best_configuration = [
     '--architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60',
 ]
 
-# --no_normalization --dynamic_validation_split --output_layer_size 64 --optimizer adam --input_dropout_rate 0.1 --learning_rate 0.001 --angle_loss joint_sum --joint_prediction_model plain --batch_size 16 --model_type wavenet --cell_type lstm --cell_size 1024 --cell_layers 1 --architecture tied --autoregressive_input supervised --seq_length_in 100 --seq_length_out 60
-# --dynamic_validation_split --no_normalization --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.0005 --angle_loss joint_sum --joint_prediction_model plain --residual_velocities --batch_size 64 --model_type wavenet --seq_length_in 100 --seq_length_out 60
-# --experiment_name 400ms --dynamic_validation_split --input_dropout_rate 0.1 --optimizer sgd --learning_rate 0.005 --angle_loss all_mean --batch_size 16 --model_type seq2seq --autoregressive_input sampling_based --seq_length_in 100 --seq_length_out 24 --residual_velocities
-
-#
-
 experiment_list = [
     # AGED without adversarial but with SPL
     'python amass_training.py --angle_loss joint_sum --joint_prediction_model fk_joints --output_layer_size 64 '
@@ -101,58 +95,50 @@ experiment_list = [
 
 ]
 
-experiment_list_h36m = [
-    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 1e-04 '
-    '--batch_size 256 --optimizer adam --angle_loss joint_sum '
-    '--model_type aged --joint_prediction_model fk_joints '
-    '--output_layer_size 64 --output_layer_number 2 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
-    '--residual_velocities --dynamic_validation_split '
-    '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
-    '--aged_input_layer_size 1024 --use_aa',
+experiment_list_reproduce = [
 
-    'python amass_training.py --input_dropout_rate 0.0 --learning_rate 1e-04 '
-    '--batch_size 256 --optimizer adam --angle_loss joint_sum '
-    '--model_type aged --joint_prediction_model fk_joints '
-    '--output_layer_size 128 --output_layer_number 1 '
-    '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
-    '--residual_velocities --dynamic_validation_split '
-    '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
-    '--aged_input_layer_size 1024 --use_aa',
+    # Seq2Seq sampling
+    # 'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input sampling_based --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553087204"',
+    #
+    # 'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input sampling_based --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553087204" --use_dip',
+    #
+    # 'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input sampling_based --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model fk_joints --learning_rate 0.001 --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074481"',
+    #
+    # 'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input sampling_based --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model fk_joints --learning_rate 0.001 --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074481" --use_dip',
 
-    # 'python amass_training.py --input_dropout_rate 0.0 --learning_rate 5e-04 '
-    # '--batch_size 128 --optimizer adam --angle_loss joint_sum '
-    # '--model_type aged --joint_prediction_model fk_joints '
-    # '--output_layer_size 64 --output_layer_number 2 '
-    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
-    # '--residual_velocities --dynamic_validation_split '
-    # '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
-    # '--aged_input_layer_size 1024 --use_aa',
-    #
-    # 'python amass_training.py --input_dropout_rate 0.0 --learning_rate 5e-04 '
-    # '--batch_size 128 --optimizer adam --angle_loss joint_sum '
-    # '--model_type aged --joint_prediction_model fk_joints '
-    # '--output_layer_size 128 --output_layer_number 1 '
-    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
-    # '--residual_velocities --dynamic_validation_split '
-    # '--autoregressive_input sampling_based --early_stopping_tolerance 40 '
-    # '--aged_input_layer_size 1024 --use_aa',
-    #
-    # 'python amass_training.py --input_dropout_rate 0.1 --learning_rate 1e-03 '
-    # '--batch_size 64 --optimizer adam --angle_loss joint_sum '
-    # '--model_type rnn --joint_prediction_model fk_joints '
-    # '--output_layer_size 64 --output_layer_number 1 '
-    # '--cell_type lstm --cell_size 1024 --cell_layers 1 '
-    # '--test_every 500 --seq_length_in 120 --seq_length_out 24 '
-    # '--residual_velocities --dynamic_validation_split '
-    # '--early_stopping_tolerance 50 ',
+    # RNN
+    'python amass_training.py --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 --max_gradient_norm 1.0 --angle_loss all_mean --joint_prediction_model plain --batch_size 64 --model_type rnn --cell_type lstm --cell_size 1024 --cell_layers 1 --seq_length_in 120 --seq_length_out 24 --output_layer_number 1 --output_layer_size 960 --residual_velocities --early_stopping_tolerance 40 --dynamic_validation_split --experiment_name "repr-1553131105-bigger-1561316193"',
+
+    'python amass_training.py --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 --max_gradient_norm 1.0 --angle_loss all_mean --joint_prediction_model plain --batch_size 64 --model_type rnn --cell_type lstm --cell_size 1024 --cell_layers 1 --seq_length_in 120 --seq_length_out 24 --output_layer_number 1 --output_layer_size 960 --residual_velocities --early_stopping_tolerance 40 --dynamic_validation_split --experiment_name "repr-1553131105-bigger-1561316193" --use_dip',
+
+    'python amass_training.py --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 --max_gradient_norm 1.0 --angle_loss joint_sum --joint_prediction_model fk_joints --batch_size 64 --model_type rnn --cell_type lstm --cell_size 1024 --cell_layers 1 --seq_length_in 120 --seq_length_out 24 --output_layer_number 1 --output_layer_size 64 --residual_velocities --early_stopping_tolerance 40 --dynamic_validation_split --experiment_name "repr-1553131107"',
+
+    'python amass_training.py --input_dropout_rate 0.1 --optimizer adam --learning_rate 0.001 --max_gradient_norm 1.0 --angle_loss joint_sum --joint_prediction_model fk_joints --batch_size 64 --model_type rnn --cell_type lstm --cell_size 1024 --cell_layers 1 --seq_length_in 120 --seq_length_out 24 --output_layer_number 1 --output_layer_size 64 --residual_velocities --early_stopping_tolerance 40 --dynamic_validation_split --experiment_name "repr-1553131107" --use_dip',
+
+    # Seq2seq supervised
+    'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553087208"',
+
+    'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553087208" --use_dip',
+
+    'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model fk_joints --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074473"',
+
+    'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.0 --joint_prediction_model fk_joints --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074473" --use_dip',
+
+    # Seq2seq supervised dropout
+    'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.1 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553131133"',
+
+    'python amass_training.py --angle_loss all_mean --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.1 --joint_prediction_model plain --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 256 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553131133" --use_dip',
+
+    'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.1 --joint_prediction_model fk_joints --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074479"',
+
+    'python amass_training.py --angle_loss joint_sum --architecture tied --autoregressive_input supervised --batch_size 64 --cell_type lstm --cell_layers 1 --cell_size 1024 --max_gradient_norm 1.0 --input_dropout_rate 0.1 --joint_prediction_model fk_joints --learning_rate 0.001 --optimizer adam --early_stopping_tolerance 40 --model_type seq2seq --output_layer_size 64 --output_layer_number 1 --residual_velocities --dynamic_validation_split --seq_length_in 120 --seq_length_out 24 --use_aa --experiment_name "reproduce-1553074479" --use_dip',
+
+
+
+
 ]
 
-for i, experiment in enumerate(experiment_list_h36m):
+for i, experiment in enumerate(experiment_list_reproduce):
     # print(experiment)
     # Create a unique experiment timestamp.
     time.sleep(2)
