@@ -31,25 +31,46 @@ _colors = _prop_cycle.by_key()['color']
 
 class Visualizer(object):
     """
-    Helper class to visualize SMPL joint angle input.
+    Helper class to visualize motion. It supports an interactive mode as well as saving frames/videos.
     """
 
-    def __init__(self, fk_engine, video_dir=None, frames_dir=None, rep="rot_mat", is_sparse=True,
-                 dense=False, dense_with_skeleton=True):
+    def __init__(self, interactive, rep="rot_mat", is_sparse=True,
+                 fk_engine=None, output_dir=None, skeleton=True, dense=True, to_video=False):
+        """
+        Initializer. Determines if visualizations are shown interactively or saved to disk.
+        Args:
+            interactive: Boolean if motion is to be shown in an interactive matplotlib window. If True, requires
+              `fk_engine` and can only display skeletons as animating dense meshes is too slow. If False,
+              `output_dir` must be passed. In this case, we frames (and optionally a video) are dumped to disk.
+              This is slow as it uses SMPL to produce meshes and joint positions for every time instance.
+            rep: Representation of the input motions, 'rot_mat', 'quat', or 'aa'.
+            is_sparse: If the input motions are sparse, i.e. only using 15 SMPL joints.
+            fk_engine: The forward-kinematics engine required for interactive mode.
+            output_dir: Where to dump frames/videos in non-interactive mode.
+            skeleton: Boolean if skeleton should be shown in non-interactive mode.
+            dense: Boolean if mesh should be shown in non-interactive mode.
+            to_video: Boolean if a video should be dumped to disk in non-interactive mode.
+        """
+        self.interactive = interactive
         self.fk_engine = fk_engine
-        self.video_dir = video_dir  # if not None saves to mp4
-        self.frames_dir = frames_dir  # if not None dumps individual frames
+        self.video_dir = output_dir
         self.rep = rep
         self.is_sparse = is_sparse
-        self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
         self.dense = dense  # also plots the SMPL mesh, WARNING: this is very slow
-        self.dense_with_skeleton = dense_with_skeleton  # keeps the skeleton when plotting SMPL mesh
-        self.smpl_m = load_model(
-            '../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl') if self.dense else None
+        self.skeleton = skeleton
+        self.to_video = to_video
         self.base_color = _colors[0]  # what color to use to display ground-truth and seed
         self.prediction_color = _colors[1]  # what color to use for predictions, use _colors[2] for non-RNN-SPL models
         assert rep in ["rot_mat", "quat", "aa"]
-        assert not (self.video_dir and self.frames_dir), "can only either store to video or produce frames"
+        if self.interactive:
+            assert self.fk_engine
+            self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
+            self.smpl_m = None
+        else:
+            assert self.skeleton or self.dense, "either skeleton or mesh (or both) should be displayed"
+            assert output_dir
+            self.expected_n_input_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
+            self.smpl_m = load_model('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
 
     def visualize(self, seed, prediction, target, title):
         """
@@ -116,89 +137,124 @@ class Visualizer(object):
         pred_are_valid = is_valid_rotmat(np.reshape(pred, [-1, n_joints, 3, 3]))
         assert pred_are_valid, 'predicted rotation matrices are not valid rotations'
 
-        # compute meshes - in this case we get the global positions from SMPL directly
-        if self.dense:
-            if self.is_sparse:
-                pred_full = sparse_to_full(pred, SMPL_MAJOR_JOINTS, SMPL_NR_JOINTS)
-                targ_full = sparse_to_full(targ, SMPL_MAJOR_JOINTS, SMPL_NR_JOINTS)
-            else:
-                pred_full = pred
-                targ_full = targ
-
-            # to angle-axis
-            pred_full_aa = np.reshape(rotmat2aa(np.reshape(pred_full, [-1, SMPL_NR_JOINTS, 3, 3])),
-                                      [-1, SMPL_NR_JOINTS * 3])
-            targ_full_aa = np.reshape(rotmat2aa(np.reshape(targ_full, [-1, SMPL_NR_JOINTS, 3, 3])),
-                                      [-1, SMPL_NR_JOINTS * 3])
-
-            def get_mesh(v, f, c):
-                # flip y and z
-                v = v[..., [0, 2, 1]]
-                mesh = Poly3DCollection(v[f], alpha=0.2, linewidths=(0.25,))
-                face_color = c
-                edge_color = (50 / 255, 50 / 255, 50 / 255)
-                mesh.set_edgecolor(edge_color)
-                mesh.set_facecolor(face_color)
-                return mesh
-
-            pred_meshes = []
-            targ_meshes = []
-            pred_pos = []
-            targ_pos = []
-            for fr in range(pred_full_aa.shape[0]):
-                color = self.base_color if fr < seed.shape[0] else self.prediction_color
-                self.smpl_m.pose[:] = pred_full_aa[fr]
-                pred_meshes.append(get_mesh(self.smpl_m.r, self.smpl_m.f, color))
-                pred_pos.append(self.smpl_m.J_transformed.r.copy())
-
-                self.smpl_m.pose[:] = targ_full_aa[fr]
-                targ_meshes.append(get_mesh(self.smpl_m.r, self.smpl_m.f, self.base_color))
-                targ_pos.append(self.smpl_m.J_transformed.r.copy())
-
-            pred_pos = np.array(pred_pos)
-            targ_pos = np.array(targ_pos)
-
-            meshes = [pred_meshes, targ_meshes]
-
+        if self.interactive:
+            self._visualize_interactively(pred, targ, title, seed.shape[0])
         else:
-            meshes = None
+            self._visualize_offline(pred, targ, title, seed.shape[0])
 
-            # compute positions ourselves as this is a bit faster
-            if self.is_sparse:
-                pred_pos = self.fk_engine.from_sparse(pred, return_sparse=False)  # (N, full_n_joints, 3)
-                targ_pos = self.fk_engine.from_sparse(targ, return_sparse=False)  # (N, full_n_joints, 3)
-            else:
-                pred_pos = self.fk_engine.from_rotmat(pred)
-                targ_pos = self.fk_engine.from_rotmat(targ)
+    def _visualize_interactively(self, pred, targ, title, change_color_after_frame):
+        """
+        Visualize predicted and target joint angles in an interactive matplotlib window.
+        Args:
+            pred: np array of shape (N, n_joints*3*3).
+            targ: np array of shape (N, n_joints*3*3).
+            title: Window title.
+            change_color_after_frame: After which time step to change the color of the prediction.
+        """
+        # compute positions ourselves as this is a bit faster
+        if self.is_sparse:
+            pred_pos = self.fk_engine.from_sparse(pred, return_sparse=False)  # (N, full_n_joints, 3)
+            targ_pos = self.fk_engine.from_sparse(targ, return_sparse=False)  # (N, full_n_joints, 3)
+        else:
+            pred_pos = self.fk_engine.from_rotmat(pred)
+            targ_pos = self.fk_engine.from_rotmat(targ)
 
         # swap axes
         pred_pos = pred_pos[..., [0, 2, 1]]
         targ_pos = targ_pos[..., [0, 2, 1]]
 
+        animate(positions=[pred_pos, targ_pos],
+                colors=[self.base_color, self.base_color],
+                titles=['prediction', 'target'],
+                fig_title=title,
+                parents=self.fk_engine.parents,
+                change_color_after_frame=(change_color_after_frame, None),
+                color_after_change=self.prediction_color)
+
+    def _visualize_offline(self, pred, targ, title, change_color_after_frame):
+        """
+        Dumps every frame to an image on disk. Uses SMPL model directly to compute forward-kinematics.
+        Args:
+            pred: np array of shape (N, n_joints*3*3).
+            targ: np array of shape (N, n_joints*3*3).
+            title: Window title.
+            change_color_after_frame: After which time step to change the color of the prediction.
+        """
+        if self.is_sparse:
+            pred_full = sparse_to_full(pred, SMPL_MAJOR_JOINTS, SMPL_NR_JOINTS)
+            targ_full = sparse_to_full(targ, SMPL_MAJOR_JOINTS, SMPL_NR_JOINTS)
+        else:
+            pred_full = pred
+            targ_full = targ
+
+        # to angle-axis
+        pred_full_aa = np.reshape(rotmat2aa(np.reshape(pred_full, [-1, SMPL_NR_JOINTS, 3, 3])),
+                                  [-1, SMPL_NR_JOINTS * 3])
+        targ_full_aa = np.reshape(rotmat2aa(np.reshape(targ_full, [-1, SMPL_NR_JOINTS, 3, 3])),
+                                  [-1, SMPL_NR_JOINTS * 3])
+
+        def get_mesh(v, f, c):
+            # flip y and z
+            v = v[..., [0, 2, 1]]
+            mesh = Poly3DCollection(v[f], alpha=0.2, linewidths=(0.25,))
+            face_color = c
+            edge_color = (50 / 255, 50 / 255, 50 / 255)
+            mesh.set_edgecolor(edge_color)
+            mesh.set_facecolor(face_color)
+            return mesh
+
+        pred_meshes = []
+        targ_meshes = []
+        pred_pos = []
+        targ_pos = []
+        for fr in range(pred_full_aa.shape[0]):
+            color = self.base_color if fr < change_color_after_frame else self.prediction_color
+            self.smpl_m.pose[:] = pred_full_aa[fr]
+            if self.dense:
+                pred_meshes.append(get_mesh(self.smpl_m.r, self.smpl_m.f, color))
+            if self.skeleton:
+                pred_pos.append(self.smpl_m.J_transformed.r.copy())
+
+            self.smpl_m.pose[:] = targ_full_aa[fr]
+            if self.dense:
+                targ_meshes.append(get_mesh(self.smpl_m.r, self.smpl_m.f, self.base_color))
+            if self.skeleton:
+                targ_pos.append(self.smpl_m.J_transformed.r.copy())
+
+        meshes = [pred_meshes, targ_meshes] if self.dense else None
+
+        if self.skeleton:
+            pred_pos = np.array(pred_pos)
+            targ_pos = np.array(targ_pos)
+
+            # swap axes
+            pred_pos = pred_pos[..., [0, 2, 1]]
+            targ_pos = targ_pos[..., [0, 2, 1]]
+
+            positions = [pred_pos, targ_pos]
+        else:
+            positions = None
+
         f_name = title.replace('/', '.')
         f_name = f_name.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
-        dir_prefix = 'skel' if not self.dense else 'dense_skel' if self.dense_with_skeleton else 'dense'
-        if self.video_dir is not None:
-            # save output animation to mp4
-            out_name = os.path.join(self.video_dir, dir_prefix, f_name + '.mp4')
-        elif self.frames_dir is not None:
-            out_name = os.path.join(self.frames_dir, dir_prefix, f_name)
-        else:
-            out_name = None
-        visualize_positions(positions=[pred_pos, targ_pos],
-                            colors=[self.base_color, self.base_color],
-                            titles=['prediction', 'target'],
-                            fig_title=title,
-                            parents=self.fk_engine.parents,
-                            change_color_after_frame=(seed.shape[0], None),
-                            color_after_change=self.prediction_color,
-                            out_file=out_name,
-                            meshes=meshes,
-                            with_skeleton=self.dense_with_skeleton)
+        dir_prefix = 'dense' if self.dense else 'skel'
+        dir_prefix = 'dense-skel' if self.dense and self.skeleton else dir_prefix
+        out_name = os.path.join(self.video_dir, dir_prefix, f_name)
+
+        animate_offline(meshes=meshes,
+                        positions=positions,
+                        colors=[self.base_color, self.base_color],
+                        titles=['prediction', 'target'],
+                        fig_title=title,
+                        parents=SMPL_PARENTS,
+                        change_color_after_frame=(change_color_after_frame, None),
+                        color_after_change=self.prediction_color,
+                        out_dir=out_name,
+                        to_video=self.to_video)
 
 
-def visualize_positions(positions, colors, titles, fig_title, parents, change_color_after_frame=None,
-                        color_after_change=None, overlay=False, out_file=None, fps=60, meshes=None, with_skeleton=True):
+def animate(positions, colors, titles, fig_title, parents, change_color_after_frame=None,
+            color_after_change=None, overlay=False, fps=60):
     """
     Visualize motion given 3D positions. Can visualize several motions side by side. If the sequence lengths don't
     match, all animations are displayed until the shortest sequence length.
@@ -208,13 +264,10 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         titles: list of titles for each entry in `positions`
         fig_title: title for the entire figure
         parents: skeleton structure
-        out_file: output file path if the visualization is to be saved as video of frames
         fps: frames per second
         change_color_after_frame: after this frame id, the color of the plot is changed (for each entry in `positions`)
         color_after_change: what color to apply after `change_color_after_frame`
         overlay: if true, all entries in `positions` are plotted into the same subplot
-        meshes: a list of meshes to be displayed or None
-        with_skeleton: if meshes are given, also plot the skeleton (otherwise it is always plotted)
     """
     seq_length = np.amin([pos.shape[0] for pos in positions])
     n_joints = positions[0].shape[1]
@@ -234,20 +287,16 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
         idx = 0 if overlay else i
         ax = axes[idx]
 
-        if meshes is not None:
-            ax.add_collection3d(meshes[i][0])
-
-        if meshes is None or with_skeleton:
-            lines_j = [
-                ax.plot(joints[0:1, n, 0], joints[0:1, n, 1], joints[0:1, n, 2], '-o',
-                        markersize=2.0, color=colors[i])[0] for n in range(1, n_joints)]
-            all_lines.append(lines_j)
+        lines_j = [
+            ax.plot(joints[0:1, n, 0], joints[0:1, n, 1], joints[0:1, n, 2], '-o',
+                    markersize=2.0, color=colors[i])[0] for n in range(1, n_joints)]
+        all_lines.append(lines_j)
 
         ax.set_title(titles[i])
 
     # dirty hack to get equal axes behaviour
-    min_val = np.array([-1.0, -1.0, -1.5])
-    max_val = np.array([1.0, 0.5, 0.5])
+    min_val = np.amin(pos[0], axis=(0, 1))
+    max_val = np.amax(pos[0], axis=(0, 1))
     max_range = (max_val - min_val).max()
     Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][0].flatten() + 0.5 * (max_val[0] + min_val[0])
     Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][1].flatten() + 0.5 * (max_val[1] + min_val[1])
@@ -285,50 +334,30 @@ def visualize_positions(positions, colors, titles, fig_title, parents, change_co
     c1 = fig.canvas.mpl_connect('motion_notify_event', on_move)
     fig_text = fig.text(0.05, 0.05, '')
 
-    def update_frame(num, positions, lines, parents, colors, meshes, axes):
-        if meshes is not None:
-            for l in range(len(meshes)):
-                ax = axes[l]
-                ax.collections.remove(ax.collections[0])
-                ax.add_collection3d(meshes[l][num])
+    def update_frame(num, positions, lines):
+        for l in range(len(positions)):
+            k = 0
+            pos = positions[l]
+            points_j = lines[l]
+            for i in range(1, len(parents)):
+                a = pos[num, i]
+                b = pos[num, parents[i]]
+                p = np.vstack([b, a])
+                points_j[k].set_data(p[:, :2].T)
+                points_j[k].set_3d_properties(p[:, 2].T)
+                if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
+                    points_j[k].set_color(color_after_change)
+                else:
+                    points_j[k].set_color(colors[l])
+                k += 1
 
-        if meshes is None or with_skeleton:
-            for l in range(len(positions)):
-                k = 0
-                pos = positions[l]
-                points_j = lines[l]
-                for i in range(1, len(parents)):
-                    a = pos[num, i]
-                    b = pos[num, parents[i]]
-                    p = np.vstack([b, a])
-                    points_j[k].set_data(p[:, :2].T)
-                    points_j[k].set_3d_properties(p[:, 2].T)
-                    if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
-                        points_j[k].set_color(color_after_change)
-                    else:
-                        points_j[k].set_color(colors[l])
-
-                    k += 1
         time_passed = '{:>.2f} seconds passed'.format(1 / 60.0 * num)
         fig_text.set_text(time_passed)
 
     # create the animation object, for animation to work reference to this object must be kept
-    fargs = (pos, all_lines, parents, colors + [colors[0]], meshes, axes)
+    fargs = (pos, all_lines)
     line_ani = animation.FuncAnimation(fig, update_frame, seq_length, fargs=fargs, interval=1000 / fps)
-
-    if out_file is None:
-        # interactive
-        plt.show()
-    elif out_file.endswith('.mp4'):
-        # save to video file
-        print('saving video to {}'.format(out_file))
-        save_animation(fig, seq_length, update_frame, fargs,
-                       out_folder=out_file, create_mp4=True)
-    else:
-        # dump frames as vector-graphics (SVG)
-        print('dumping individual frames to {}'.format(out_file))
-        save_animation(fig, seq_length, update_frame, fargs,
-                       out_folder=out_file, image_format='svg')
+    plt.show()
     plt.close()
 
 
@@ -399,6 +428,121 @@ def save_to_movie(source_dir, out_dir, start_frame, input_fps, frame_format='fra
     FNULL = open(os.devnull, 'w')
     subprocess.Popen(command, stdout=FNULL).wait()
     FNULL.close()
+
+
+def animate_offline(colors, titles, fig_title, parents, change_color_after_frame=None,
+                    color_after_change=None, overlay=False, out_dir=None, fps=60,
+                    positions=None, meshes=None, to_video=False):
+    """
+    Visualize motion given 3D positions. Can visualize several motions side by side. If the sequence lengths don't
+    match, all animations are displayed until the shortest sequence length.
+    Args:
+        positions: a list of np arrays in shape (seq_length, n_joints, 3) giving the 3D positions per joint and frame
+        colors: list of color for each entry in `positions`
+        titles: list of titles for each entry in `positions`
+        fig_title: title for the entire figure
+        parents: skeleton structure
+        out_dir: output file path if the visualization is to be saved as video of frames
+        fps: frames per second
+        change_color_after_frame: after this frame id, the color of the plot is changed (for each entry in `positions`)
+        color_after_change: what color to apply after `change_color_after_frame`
+        overlay: if true, all entries in `positions` are plotted into the same subplot
+        meshes: a list of meshes to be displayed or None
+    """
+    if positions is not None:
+        seq_length = np.amin([pos.shape[0] for pos in positions])
+        n_seq = len(positions)
+    elif meshes is not None:
+        seq_length = np.amin([len(m) for m in meshes])
+        n_seq = len(meshes)
+    else:
+        raise ValueError("Positions or meshes must be supplied.")
+    n_joints = len(parents)
+
+    # Create output dir if necessary
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    # create figure with as many subplots as we have skeletons
+    fig = plt.figure(figsize=(16, 9))
+    plt.clf()
+    n_axes = 1 if overlay else n_seq
+    axes = [fig.add_subplot(1, n_axes, i + 1, projection='3d') for i in range(n_axes)]
+    fig.suptitle(fig_title)
+
+    # create point object for every bone in every skeleton
+    all_lines = []
+    # available_colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k', 'w']
+    for i in range(n_seq):
+        idx = 0 if overlay else i
+        ax = axes[idx]
+
+        if meshes is not None:
+            ax.add_collection3d(meshes[i][0])
+
+        if positions is not None:
+            joints = positions[i]
+            lines_j = [
+                ax.plot(joints[0:1, n, 0], joints[0:1, n, 1], joints[0:1, n, 2], '-o',
+                        markersize=2.0, color=colors[i])[0] for n in range(1, n_joints)]
+            all_lines.append(lines_j)
+
+        ax.set_title(titles[i])
+
+    # dirty hack to get equal axes behaviour
+    min_val = np.array([-1.0, -1.0, -1.5])
+    max_val = np.array([1.0, 0.5, 0.5])
+    max_range = (max_val - min_val).max()
+    Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][0].flatten() + 0.5 * (max_val[0] + min_val[0])
+    Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][1].flatten() + 0.5 * (max_val[1] + min_val[1])
+    Zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][2].flatten() + 0.5 * (max_val[2] + min_val[2])
+
+    for ax in axes:
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        for xb, yb, zb in zip(Xb, Yb, Zb):
+            ax.plot([xb], [yb], [zb], 'w')
+
+        ax.view_init(elev=0, azim=-56)
+
+    fig_text = fig.text(0.05, 0.05, '')
+
+    def update_frame(num, positions, lines, parents, colors, meshes, axes):
+        if meshes is not None:
+            for l in range(len(meshes)):
+                ax = axes[l]
+                ax.collections.remove(ax.collections[0])
+                ax.add_collection3d(meshes[l][num])
+
+        if positions is not None:
+            for l in range(len(positions)):
+                k = 0
+                pos = positions[l]
+                points_j = lines[l]
+                for i in range(1, len(parents)):
+                    a = pos[num, i]
+                    b = pos[num, parents[i]]
+                    p = np.vstack([b, a])
+                    points_j[k].set_data(p[:, :2].T)
+                    points_j[k].set_3d_properties(p[:, 2].T)
+                    if change_color_after_frame and change_color_after_frame[l] and num >= change_color_after_frame[l]:
+                        points_j[k].set_color(color_after_change)
+                    else:
+                        points_j[k].set_color(colors[l])
+
+                    k += 1
+        time_passed = '{:>.2f} seconds passed'.format(1 / 60.0 * num)
+        fig_text.set_text(time_passed)
+
+    for fr in range(seq_length):
+        update_frame(fr, positions, all_lines, parents, colors, meshes, axes)
+        fig.savefig(os.path.join(out_dir, 'frame_{:0>4}.png'.format(fr)), dip=1000)
+
+    if to_video:
+        save_to_movie(out_dir, out_dir, 0, fps)
+
+    plt.close()
 
 
 def visualize_quaternet():

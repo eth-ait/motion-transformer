@@ -252,9 +252,9 @@ def _test_h36m_fk():
     sample = np.reshape(sample, [-1, H36M_NR_JOINTS, 3])[:, H36M_MAJOR_JOINTS]
     positions = h36m.from_sparse(np.reshape(sample, [-1, len(H36M_MAJOR_JOINTS)*3]), rep="aa", return_sparse=False)
 
-    from visualize import visualize_positions
+    from visualize import animate
     positions = positions[:, :, [0, 2, 1]]  # swap y and z
-    visualize_positions([positions], ['b'], ['test'], 'test', H36M_PARENTS)
+    animate([positions], ['b'], ['test'], 'test', H36M_PARENTS)
 
 
 def _test_smpl_fk():
@@ -271,9 +271,9 @@ def _test_smpl_fk():
         # positions2 = smpl_fk2.from_sparse(poses, SMPL_MAJOR_JOINTS, rep="rot_mat", return_sparse=False)
         # positions2 = positions2[:, :, [0, 2, 1]]  # swap y and z
 
-        from visualize import visualize_positions
+        from visualize import animate
         positions = positions[:, :, [0, 2, 1]]  # swap y and z
-        visualize_positions([positions], ['b'], ['test'], 'test', SMPL_PARENTS)
+        animate([positions], ['b'], ['test'], 'test', SMPL_PARENTS)
 
 
 if __name__ == '__main__':

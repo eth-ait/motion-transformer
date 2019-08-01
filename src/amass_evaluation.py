@@ -122,8 +122,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
 def evaluate(experiment_dir, config, args):
 
-    visualize = args.visualize or args.visualize_dense
-
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
 
@@ -179,7 +177,7 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
-                    if visualize:
+                    if args.visualize:
                         # To speed things up a bit
                         break
 
@@ -202,24 +200,27 @@ def evaluate(experiment_dir, config, args):
                 glog_data = {**glog_data, **glog_test_metrics}
                 g_logger.append_row(glog_data, sheet_name="until_{}".format(t))
 
-        if visualize:
+        if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            video_dir = experiment_dir if args.save_video or args.visualize_dense else None
-            frames_dir = experiment_dir if args.save_frames else None
-            visualizer = Visualizer(fk_engine, video_dir, frames_dir,
-                                    rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat",
-                                    dense=args.visualize_dense, dense_with_skeleton=not args.no_skel)
-            n_samples_viz = 30  # TODO change
-            # selected_idxs = [19]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            if args.interactive:
+                visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
+                                        rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
+            else:
+                visualizer = Visualizer(interactive=False,
+                                        rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat",
+                                        output_dir=experiment_dir, skeleton=not args.no_skel, dense=not args.no_mesh,
+                                        to_video=args.to_video)
+
+            n_samples_viz = 30
+            selected_idxs = [3]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
             # selected_idxs = [24, 27]  # for the dynamic split
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
 
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for i, k in enumerate(sample_keys):
-                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
-                # if i in selected_idxs:
-                #     pass
+                if i in selected_idxs:
+                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
 
 
 if __name__ == '__main__':
@@ -232,10 +233,10 @@ if __name__ == '__main__':
     parser.add_argument('--no_normalization', action="store_true", help='If set overrides the config.')
     parser.add_argument('--glog_entry', action="store_true", help='Write to the Google sheet.')
     parser.add_argument('--visualize', action="store_true", help='Visualize model predictions.')
-    parser.add_argument('--visualize_dense', action="store_true", help='Visualize model predictions using SMPL mesh and skeletons.')
-    parser.add_argument('--no_skel', action="store_true", help='Visualize model predictions using SMPL mesh only.')
-    parser.add_argument('--save_video', action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
-    parser.add_argument('--save_frames', action="store_true", help='Save the model predictions to individual pngs in a temporary folder')
+    parser.add_argument('--interactive', action="store_true", help='Visualize model predictions interactively.')
+    parser.add_argument('--no_skel', action="store_true", help='Dont show skeleton in offline visualization.')
+    parser.add_argument('--no_mesh', action="store_true", help='Dont show mesh in offline visualization')
+    parser.add_argument('--to_video', action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
     parser.add_argument('--dynamic_test_split', action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
