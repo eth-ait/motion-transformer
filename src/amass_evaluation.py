@@ -50,8 +50,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
         extract_random_windows = False
         # window_length = 0  # set to 0 so that dataset class works as intended
 
-    print(test_data_path)
-
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
     data_normalization = not (args.no_normalization or config.get("no_normalization", False))
@@ -114,7 +112,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     if ckpt and ckpt.model_checkpoint_path:
         # Check if the specific checkpoint exists
         ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-        print("Loading model checkpoint {0}".format(ckpt_name))
+        print("Loading model checkpoint {}/{}".format(experiment_dir, ckpt_name))
         saver.restore(session, ckpt.model_checkpoint_path)
     else:
         raise ValueError("could not load checkpoint")
@@ -123,6 +121,8 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
 
 def evaluate(experiment_dir, config, args):
+
+    visualize = args.visualize or args.visualize_dense
 
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
@@ -179,7 +179,9 @@ def evaluate(experiment_dir, config, args):
                     for i in range(prediction.shape[0]):
                         eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
 
-                    # break  # TODO REMOVE
+                    if visualize:
+                        # To speed things up a bit
+                        break
 
             except tf.errors.OutOfRangeError:
                 pass
@@ -200,40 +202,41 @@ def evaluate(experiment_dir, config, args):
                 glog_data = {**glog_data, **glog_test_metrics}
                 g_logger.append_row(glog_data, sheet_name="until_{}".format(t))
 
-        if args.visualize:
+        if visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            video_dir = experiment_dir if args.save_video else None
+            video_dir = experiment_dir if args.save_video or args.visualize_dense else None
             frames_dir = experiment_dir if args.save_frames else None
             visualizer = Visualizer(fk_engine, video_dir, frames_dir,
-                                    rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
+                                    rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat",
+                                    dense=args.visualize_dense, dense_with_skeleton=not args.no_skel)
             n_samples_viz = 30  # TODO change
-            selected_idxs = [19]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            # selected_idxs = [19]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
             # selected_idxs = [24, 27]  # for the dynamic split
             rng = np.random.RandomState(42)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
 
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
             for i, k in enumerate(sample_keys):
-                if i in selected_idxs:
-                    # visualizer.visualize_dense_smpl(np.concatenate([eval_result[k][2], eval_result[k][1]], axis=0), k+"_i{}".format(i))
-                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                # if i in selected_idxs:
+                #     pass
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--save_dir', required=False, default=os.path.normpath("../experiments_amass/"), type=str, help='Model save directory.')
-    parser.add_argument('--model_id', required=True, default=None, type=str, help='Experiment ID (experiment timestamp).')
-    parser.add_argument('--seq_length_in', required=False, type=int, help='Seed sequence length')
-    parser.add_argument('--seq_length_out', required=False, type=int, help='Target sequence length')
-    parser.add_argument('--test_data_path', required=False, default="../data/amass/tfrecords/test/amass-?????-of-?????", type=str, help='Path to test data.')
-    parser.add_argument('--meta_data_path', required=False, default="../data/amass/tfrecords/training/stats.npz", type=str, help='Path to meta-data file.')
-    parser.add_argument('--batch_size', required=False, default=64, type=int, help='Batch size')
-    parser.add_argument('--no_normalization', required=False, action="store_true", help='If set, do not use zero-mean unit-variance normalization.')
-    parser.add_argument('--glog_entry', required=False, action="store_true", help='Write to the Google sheet.')
-    parser.add_argument('--visualize', required=False, action="store_true", help='Visualize model predictions.')
-    parser.add_argument('--save_video', required=False, action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
-    parser.add_argument('--save_frames', required=False, action="store_true", help='Save the model predictions to individual pngs in a temporary folder')
-    parser.add_argument('--dynamic_test_split', required=False, action="store_true", help="Test samples are extracted on-the-fly.")
+    parser.add_argument('--save_dir', required=True, help='Model save directory.')
+    parser.add_argument('--model_id', required=True, help='Experiment ID (experiment timestamp).')
+    parser.add_argument('--seq_length_in', type=int, help='Seed sequence length')
+    parser.add_argument('--seq_length_out', type=int, help='Target sequence length')
+    parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
+    parser.add_argument('--no_normalization', action="store_true", help='If set overrides the config.')
+    parser.add_argument('--glog_entry', action="store_true", help='Write to the Google sheet.')
+    parser.add_argument('--visualize', action="store_true", help='Visualize model predictions.')
+    parser.add_argument('--visualize_dense', action="store_true", help='Visualize model predictions using SMPL mesh and skeletons.')
+    parser.add_argument('--no_skel', action="store_true", help='Visualize model predictions using SMPL mesh only.')
+    parser.add_argument('--save_video', action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
+    parser.add_argument('--save_frames', action="store_true", help='Save the model predictions to individual pngs in a temporary folder')
+    parser.add_argument('--dynamic_test_split', action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
     if ',' in args.model_id:
@@ -245,7 +248,7 @@ if __name__ == '__main__':
         try:
             experiment_dir = glob.glob(os.path.join(args.save_dir, model_id + "-*"), recursive=False)[0]
         except IndexError:
-            print("Model " + str(model_id) + " is not found in " + str(args.save_dir))
+            print("Model " + str(model_id) + " not found in " + str(args.save_dir))
             continue
 
         try:
