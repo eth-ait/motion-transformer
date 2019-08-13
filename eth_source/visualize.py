@@ -411,15 +411,22 @@ def animate_offline(joint_angles, colors, titles, fig_title, dense=True, skeleto
         fps: frames per second of the input sequence
         n_threads: number of threads to parallelize creation of frames
     """
-    # Create output dir if necessary
+    # Create output dir if necessary.
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
     pool = multiprocessing.Pool()
-    # must split joint_angles to pass them to each worker
+
+    # Must split joint_angles to pass them to each worker.
+    seq_length = joint_angles[0].shape[0]
+    start_idxs = list(range(0, seq_length, seq_length//n_threads))
+    if seq_length % n_threads != 0:
+        # Make the last worker have some more work
+        start_idxs = start_idxs[:-1]
+    split_idxs = start_idxs[1:]
     angles_split = []
     for angles in joint_angles:
-        a = np.array_split(angles, n_threads, axis=0)
+        a = np.array_split(angles, split_idxs, axis=0)
         angles_split.append(a)
 
     angles_final = []
@@ -428,10 +435,6 @@ def animate_offline(joint_angles, colors, titles, fig_title, dense=True, skeleto
         for j in range(len(joint_angles)):
             a.append(angles_split[j][i])
         angles_final.append(a)
-
-    start_idxs = [0]
-    for i in range(1, n_threads):
-        start_idxs.append(start_idxs[-1] + len(angles_final[i-1][0]) - 1)
 
     remaining_args = {'colors': colors, 'change_color_after_frame': change_color_after_frame,
                       'color_after_change': color_after_change, 'dense': dense, 'skeleton': skeleton,
