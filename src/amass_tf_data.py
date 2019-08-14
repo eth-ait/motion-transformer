@@ -127,7 +127,7 @@ class TFRecordMotionDataset(Dataset):
         This method is also used in calculation of the dataset statistics (i.e., meta-data file).
         """
         tf_data_opt = tf.data.Options()
-        tf_data_opt.experimental_autotune = True
+        # tf_data_opt.experimental_autotune = True
 
         self.tf_data = tf.data.TFRecordDataset.list_files(self.data_path, seed=1234, shuffle=self.shuffle)
         self.tf_data = self.tf_data.with_options(tf_data_opt)

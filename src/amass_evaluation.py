@@ -53,7 +53,7 @@ def create_and_restore_model(session, experiment_dir, config, args):
     meta_data_path = os.path.join(data_path, rep, "training", "stats.npz")
 
     data_normalization = not (args.no_normalization or config.get("no_normalization", False))
-    window_length = 0 if window_length == 160 else window_length
+    window_length = 0 if window_length == 180 else window_length
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
@@ -282,6 +282,7 @@ if __name__ == '__main__':
         try:
             tf.reset_default_graph()
             config = json.load(open(os.path.abspath(os.path.join(experiment_dir, 'config.json')), 'r'))
+            config["experiment_dir"] = experiment_dir
             evaluate(experiment_dir, config, args)
         except Exception as e:
             print("something went wrong when evaluating model {}".format(model_id))
