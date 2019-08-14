@@ -63,7 +63,7 @@ class Visualizer(object):
         self.skeleton = skeleton
         self.to_video = to_video
         self.base_color = _colors[0]  # what color to use to display ground-truth and seed
-        self.prediction_color = _colors[1]  # what color to use for predictions, use _colors[2] for non-SPL models
+        self.prediction_color = _colors[2]  # what color to use for predictions, use _colors[2] for non-SPL models
         assert rep in ["rot_mat", "quat", "aa"]
         if self.interactive:
             assert self.fk_engine
@@ -577,9 +577,11 @@ def _worker(args):
 
 def visualize_quaternet():
     is_longterm = False
-    to_video = False
+    to_video = True
     results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\selected_experiments_amass\\1564507734-QuaterNet"
     results_file = "test_results_60_frames_1564507734-QuaterNet.npz"
+    # results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\selected_experiments_amass\\1564507732-QuaterNet-SPL"
+    # results_file = "test_results_60_frames_1564507732-QuaterNet-SPL.npz"
     d = dict(np.load(os.path.join(results_folder, results_file)))
 
     selected_labels = ['CMU/0/CMU/120_120_18']
