@@ -46,13 +46,13 @@ def get_fnames_in_tfrecords(tfrecords_path):
 if __name__ == '__main__':
     base_path = "C:/users/manuel/projects/motion-modelling/data/from_dip"
 
-    test_path = os.path.join(base_path, "rotmat/test_dynamic/amass-?????-of-?????")
+    test_path = os.path.join(base_path, "aa/test_dynamic/amass-?????-of-?????")
     test_out = os.path.join(base_path, "test_fnames.txt")
 
-    valid_path = os.path.join(base_path, "rotmat/validation_dynamic/amass-?????-of-?????")
+    valid_path = os.path.join(base_path, "aa/validation_dynamic/amass-?????-of-?????")
     valid_out =  os.path.join(base_path, "validation_fnames.txt")
 
-    train_path = os.path.join(base_path, "rotmat/training/amass-?????-of-?????")
+    train_path = os.path.join(base_path, "aa/training/amass-?????-of-?????")
     train_out =  os.path.join(base_path, "training_fnames.txt")
 
     def _write_fnames(to, fnames):

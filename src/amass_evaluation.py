@@ -202,7 +202,7 @@ def evaluate(experiment_dir, config, args):
 
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
-            if args.interactive:
+            if not args.to_video:
                 visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
                                         rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             else:
@@ -212,15 +212,25 @@ def evaluate(experiment_dir, config, args):
                                         to_video=args.to_video)
 
             n_samples_viz = 30
-            selected_idxs = [3]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
-            # selected_idxs = [24, 27]  # for the dynamic split
-            rng = np.random.RandomState(42)
-            idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
 
+            # Get random indices or just all of them.
+            rng = np.random.RandomState(4313)
+            idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
+            # idxs = list(range(n_samples_viz))
+
+            # Select some indices for faster visualization or just all of them.
+            # selected_idxs = [4]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            # sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
             sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+
+            # Find an entry by name
+            sample_keys = ['CMU/0/CMU/120_120_18']
+            interesting_keys = ['CMU/0/CMU/106_106_34',
+                           'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
+                           'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
+                           'CMU/0/CMU/01_01_06']
             for i, k in enumerate(sample_keys):
-                if i in selected_idxs:
-                    visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
 
 
 if __name__ == '__main__':
@@ -233,7 +243,6 @@ if __name__ == '__main__':
     parser.add_argument('--no_normalization', action="store_true", help='If set overrides the config.')
     parser.add_argument('--glog_entry', action="store_true", help='Write to the Google sheet.')
     parser.add_argument('--visualize', action="store_true", help='Visualize model predictions.')
-    parser.add_argument('--interactive', action="store_true", help='Visualize model predictions interactively.')
     parser.add_argument('--no_skel', action="store_true", help='Dont show skeleton in offline visualization.')
     parser.add_argument('--no_mesh', action="store_true", help='Dont show mesh in offline visualization')
     parser.add_argument('--to_video', action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')

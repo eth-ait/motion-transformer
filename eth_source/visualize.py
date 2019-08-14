@@ -63,7 +63,7 @@ class Visualizer(object):
         self.skeleton = skeleton
         self.to_video = to_video
         self.base_color = _colors[0]  # what color to use to display ground-truth and seed
-        self.prediction_color = _colors[1]  # what color to use for predictions, use _colors[2] for non-RNN-SPL models
+        self.prediction_color = _colors[1]  # what color to use for predictions, use _colors[2] for non-SPL models
         assert rep in ["rot_mat", "quat", "aa"]
         if self.interactive:
             assert self.fk_engine
@@ -576,27 +576,14 @@ def _worker(args):
 
 
 def visualize_quaternet():
-    experiment_id = "1553184554"
-    is_longterm = True
-    results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\quaternet_results\\test_results_quaternet_{}{}.npz".format(
-        experiment_id,
-        "_longterm" if is_longterm else "")
-    d = dict(np.load(results_folder))
+    is_longterm = False
+    to_video = False
+    results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\selected_experiments_amass\\1564507734-QuaterNet"
+    results_file = "test_results_60_frames_1564507734-QuaterNet.npz"
+    d = dict(np.load(os.path.join(results_folder, results_file)))
 
+    selected_labels = ['CMU/0/CMU/120_120_18']
     selected_idxs = []
-    if not is_longterm:
-        selected_labels = ["ACCAD/0/Male1General",
-                           "ACCAD/0/Male1Running",
-                           "ACCAD/0/Male2MartialArtsStances_c3dD12",
-                           "ACCAD/3/Male2General",
-                           "BioMotion/0/rub0030023",
-                           "BioMotion/1/rub0050003",
-                           "BioMotion/2/rub0120028",
-                           "BioMotion/4/rub0020002",
-                           "BioMotion/4/rub0220000",
-                           "BioMotion/5/rub0050000"]
-    else:
-        selected_labels = ["ACCAD/0/Male1Walking_c3dWalk_SB_B14"]
 
     for s_label in selected_labels:
         counter = 0
@@ -608,8 +595,12 @@ def visualize_quaternet():
         assert counter == 1
 
     fk_engine = SMPLForwardKinematics()
-    video_dir = os.path.join("C:\\Users\\manuel\\projects\\motion-modelling\\quaternet_results\\", experiment_id)
-    visualizer = Visualizer(fk_engine, video_dir, rep="quat")
+    if not to_video:
+        visualizer = Visualizer(interactive=True, fk_engine=fk_engine, rep="quat")
+    else:
+        visualizer = Visualizer(interactive=False,
+                                rep="quat",
+                                output_dir=results_folder, to_video=to_video)
 
     for idx in selected_idxs:
         visualizer.visualize(d['seed'][idx], d['prediction'][idx], d['target'][idx], title=d['labels'][idx])
