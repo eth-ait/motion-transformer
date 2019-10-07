@@ -593,6 +593,7 @@ class MetricsEngine(object):
         """
         new_metrics = self.compute(predictions, targets, reduce_fn)
         self.aggregate(new_metrics)
+        return new_metrics
 
     def get_final_metrics(self):
         """

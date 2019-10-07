@@ -121,7 +121,6 @@ def create_and_restore_model(session, experiment_dir, config, args):
 
 
 def evaluate(experiment_dir, config, args):
-
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
 
@@ -153,13 +152,14 @@ def evaluate(experiment_dir, config, args):
                 workbook_name = "h36m_motion_modelling_experiments"
             g_logger = GoogleSheetLogger(credential_file=C.LOGGER_MANU,
                                          workbook_name=workbook_name)
-            glog_data = {'Model ID'  : [os.path.split(experiment_dir)[-1].split('-')[0]],
+            glog_data = {'Model ID': [os.path.split(experiment_dir)[-1].split('-')[0]],
                          'Model Name': ['-'.join(os.path.split(experiment_dir)[-1].split('-')[1:])],
-                         'Comment'   : [""]}
+                         'Comment': [""]}
 
         def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
             # make a full pass on the validation or test dataset and compute the metrics
             eval_result = dict()
+            eval_joint_angle_error = dict()
             _metrics_engine.reset()
             sess.run(_eval_iter.initializer)
             try:
@@ -171,11 +171,13 @@ def evaluate(experiment_dir, config, args):
                     p = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
                     t = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
                     s = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": seed_sequence}, "poses")
-                    _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+                    metrics = _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
 
                     # Store each test sample and corresponding predictions with the unique sample IDs.
                     for i in range(prediction.shape[0]):
-                        eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
+                        sample_name = data_id[i].decode("utf-8")
+                        eval_result[sample_name] = (p["poses"][i], t["poses"][i], s["poses"][i])
+                        eval_joint_angle_error[sample_name] = np.sum(metrics['joint_angle'][i])
 
                     if args.visualize:
                         # To speed things up a bit
@@ -186,10 +188,10 @@ def evaluate(experiment_dir, config, args):
             finally:
                 # finalize the computation of the metrics
                 final_metrics = _metrics_engine.get_final_metrics()
-            return final_metrics, eval_result
+            return final_metrics, eval_result, eval_joint_angle_error
 
         print("Evaluating test set ...")
-        test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine)
+        test_metrics, eval_result, eval_joint_angle_error = evaluate_model(test_model, test_iter, metrics_engine)
         print("Test \t {}".format(metrics_engine.get_summary_string(test_metrics)))
 
         # gather the metrics
@@ -199,6 +201,13 @@ def evaluate(experiment_dir, config, args):
                 glog_data["Comment"] = ["until_{}".format(t)]
                 glog_data = {**glog_data, **glog_test_metrics}
                 g_logger.append_row(glog_data, sheet_name="until_{}".format(t))
+
+        # Store per sample joint angle error in descending error.
+        ja_errors = zip(eval_joint_angle_error.values(), eval_joint_angle_error.keys())
+        ja_errors = sorted(ja_errors, key=lambda x: -x[0])
+        with open(os.path.join(experiment_dir, 'joint_angle_errors.txt'), 'w') as f:
+            for err, name in ja_errors:
+                f.write("{:.5f} {}\n".format(err, name))
 
         if args.visualize:
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
@@ -219,18 +228,26 @@ def evaluate(experiment_dir, config, args):
             # idxs = list(range(n_samples_viz))
 
             # Select some indices for faster visualization or just all of them.
-            # selected_idxs = [4]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
-            # sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
-            sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+            selected_idxs = [16]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
+            # sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
 
             # Find an entry by name
-            sample_keys = ['CMU/0/CMU/120_120_18']
-            interesting_keys = ['CMU/0/CMU/106_106_34',
-                           'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
-                           'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
-                           'CMU/0/CMU/01_01_06']
+            # sample_keys = ['CMU/0/CMU/120_120_18']
+            # Used for paper figure and teaser.
+            # sample_keys = ['BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
+            #               'CMU/0/CMU/120_120_18']
+            sample_keys = ['Eyes/0/Eyes/azumitennis_SB2_06_SB2_forehand_SB_smash_SB2_azumi_dynamics',
+                            'HDM05/0/HDM05/trHDM_tr_03_SB2_02_03_120_dynamics']
+            # sample_keys = ['ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics',
+            #                'CMU/0/CMU/106_106_34',
+            #                'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
+            #                'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
+            #                'CMU/0/CMU/01_01_06']
             for i, k in enumerate(sample_keys):
-                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k+"_i{}".format(i))
+                print("joint angle error: {}".format(eval_joint_angle_error[k]))
+                visualizer.visualize(eval_result[k][2], eval_result[k][0], eval_result[k][1],
+                                     title=k + "_i{}".format(i))
 
 
 if __name__ == '__main__':
@@ -245,7 +262,8 @@ if __name__ == '__main__':
     parser.add_argument('--visualize', action="store_true", help='Visualize model predictions.')
     parser.add_argument('--no_skel', action="store_true", help='Dont show skeleton in offline visualization.')
     parser.add_argument('--no_mesh', action="store_true", help='Dont show mesh in offline visualization')
-    parser.add_argument('--to_video', action="store_true", help='Save the model predictions to mp4 videos in the experiments folder.')
+    parser.add_argument('--to_video', action="store_true",
+                        help='Save the model predictions to mp4 videos in the experiments folder.')
     parser.add_argument('--dynamic_test_split', action="store_true", help="Test samples are extracted on-the-fly.")
 
     args = parser.parse_args()
@@ -268,5 +286,3 @@ if __name__ == '__main__':
         except Exception as e:
             print("something went wrong when evaluating model {}".format(model_id))
             raise Exception(e)
-
-

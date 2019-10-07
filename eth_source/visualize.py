@@ -457,13 +457,14 @@ def _worker(args):
 
     n_frames = len(all_angles[0])
     n_seq = len(all_angles)
+    mesh_alpha = 0.2 if r.dense else 0.0
     n_joints = SMPL_NR_JOINTS
     smpl_m = load_model('../external/smpl_py3/models/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
 
     def to_mesh(v, f, c):
         # flip y and z
         v = v[..., [0, 2, 1]]
-        mesh = Poly3DCollection(v[f], alpha=0.2, linewidths=(0.25,))
+        mesh = Poly3DCollection(v[f], alpha=mesh_alpha, linewidths=(0.25,))
         face_color = c
         edge_color = (50 / 255, 50 / 255, 50 / 255)
         mesh.set_edgecolor(edge_color)
@@ -482,16 +483,18 @@ def _worker(args):
                     c = r.color_after_change
             smpl_m.pose[:] = angles[fr]
 
-            if r.dense:
-                mesh = to_mesh(smpl_m.r, smpl_m.f, c)
-                meshes.append(mesh)
+            # We always create the mesh so that the characters always have the same size no matter if only
+            # the mesh or only the skeleton is displayed. This is a bit inefficient but good for the guy who
+            # prepares videos and figures.
+            mesh = to_mesh(smpl_m.r, smpl_m.f, c)
+            meshes.append(mesh)
 
             if r.skeleton:
                 pos = smpl_m.J_transformed.r.copy()
                 pos = pos[..., [0, 2, 1]]
                 positions.append(pos)
 
-        return meshes if r.dense else None, positions if r.skeleton else None
+        return meshes, positions if r.skeleton else None
 
     # create figure with as many subplots as we have skeletons
     fig = plt.figure(figsize=(16, 9))
