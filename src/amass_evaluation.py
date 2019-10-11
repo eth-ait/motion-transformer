@@ -37,8 +37,8 @@ def create_and_restore_model(session, experiment_dir, config, args):
     if config.get('use_h36m_martinez', False):
         data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
 
-    if config.get('use_dip', False):
-        data_path = os.path.join(data_path, '../../from_dip')
+    # if config.get('use_dip', False):
+    #     data_path = os.path.join(data_path, '../../from_dip')
 
     if args.dynamic_test_split:
         config['target_seq_len'] = args.seq_length_out
