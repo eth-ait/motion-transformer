@@ -38,9 +38,9 @@ from visualize import Visualizer
 # Learning
 tf.app.flags.DEFINE_integer("seed", 1234, "Seed value.")
 tf.app.flags.DEFINE_float("learning_rate", .005, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_rate", 0.95, "Learning rate mutiplier. 1 means no decay.")
+tf.app.flags.DEFINE_float("learning_rate_decay_rate", 0.98, "Learning rate mutiplier. 1 means no decay.")
 tf.app.flags.DEFINE_string("learning_rate_decay_type", "piecewise", "Learning rate decay type.")
-tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 10000, "Every this many steps, do decay.")
+tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 1000, "Every this many steps, do decay.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 1.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 16, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("num_epochs", 1000, "Number of training epochs.")
@@ -81,7 +81,7 @@ tf.app.flags.DEFINE_boolean("rot_matrix_regularization", False, "If set, apply r
 tf.app.flags.DEFINE_boolean("force_valid_rot", False, "If set, forces predicted outputs to be valid rotations - only recommended in use with --use_quat")
 tf.app.flags.DEFINE_boolean("use_quat", False, "Use quaternions instead of rotation matrices")
 tf.app.flags.DEFINE_boolean("use_aa", False, "Use angle-axis instead of rotation matrices")
-tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
+tf.app.flags.DEFINE_integer("early_stopping_tolerance", 40, "# of waiting steps until the validation loss improves.")
 tf.app.flags.DEFINE_boolean("dynamic_validation_split", False, "Validation samples are extracted on-the-fly.")
 tf.app.flags.DEFINE_boolean("use_h36m_only", False, "Only use H36M for training and validaton")
 tf.app.flags.DEFINE_boolean("use_h36m_martinez", False, "Only use H36M coming directly from Martinez code repo")
@@ -575,6 +575,7 @@ def get_seq2seq_config(args):
     config['batch_size'] = args.batch_size
     config['learning_rate'] = args.learning_rate
     config['learning_rate_decay_rate'] = args.learning_rate_decay_rate
+    config['learning_rate_decay_steps'] = args.learning_rate_decay_steps
     config['learning_rate_decay_type'] = args.learning_rate_decay_type
     config['autoregressive_input'] = args.autoregressive_input
     config['residual_velocities'] = args.residual_velocities
