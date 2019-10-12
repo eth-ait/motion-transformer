@@ -179,9 +179,9 @@ def evaluate(experiment_dir, config, args):
                         eval_result[sample_name] = (p["poses"][i], t["poses"][i], s["poses"][i])
                         eval_joint_angle_error[sample_name] = np.sum(metrics['joint_angle'][i])
 
-                    if args.visualize:
-                        # To speed things up a bit
-                        break
+                    # if args.visualize:
+                    #     # To speed things up a bit
+                    #     break
 
             except tf.errors.OutOfRangeError:
                 pass
@@ -207,15 +207,16 @@ def evaluate(experiment_dir, config, args):
         ja_errors = sorted(ja_errors, key=lambda x: -x[0])
         with open(os.path.join(experiment_dir, 'joint_angle_errors.txt'), 'w') as f:
             for err, name in ja_errors:
-                f.write("{:.5f} {}\n".format(err, name))
+                f.write("{},{:.5f}\n".format(name, err))
 
         if args.visualize:
+            is_spl = "-SPL" in experiment_dir
             # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
             if not args.to_video:
-                visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
+                visualizer = Visualizer(interactive=True, fk_engine=fk_engine, is_spl=is_spl,
                                         rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat")
             else:
-                visualizer = Visualizer(interactive=False,
+                visualizer = Visualizer(interactive=False, is_spl=is_spl,
                                         rep="quat" if test_model.use_quat else "aa" if test_model.use_aa else "rot_mat",
                                         output_dir=experiment_dir, skeleton=not args.no_skel, dense=not args.no_mesh,
                                         to_video=args.to_video)
@@ -226,19 +227,35 @@ def evaluate(experiment_dir, config, args):
             rng = np.random.RandomState(4313)
             idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
             # idxs = list(range(n_samples_viz))
+            sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
 
             # Select some indices for faster visualization or just all of them.
-            selected_idxs = [16]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
-            sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
-            # sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+            # selected_idxs = [16]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
+            # sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
+
+            # Walking for longterm
+            sample_keys = ["BioMotion/0/BioMotion/rub0050003_treadmill_jog_dynamics",
+                           "BioMotion/0/BioMotion/rub0050000_treadmill_norm_dynamics"]
+
+            # Samples for RNN vs RNN-SPL
+            sample_keys = ["CMU/25/CMU/132_132_53",
+                           "BioMotion/11/BioMotion/rub0360032_scamper_dynamics",
+                           "Eyes/8/Eyes/aitagesture_etc_SB2_04_SB2_set_SB_4_SB2_aita_dynamics",
+                           "CMU/1/CMU/138_138_04",
+                           "CMU/26/CMU/86_86_03",
+                           "Eyes/4/Eyes/aitagesture_etc_SB2_13_SB2_juggling_SB_imaginary_SB2_aita_dynamics",
+                           "Eyes/3/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
+                           "Eyes/5/Eyes/aitawalk_SB2_03_SB2_sneak_SB2_aita_dynamics",
+                           "CMU/1/CMU/15_15_06"
+                           ]
 
             # Find an entry by name
             # sample_keys = ['CMU/0/CMU/120_120_18']
             # Used for paper figure and teaser.
             # sample_keys = ['BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
             #               'CMU/0/CMU/120_120_18']
-            sample_keys = ['Eyes/0/Eyes/azumitennis_SB2_06_SB2_forehand_SB_smash_SB2_azumi_dynamics',
-                            'HDM05/0/HDM05/trHDM_tr_03_SB2_02_03_120_dynamics']
+            # sample_keys = ['Eyes/0/Eyes/azumitennis_SB2_06_SB2_forehand_SB_smash_SB2_azumi_dynamics',
+            #                 'HDM05/0/HDM05/trHDM_tr_03_SB2_02_03_120_dynamics']
             # sample_keys = ['ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics',
             #                'CMU/0/CMU/106_106_34',
             #                'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',

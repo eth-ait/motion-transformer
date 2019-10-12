@@ -13,3 +13,5 @@ experiments_amass_all/
 quaternet_results/
 smpl_images/
 paper_experiments_amass/
+imgs/
+*.xlsx

@@ -30,6 +30,8 @@ except Exception:
 
 _prop_cycle = plt.rcParams['axes.prop_cycle']
 _colors = _prop_cycle.by_key()['color']
+_non_spl_color = _colors[2]
+_spl_color = _colors[1]
 
 
 class Visualizer(object):
@@ -38,7 +40,7 @@ class Visualizer(object):
     """
 
     def __init__(self, interactive, rep="rot_mat", is_sparse=True,
-                 fk_engine=None, output_dir=None, skeleton=True, dense=True, to_video=False):
+                 fk_engine=None, output_dir=None, skeleton=True, dense=True, to_video=False, is_spl=True):
         """
         Initializer. Determines if visualizations are shown interactively or saved to disk.
         Args:
@@ -63,7 +65,7 @@ class Visualizer(object):
         self.skeleton = skeleton
         self.to_video = to_video
         self.base_color = _colors[0]  # what color to use to display ground-truth and seed
-        self.prediction_color = _colors[2]  # what color to use for predictions, use _colors[2] for non-SPL models
+        self.prediction_color = _spl_color if is_spl else _non_spl_color  # what color to use for prediction
         assert rep in ["rot_mat", "quat", "aa"]
         if self.interactive:
             assert self.fk_engine
@@ -581,13 +583,28 @@ def _worker(args):
 def visualize_quaternet():
     is_longterm = False
     to_video = True
-    results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\selected_experiments_amass\\1564507734-QuaterNet"
-    results_file = "test_results_60_frames_1564507734-QuaterNet.npz"
-    # results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\selected_experiments_amass\\1564507732-QuaterNet-SPL"
-    # results_file = "test_results_60_frames_1564507732-QuaterNet-SPL.npz"
+    # results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\paper_experiments_amass\\1565883318-QuaterNet"
+    # results_file = "test_results_60_frames_quaternet_1565883318.npz"
+    results_folder = "C:\\Users\\manuel\\projects\\motion-modelling\\paper_experiments_amass\\1564507732-QuaterNet-SPL"
+    results_file = "test_results_60_frames_quaternet_SPL_1564507732.npz"
     d = dict(np.load(os.path.join(results_folder, results_file)))
 
-    selected_labels = ['CMU/0/CMU/120_120_18']
+    selected_labels = ['Eyes/7/Eyes/yamaokatennis_SB2_03_SB2_forehand_SB_hardhit_SB2_yamaoka_dynamics',
+                       'HDM05/8/HDM05/bdHDM_bd_03_SB2_03_02_120_dynamics',
+                       'CMU/2/CMU/30_30_03',
+                       'BioMotion/8/BioMotion/rub0360032_scamper_dynamics',
+                       'HDM05/13/HDM05/mmHDM_mm_05_SB2_03_02_120_dynamics']
+
+    selected_labels = ["BioMotion/0/BioMotion/rub1080023_throwing_hard3_dynamics",
+     "Eyes/1/Eyes/azumitennis_SB2_06_SB2_forehand_SB_smash_SB2_azumi_dynamics",
+     "HDM05/23/HDM05/dgHDM_dg_03_SB2_04_02_120_dynamics",
+     "BioMotion/6/BioMotion/rub0830021_catching_and_throwing_dynamics",
+     "HDM05/8/HDM05/bdHDM_bd_03_SB2_03_02_120_dynamics",
+     "Transition/0/Transition/mazen_c3djumpingjacks_turntwist180",
+     "Eyes/8/Eyes/azumitennis_SB2_06_SB2_forehand_SB_smash_SB2_azumi_dynamics",
+     "CMU/26/CMU/86_86_03",
+     "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics"]
+
     selected_idxs = []
 
     for s_label in selected_labels:
@@ -600,12 +617,13 @@ def visualize_quaternet():
         assert counter == 1
 
     fk_engine = SMPLForwardKinematics()
+    is_spl = results_folder.endswith("-SPL")
     if not to_video:
-        visualizer = Visualizer(interactive=True, fk_engine=fk_engine, rep="quat")
+        visualizer = Visualizer(interactive=True, fk_engine=fk_engine, rep="quat", is_spl=is_spl)
     else:
         visualizer = Visualizer(interactive=False,
                                 rep="quat",
-                                output_dir=results_folder, to_video=to_video)
+                                output_dir=results_folder, to_video=to_video, is_spl=is_spl)
 
     for idx in selected_idxs:
         visualizer.visualize(d['seed'][idx], d['prediction'][idx], d['target'][idx], title=d['labels'][idx])
