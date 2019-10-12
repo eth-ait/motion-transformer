@@ -122,18 +122,11 @@ def create_model(session):
 
     data_path = os.environ["AMASS_DATA"]
     if args.use_h36m_only:
-        assert not args.use_h36m_martinez
-        assert not args.use_dip
-        data_path = os.path.join(data_path, '../per_db/h36m')
+        raise ValueError("We don't support this mode anymore.")
 
     if args.use_h36m_martinez:
         assert not args.use_dip
-        data_path = os.path.join(data_path, '../../h3.6m/tfrecords/')
-
-    if args.use_dip:
-        assert not args.use_h36m_martinez
-        assert not args.use_h36m_only
-        data_path = os.path.join(data_path, '../../from_dip')
+        data_path = os.path.join(data_path, '../h3.6m/tfrecords/')
 
     train_data_path = os.path.join(data_path, rep, "training", "amass-?????-of-?????")
     if args.dynamic_validation_split:
