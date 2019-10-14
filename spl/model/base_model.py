@@ -215,8 +215,8 @@ class BaseModel(object):
         global_step = tf.train.get_global_step(graph=None)
         learning_rate = tf.train.exponential_decay(self.config.get('learning_rate'),
                                                    global_step=global_step,
-                                                   decay_steps=self.config.get('learning_rate_decay_steps'),
-                                                   decay_rate=self.config.get('learning_rate_decay_rate'),
+                                                   decay_steps=self.config.get('learning_rate_decay_steps', 1000),
+                                                   decay_rate=self.config.get('learning_rate_decay_rate', 0.98),
                                                    staircase=True)
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
             optimizer = tf.train.AdamOptimizer(learning_rate)
@@ -299,6 +299,14 @@ class BaseModel(object):
             config['residual_velocity'] = args.residual_velocity
             config['loss_type'] = args.loss_type
             config['joint_prediction_layer'] = args.joint_prediction_layer
+
+            config['transformer_lr'] = args.transformer_lr
+            config['transformer_d_model'] = args.transformer_d_model
+            config['transformer_dropout_rate'] = args.transformer_dropout_rate
+            config['transformer_dff'] = args.transformer_dff
+            config['transformer_num_layers'] = args.transformer_num_layers
+            config['transformer_num_heads_temporal'] = args.transformer_num_heads_temporal
+            config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
         else:
             config = from_config
 
