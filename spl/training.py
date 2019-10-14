@@ -34,6 +34,7 @@ from spl.data.srnn_tf import SRNNTFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
+from spl.model.transformer import Transformer2d
 
 from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
@@ -61,9 +62,9 @@ tf.app.flags.DEFINE_boolean("use_h36m", False, "Use H36M for training and valida
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
 tf.app.flags.DEFINE_integer("source_seq_len", 120, "Number of frames to feed into the encoder.")
 tf.app.flags.DEFINE_integer("target_seq_len", 24, "Number of frames that the decoder has to predict.")
-tf.app.flags.DEFINE_integer("batch_size", 64, "Batch size to use during training.")
+tf.app.flags.DEFINE_integer("batch_size", 32, "Batch size to use during training.")
 # Training loop.
-tf.app.flags.DEFINE_integer("num_epochs", 500, "Training epochs.")
+tf.app.flags.DEFINE_integer("num_epochs", 1000, "Training epochs.")
 tf.app.flags.DEFINE_boolean("exhaustive_validation", False, "Use entire validation samples (takes much longer).")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 # Optimization.
@@ -73,7 +74,7 @@ tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 1000, "Decay steps. See
 tf.app.flags.DEFINE_enum("optimizer", "adam", ["adam", "sgd"], "Optimization function type.")
 tf.app.flags.DEFINE_float("grad_clip_norm", 1.0, "Clip gradients to this norm. If 0, gradient clipping is not applied.")
 # Model
-tf.app.flags.DEFINE_enum("model_type", "rnn", ["rnn", "seq2seq", "zero_velocity"], "Which model to use.")
+tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d"], "Which model to use.")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_layers", 1, "# of hidden layers directly on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_size", 256, "Size of hidden layers directly on the inputs.")
@@ -82,7 +83,7 @@ tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
 tf.app.flags.DEFINE_boolean("residual_velocity", True, "Add a residual connection that effectively models velocities.")
 tf.app.flags.DEFINE_enum("loss_type", "joint_sum", ["joint_sum", "all_mean"], "Joint-wise or vanilla mean loss.")
-tf.app.flags.DEFINE_enum("joint_prediction_layer", "spl", ["spl", "spl_sparse", "plain"],
+tf.app.flags.DEFINE_enum("joint_prediction_layer", "plain", ["spl", "spl_sparse", "plain"],
                          "Whether to use structured prediction layer (sparse or dense) "
                          "or a standard dense layer to make predictions.")
 tf.app.flags.DEFINE_integer("output_hidden_layers", 1, "# of hidden layers in the prediction layer.")
@@ -93,6 +94,15 @@ tf.app.flags.DEFINE_integer("output_hidden_size", 64, "Size of hidden layers in 
 tf.app.flags.DEFINE_enum("architecture", "tied", ["tied", "basic"], "If tied, encoder and decoder use the same cell.")
 tf.app.flags.DEFINE_enum("autoregressive_input", "sampling_based", ["sampling_based", "supervised"],
                          "If sampling_based, decoder is trained with its predictions. More robust.")
+
+# Only used by Transformer2d model.
+tf.app.flags.DEFINE_integer("transformer_lr", 1, "Whether to use transformer learning rate or not")
+tf.app.flags.DEFINE_integer("transformer_d_model", 128, "Size of d_model of the transformer")
+tf.app.flags.DEFINE_float("transformer_dropout_rate", 0.1, "Dropout rate of the transformer")
+tf.app.flags.DEFINE_integer("transformer_dff", 128, "Size of feed forward layer of the transformer")
+tf.app.flags.DEFINE_integer("transformer_num_layers", 6, "Number of layers of the transformer")
+tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of heads of the transformer's temporal block")
+tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
 
 args = tf.app.flags.FLAGS
 
@@ -117,6 +127,8 @@ def get_model_cls(model_type):
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D:
+        return Transformer2d
     else:
         raise Exception("Unknown model type.")
     
@@ -195,7 +207,7 @@ def create_model(session):
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=256,  # to speedup inference
+                                          batch_size=config["batch_size"]*2,
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
