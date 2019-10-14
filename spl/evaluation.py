@@ -27,6 +27,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
+from spl.model.transformer import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -55,6 +56,8 @@ def get_model_cls(model_type):
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D:
+        return Transformer2d
     else:
         raise Exception("Unknown model type.")
 
@@ -80,7 +83,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=256,
+                                          batch_size=64,
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
