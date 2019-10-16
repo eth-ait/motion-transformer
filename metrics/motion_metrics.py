@@ -435,12 +435,54 @@ class MetricsEngine(object):
         return copy.deepcopy(self.metrics_agg)
 
     @classmethod
+    def get_metrics_until(cls, metric_results, until, pck_thresholds=None,
+                          prefix="", at_mode=False):
+        """
+        Calculates the metrics at a given time-step.
+        Args:
+            metric_results: Dictionary of metric values, expects them to be in
+                shape (seq_length, ) except for PCK.
+            until: time-step to report metrics.
+            pck_thresholds: if not passed, then pck and auc are ignored.
+            prefix: a string identifier for metric keys such as 'test'.
+            at_mode: If true will report the numbers at the last frame rather
+                than until the last frame.
+        Returns:
+            dict of metrics.
+        """
+        metrics = dict()
+        for m in sorted(metric_results):
+            if not m.startswith("pck"):
+                val = metric_results[m][until - 1] if at_mode else np.sum(
+                        metric_results[m][:until])
+                key = prefix + m
+                metrics[key] = val
+
+        if pck_thresholds is not None:
+            pck_values = []
+            for threshold in sorted(pck_thresholds):
+                # Convert pck value in float to a str compatible name.
+                t = threshold*100
+                m_name = "pck_{}".format(t if t < 1 else (int(t)))
+                val = metric_results[m_name][until - 1] if at_mode else np.mean(
+                        metric_results[m_name][:until])
+                metrics[prefix + m_name] = val
+                pck_values.append(val)
+
+            auc_val = cls.calculate_auc(pck_values, pck_thresholds, until)
+            metrics[prefix + "AUC"] = auc_val
+        return metrics
+    
+    @classmethod
     def get_summary_string(cls, metric_results, at_mode=False):
         """
-        Create a summary string (e.g. for printing to the console) from the given metrics for the entire sequence.
+        Create a summary string (e.g. for printing to the console) from the
+        given metrics for the entire sequence.
         Args:
-            metric_results: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
-            at_mode: If true will report the numbers at the last frame rather then until the last frame.
+            metric_results: Dictionary of metric values, expects them to be in
+                shape (seq_length, ) except for PCK.
+            at_mode: If true will report the numbers at the last frame rather
+                than until the last frame.
 
         Returns:
             A summary string.
@@ -450,7 +492,8 @@ class MetricsEngine(object):
         for m in sorted(metric_results):
             if m.startswith("pck"):
                 continue
-            val = metric_results[m][seq_length - 1] if at_mode else np.sum(metric_results[m])
+            val = metric_results[m][seq_length - 1] if at_mode else np.sum(
+                    metric_results[m])
             s += "   {}: {:.3f}".format(m, val)
 
         # print pcks last
@@ -462,14 +505,18 @@ class MetricsEngine(object):
         return s
 
     @classmethod
-    def get_summary_string_all(cls, metric_results, target_lengths, pck_thresholds, at_mode=False, report_pck=False):
+    def get_summary_string_all(cls, metric_results, target_lengths,
+                               pck_thresholds, at_mode=False, report_pck=False):
         """
-        Create a summary string for given lengths. Note that this yeilds results reported in the paper.
+        Create a summary string for given lengths. Note that this yields results
+        reported in the paper.
         Args:
-            metric_results: Dictionary of metric values, expects them to be in shape (seq_length, ) except for PCK.
+            metric_results: Dictionary of metric values, expects them to be in
+                shape (seq_length, ) except for PCK.
             target_lengths: Metrics at these time-steps are reported.
             pck_thresholds: PCK for this threshold values is reported.
-            at_mode: If true will report the numbers at the last frame rather then until the last frame.
+            at_mode: If true will report the numbers at the last frame rather
+                than until the last frame.
             report_pck: Whether to print all PCK values or not.
 
         Returns:
@@ -481,12 +528,14 @@ class MetricsEngine(object):
             for m in sorted(metric_results):
                 if m.startswith("pck"):
                     continue
-                val = metric_results[m][seq_length - 1] if at_mode else np.sum(metric_results[m][:seq_length])
+                val = metric_results[m][seq_length - 1] if at_mode else np.sum(
+                        metric_results[m][:seq_length])
                 s += "   {}: {:.3f}".format(m, val)
         
             pck_values = []
             for threshold in sorted(pck_thresholds):
-                t = threshold*100  # Convert pck value in float to a str compatible name.
+                # Convert pck value in float to a str compatible name.
+                t = threshold*100
                 m_name = "pck_{}".format(t if t < 1 else (int(t)))
                 val = metric_results[m_name][seq_length - 1] if at_mode else np.mean(metric_results[m_name][:seq_length])
                 if report_pck:
@@ -510,7 +559,8 @@ class MetricsEngine(object):
             target_length (int): determines for which time-step we calculate AUC.
         Returns:
         """
-        # Due to the saturation effect, we consider a limited number of PCK thresholds in AUC calculation.
+        # Due to the saturation effect, we consider a limited number of PCK
+        # thresholds in AUC calculation.
         if target_length < 6:
             n_pck = 6
         elif target_length < 12:
