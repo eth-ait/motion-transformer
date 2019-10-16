@@ -67,7 +67,17 @@ The models we used in the paper can be [downloaded from here](https://ait.ethz.c
 You can run evaluation with them or visualize their results. Note that `QuaterNet` models are not there yet. 
 
 ### Sample scripts
-Under `spl/test/`, we share sample scripts showing how to use components (i.e., metrics, visualization, tfrecord data) of this repository without requiring the entire pipeline.   
+Under `spl/test/`, we share sample scripts showing how to use components (i.e., metrics, visualization, tfrecord data) of this repository without requiring the entire pipeline.
+
+### Logging into Google Sheet
+Experiment results can be automatically logged and archived in a Google sheet file. You need to create a Google Drive API key (`console.developers.google.com > Create credentials > Service account key`)  in a json file, create an empty sheet in your GDrive and get its workbook id.
+Then you need to define the following environment variables
+```
+export GDRIVE_API_KEY=<path-to-gdrive-api-json>
+export GLOGGER_WORKBOOK_AMASS=<id-of-google-sheet>
+```
+You can use google for the detailed steps.
+ 
 
 ### Citation
 If you use code from this repository, please cite 

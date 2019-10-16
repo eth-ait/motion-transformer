@@ -42,6 +42,17 @@ from visualization.fk import H36M_MAJOR_JOINTS
 from metrics.motion_metrics import MetricsEngine
 from common.conversions import rotmat2euler, aa2rotmat
 
+try:
+    from common.logger import GoogleSheetLogger
+    if "GLOGGER_WORKBOOK_AMASS" not in os.environ:
+        raise ImportError("GLOGGER_WORKBOOK_AMASS not found.")
+    if "GDRIVE_API_KEY" not in os.environ:
+        raise ImportError("GDRIVE_API_KEY not found.")
+    GLOGGER_AVAILABLE = True
+except ImportError:
+    GLOGGER_AVAILABLE = False
+    print("GLogger not available...")
+
 
 tf.app.flags.DEFINE_integer("seed", 1234, "Seed value.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment id to restore an existing model.")
@@ -292,15 +303,117 @@ def create_model(session):
     return models, data, saver, global_step, experiment_dir, config
 
 
+def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
+                   undo_normalization_fn, _return_results=False):
+    # make a full pass on the validation or test dataset and compute the metrics
+    _eval_result = dict()
+    _start_time = time.perf_counter()
+    _metrics_engine.reset()
+    sess.run(_eval_iter.initializer)
+    try:
+        while True:
+            # Get the predictions and ground truth values
+            res = _eval_model.sampled_step(sess)
+            prediction, targets, seed_sequence, data_id = res
+            # Unnormalize predictions if there normalization applied.
+            p = undo_normalization_fn(
+                    {"poses": prediction}, "poses")
+            t = undo_normalization_fn(
+                    {"poses": targets}, "poses")
+            _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+            
+            if _return_results:
+                s = undo_normalization_fn(
+                        {"poses": seed_sequence}, "poses")
+                # Store each test sample and corresponding predictions with
+                # the unique sample IDs.
+                for k in range(prediction.shape[0]):
+                    _eval_result[data_id[k].decode("utf-8")] = (p["poses"][k],
+                                                                t["poses"][k],
+                                                                s["poses"][k])
+    except tf.errors.OutOfRangeError:
+        # finalize the computation of the metrics
+        final_metrics = _metrics_engine.get_final_metrics()
+    return final_metrics, time.perf_counter() - _start_time, _eval_result
+
+
+def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
+                         undo_normalization_fn):
+    # compute the euler angle metric on the SRNN poses
+    _start_time = time.perf_counter()
+    sess.run(_srnn_iter.initializer)
+    # {action -> list of mean euler angles per frame}
+    _euler_angle_metrics = dict()
+    try:
+        while True:
+            # get the predictions and ground truth values
+            res = _eval_model.sampled_step(sess)
+            prediction, targets, seed_sequence, data_id = res
+            
+            # Unnormalize predictions if there normalization applied.
+            p = undo_normalization_fn(
+                    {"poses": prediction}, "poses")["poses"]
+            batch_size, seq_length = p.shape[0], p.shape[1]
+            
+            # Convert to euler angles to calculate the error.
+            # NOTE: these ground truth euler angles come from Martinez et al.,
+            # so we shouldn't use quat2euler as this uses a different convention
+            if _eval_model.use_quat:
+                rot = quaternion.as_rotation_matrix(quaternion.from_float_array(
+                    np.reshape(p, [batch_size, seq_length, -1, 4])))
+                p_euler = rotmat2euler(rot)
+            elif _eval_model.use_aa:
+                p_euler = rotmat2euler(
+                    aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
+            else:
+                p_euler = rotmat2euler(
+                    np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
+            
+            p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
+            p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
+            p_euler_padded = np.reshape(p_euler_padded,
+                                        [batch_size, seq_length, -1])
+            
+            for k in range(batch_size):
+                _d_id = data_id[k].decode("utf-8")
+                _action = _d_id.split('/')[-1]
+                _targ = _gt_euler[_d_id]  # (seq_length, 96)
+                _pred = p_euler_padded[k]  # (seq_length, 96)
+                
+                # compute euler loss like Martinez does it,
+                # but we don't have global translation
+                gt_i = np.copy(_targ)
+                gt_i[:, 0:3] = 0.0
+                _pred[:, 0:3] = 0.0
+                
+                # compute the error only on the joints that we use for training
+                # only do this on ground truths, predictions are already sparse
+                idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
+                
+                euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use],
+                                     2)
+                euc_error = np.sum(euc_error, axis=1)
+                euc_error = np.sqrt(euc_error)  # (seq_length, )
+                if _action not in _euler_angle_metrics:
+                    _euler_angle_metrics[_action] = [euc_error]
+                else:
+                    _euler_angle_metrics[_action].append(euc_error)
+    except tf.errors.OutOfRangeError:
+        pass
+    return _euler_angle_metrics, time.perf_counter() - _start_time
+
+
 def train():
     # Limit TF to take a fraction of the GPU memory
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9,
+                                allow_growth=True)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
 
         # Create the model
         models, data, saver, global_step, experiment_dir, config = create_model(sess)
         
-        # If it is h36m data, iterate once over entire dataset to load all ground-truth samples.
+        # If it is h36m data, iterate once over entire dataset to load all
+        # ground-truth samples.
         if config["use_h36m"]:
             train_model, valid_model, test_model, srnn_model = models
             train_data, valid_data, test_data, srnn_data = data
@@ -313,7 +426,8 @@ def train():
                 srnn_gts = dict()
                 while True:
                     srnn_batch = sess.run(srnn_pl)
-                    # Store each test sample and corresponding predictions with the unique sample IDs.
+                    # Store each test sample and corresponding predictions
+                    # with the unique sample IDs.
                     for k in range(srnn_batch["euler_targets"].shape[0]):
                         euler_targ = srnn_batch["euler_targets"][k]  # (window_size, 96)
                         euler_targ = euler_targ[-srnn_model.target_seq_len:]
@@ -333,11 +447,11 @@ def train():
         else:
             target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
             fk_engine = SMPLForwardKinematics()
-        
+
         metrics_engine = MetricsEngine(fk_engine,
                                        target_lengths,
                                        pck_threshs=pck_thresholds,
-                                       rep=C.QUATERNION if train_model.use_quat else C.ANGLE_AXIS if train_model.use_aa else C.ROT_MATRIX,
+                                       rep=config["data_type"],
                                        force_valid_rot=True)
         # create the necessary summary placeholders and ops
         metrics_engine.create_summaries()
@@ -349,17 +463,37 @@ def train():
         train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
         test_writer = train_writer
         print("Model created")
+        
+        # Google logging.
+        if GLOGGER_AVAILABLE:
+            glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
+            gdrive_key = os.environ["GDRIVE_API_KEY"]
+            model_name = '-'.join(
+                    os.path.split(experiment_dir)[-1].split('-')[1:])
+            static_values = dict()
+            static_values["Model ID"] = config["experiment_id"]
+            static_values["Model Name"] = model_name
+    
+            credentials = tf.gfile.Open(gdrive_key, "r")
+            glogger = GoogleSheetLogger(
+                    credentials,
+                    glogger_workbook,
+                    sheet_names=["until_{}".format(24)],
+                    model_identifier=config["experiment_id"],
+                    static_values=static_values)
 
         # Early stopping configuration.
         early_stopping_metric_key = C.METRIC_JOINT_ANGLE
-        improvement_ratio = 0.01  # defines the significant amount of improvement wrt the previous evaluation.
+        # Defines the ratio of improvement required wrt the previous evaluation.
+        improvement_ratio = 0.01
         best_valid_loss = np.inf
         num_steps_wo_improvement = 0
         stop_signal = False
+        checkpoint_step = 0
 
         # Training loop configuration.
         time_counter = 0.0
-        step = 1
+        step = 0
         epoch = 0
         train_loss = 0.0
         train_iter = train_data.get_iterator()
@@ -371,89 +505,9 @@ def train():
         sess.run(train_iter.initializer)
         sess.run(valid_iter.initializer)
 
-        def evaluate_model(_eval_model, _eval_iter, _metrics_engine, _return_results=False):
-            # make a full pass on the validation or test dataset and compute the metrics
-            _eval_result = dict()
-            _start_time = time.perf_counter()
-            _metrics_engine.reset()
-            sess.run(_eval_iter.initializer)
-            try:
-                while True:
-                    # get the predictions and ground truth values
-                    prediction, targets, seed_sequence, data_id = _eval_model.sampled_step(sess)
-
-                    # unnormalize - if normalization is not configured, these calls do nothing
-                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
-                    t = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
-                    _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
-
-                    if _return_results:
-                        s = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": seed_sequence}, "poses")
-                        # Store each test sample and corresponding predictions with the unique sample IDs.
-                        for k in range(prediction.shape[0]):
-                            _eval_result[data_id[k].decode("utf-8")] = (p["poses"][k], t["poses"][k], s["poses"][k])
-
-            except tf.errors.OutOfRangeError:
-                # finalize the computation of the metrics
-                final_metrics = _metrics_engine.get_final_metrics()
-            return final_metrics, time.perf_counter() - _start_time, _eval_result
-
-        def _evaluate_srnn_poses(_eval_model, _srnn_iter, _gt_euler):
-            # compute the euler angle metric on the SRNN poses
-            _start_time = time.perf_counter()
-            sess.run(_srnn_iter.initializer)
-            _euler_angle_metrics = dict()  # {action -> list of mean euler angles per frame}
-            try:
-                while True:
-                    # get the predictions and ground truth values
-                    prediction, _, seed_sequence, data_id = _eval_model.sampled_step(sess)
-
-                    # unnormalize - if normalization is not configured, these calls do nothing
-                    p = train_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")["poses"]
-                    batch_size, seq_length = p.shape[0], p.shape[1]
-
-                    # convert to euler angles to calculate the error.
-                    # NOTE: these ground truth euler angles come from Martinez et al., so we shouldn't use quat2euler
-                    # as this uses a different convention
-                    if train_model.use_quat:
-                        rot = quaternion.as_rotation_matrix(quaternion.from_float_array(np.reshape(p, [batch_size, seq_length, -1, 4])))
-                        p_euler = rotmat2euler(rot)
-                    elif train_model.use_aa:
-                        p_euler = rotmat2euler(aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
-                    else:
-                        p_euler = rotmat2euler(np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
-
-                    p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
-                    p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
-                    p_euler_padded = np.reshape(p_euler_padded, [batch_size, seq_length, -1])
-
-                    for k in range(batch_size):
-                        _d_id = data_id[k].decode("utf-8")
-                        _action = _d_id.split('/')[-1]
-                        _targ = _gt_euler[_d_id]  # (seq_length, 96)
-                        _pred = p_euler_padded[k]  # (seq_length, 96)
-
-                        # compute euler loss like Martinez does it, but we don't have global translation
-                        gt_i = np.copy(_targ)
-                        gt_i[:, 0:3] = 0.0
-                        _pred[:, 0:3] = 0.0
-
-                        # compute the error only on the joints that we use for training
-                        # only do this on ground truths, predictions are already sparse
-                        idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
-
-                        euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use], 2)
-                        euc_error = np.sum(euc_error, axis=1)
-                        euc_error = np.sqrt(euc_error)  # (seq_length, )
-                        if _action not in _euler_angle_metrics:
-                            _euler_angle_metrics[_action] = [euc_error]
-                        else:
-                            _euler_angle_metrics[_action].append(euc_error)
-
-            except tf.errors.OutOfRangeError:
-                pass
-            return _euler_angle_metrics, time.perf_counter() - _start_time
-
+        undo_norm_fn = train_data.unnormalize_zero_mean_unit_variance_channel
+        train_str = "Train [{:04d}] \t Loss: {:.3f} \t time/batch: {:.3f}"
+        valid_str = "Valid [{:04d}] \t {} \t total_time: {:.3f}"
         while not stop_signal:
             # Training.
             for i in range(args.test_frequency):
@@ -466,13 +520,14 @@ def train():
                     train_loss += step_loss
 
                     time_counter += (time.perf_counter() - start_time)
+                    
                     if step % args.print_frequency == 0:
                         train_loss_avg = train_loss / args.print_frequency
                         time_elapsed = time_counter/args.print_frequency
                         train_loss, time_counter = 0., 0.
-                        print("Train [{:04d}] \t Loss: {:.3f} \t time/batch: {:.3f}".format(step,
-                                                                                            train_loss_avg,
-                                                                                            time_elapsed))
+                        print(train_str.format(step,
+                                               train_loss_avg,
+                                               time_elapsed))
                 except tf.errors.OutOfRangeError:
                     sess.run(train_iter.initializer)
                     epoch += 1
@@ -481,15 +536,20 @@ def train():
                         break
 
             # Evaluation: make a full pass on the validation split.
-            valid_metrics, valid_time, _ = evaluate_model(valid_model, valid_iter, metrics_engine)
+            valid_metrics, valid_time, _ = evaluate_model(sess, valid_model,
+                                                          valid_iter,
+                                                          metrics_engine,
+                                                          undo_norm_fn)
             # print an informative string to the console
-            print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
-                                                                      metrics_engine.get_summary_string(valid_metrics),
-                                                                      valid_time))
+            valid_log = metrics_engine.get_summary_string(valid_metrics)
+            print(valid_str.format(step,
+                                   valid_log,
+                                   valid_time))
             # get the summary feed dict
             summary_feed = metrics_engine.get_summary_feed_dict(valid_metrics)
             # get the writable summaries
-            summaries = sess.run(metrics_engine.all_summaries_op, feed_dict=summary_feed)
+            summaries = sess.run(metrics_engine.all_summaries_op,
+                                 feed_dict=summary_feed)
             # write to log
             test_writer.add_summary(summaries, step)
             # reset the computation of the metrics
@@ -502,17 +562,21 @@ def train():
 
             if config["use_h36m"]:
                 # do early stopping based on euler angle loss
-                predictions_euler, _ = _evaluate_srnn_poses(srnn_model, srnn_iter, srnn_gts)
+                predictions_euler, _ = _evaluate_srnn_poses(sess, srnn_model,
+                                                            srnn_iter, srnn_gts,
+                                                            undo_norm_fn)
                 selected_actions_mean_error = []
 
                 for action in ['walking', 'eating', 'discussion', 'smoking']:
-                    selected_actions_mean_error.append(np.stack(predictions_euler[action]))
+                    selected_actions_mean_error.append(
+                        np.stack(predictions_euler[action]))
 
-                valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0))
+                valid_loss = np.mean(np.concatenate(selected_actions_mean_error,
+                                                    axis=0))
                 print("Euler angle valid loss: {}".format(valid_loss))
             
-            # Check if the improvement is good enough. If not, we wait for some evaluation
-            # turns (i.e., early_stopping_tolerance).
+            # Check if the improvement is good enough. If not, we wait to see
+            # if there is an improvement (i.e., early_stopping_tolerance).
             if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
                 num_steps_wo_improvement = 0
             else:
@@ -523,28 +587,63 @@ def train():
             if valid_loss <= best_valid_loss:
                 best_valid_loss = valid_loss
                 print("Saving the model to {}".format(experiment_dir))
-                saver.save(sess, os.path.normpath(os.path.join(experiment_dir, 'checkpoint')), global_step=step-1)
+                saver.save(sess, os.path.normpath(
+                    os.path.join(experiment_dir, 'checkpoint')),
+                           global_step=step)
+                checkpoint_step = step
+
+                # If there is a new checkpoint, log the result.
+                if GLOGGER_AVAILABLE:
+                    for t in metrics_engine.target_lengths:
+                        valid_ = metrics_engine.get_metrics_until(valid_metrics,
+                                                                  t,
+                                                                  pck_thresholds,
+                                                                  prefix="val ")
+                        valid_["Step"] = checkpoint_step
+                        glogger.update_or_append_row(valid_,
+                                                     "until_{}".format(t))
 
         print("End of Training.")
         load_latest_checkpoint(sess, saver, experiment_dir)
 
         if not config["use_h36m"]:
             print("Evaluating validation set...")
-            valid_metrics, valid_time, _ = evaluate_model(valid_model, valid_iter, metrics_engine)
-            print("Valid [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
-                                                                      metrics_engine.get_summary_string(valid_metrics),
-                                                                      valid_time))
+            valid_metrics, valid_time, _ = evaluate_model(sess,
+                                                          valid_model,
+                                                          valid_iter,
+                                                          metrics_engine,
+                                                          undo_norm_fn)
+            print(valid_str.format(step,
+                                   metrics_engine.get_summary_string(valid_metrics),
+                                   valid_time))
             
             print("Evaluating test set...")
-            test_metrics, test_time, _ = evaluate_model(test_model, test_iter, metrics_engine)
-            print("Test [{:04d}] \t {} \t total_time: {:.3f}".format(step - 1,
-                                                                     metrics_engine.get_summary_string_all(
-                                                                         test_metrics,
-                                                                         target_lengths,
-                                                                         pck_thresholds),
-                                                                     test_time))
+            test_metrics, test_time, _ = evaluate_model(sess,
+                                                        test_model,
+                                                        test_iter,
+                                                        metrics_engine,
+                                                        undo_norm_fn)
+            test_str = "Test [{:04d}] \t {} \t total_time: {:.3f}"
+            print(test_str.format(step,
+                                  metrics_engine.get_summary_string_all(
+                                          test_metrics,
+                                          target_lengths,
+                                          pck_thresholds),
+                                  test_time))
+            if GLOGGER_AVAILABLE:
+                for t in metrics_engine.target_lengths:
+                    test_ = metrics_engine.get_metrics_until(test_metrics,
+                                                             t,
+                                                             pck_thresholds,
+                                                             prefix="test ")
+                    test_["Step"] = checkpoint_step
+                    glogger.update_or_append_row(test_,
+                                                 "until_{}".format(t))
+                
         else:
-            predictions_euler, _ = _evaluate_srnn_poses(srnn_model, srnn_iter, srnn_gts)
+            predictions_euler, _ = _evaluate_srnn_poses(sess, srnn_model,
+                                                        srnn_iter,
+                                                        srnn_gts, undo_norm_fn)
             which_actions = ['walking', 'eating', 'discussion', 'smoking']
 
             print("{:<10}".format(""), end="")
@@ -559,10 +658,11 @@ def train():
         
                 # get the metrics at the time-steps:
                 at_idxs = [1, 3, 7, 9]
-                s += " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}".format(euler_mean[at_idxs[0]],
-                                                                 euler_mean[at_idxs[1]],
-                                                                 euler_mean[at_idxs[2]],
-                                                                 euler_mean[at_idxs[3]])
+                test_str = " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}"
+                s += test_str.format(euler_mean[at_idxs[0]],
+                                     euler_mean[at_idxs[1]],
+                                     euler_mean[at_idxs[2]],
+                                     euler_mean[at_idxs[3]])
                 print(s)
         print("\nDone!")
 
