@@ -35,6 +35,18 @@ from visualization.fk import SMPLForwardKinematics
 from metrics.motion_metrics import MetricsEngine
 
 
+try:
+    from common.logger import GoogleSheetLogger
+    if "GLOGGER_WORKBOOK_AMASS" not in os.environ:
+        raise ImportError("GLOGGER_WORKBOOK_AMASS not found.")
+    if "GDRIVE_API_KEY" not in os.environ:
+        raise ImportError("GDRIVE_API_KEY not found.")
+    GLOGGER_AVAILABLE = True
+except ImportError:
+    GLOGGER_AVAILABLE = False
+    print("GLogger not available...")
+
+
 def load_latest_checkpoint(session, saver, experiment_dir):
     """Restore the latest checkpoint found in `experiment_dir`."""
     ckpt = tf.train.get_checkpoint_state(experiment_dir, latest_filename="checkpoint")
@@ -109,6 +121,40 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     return test_model, test_data
 
 
+def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
+                   undo_normalization_fn, _return_results=False):
+    # make a full pass on the validation or test dataset and compute the metrics
+    _eval_result = dict()
+    _metrics_engine.reset()
+    session.run(_eval_iter.initializer)
+    try:
+        while True:
+            # Get the predictions and ground truth values
+            res = _eval_model.sampled_step(session)
+            prediction, targets, seed_sequence, data_id = res
+            # Unnormalize predictions if there normalization applied.
+            p = undo_normalization_fn(
+                    {"poses": prediction}, "poses")
+            t = undo_normalization_fn(
+                    {"poses": targets}, "poses")
+            _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+        
+            if _return_results:
+                s = undo_normalization_fn(
+                        {"poses": seed_sequence}, "poses")
+                # Store each test sample and corresponding predictions with
+                # the unique sample IDs.
+                for k in range(prediction.shape[0]):
+                    _eval_result[data_id[k].decode("utf-8")] = (
+                            p["poses"][k],
+                            t["poses"][k],
+                            s["poses"][k])
+    except tf.errors.OutOfRangeError:
+        # finalize the computation of the metrics
+        final_metrics = _metrics_engine.get_final_metrics()
+    return final_metrics,  _eval_result
+
+
 def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     test_iter = test_data.get_iterator()
 
@@ -132,43 +178,58 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     # reset computation of metrics
     metrics_engine.reset()
 
-    def evaluate_model(_eval_model, _eval_iter, _metrics_engine):
-        # make a full pass on the validation or test dataset and compute the metrics
-        _eval_result = dict()
-        _metrics_engine.reset()
-        session.run(_eval_iter.initializer)
-        try:
-            while True:
-                # get the predictions and ground-truth values
-                prediction, targets, seed_sequence, data_id = _eval_model.sampled_step(session)
-                # unnormalize - if normalization is not configured, these calls do nothing
-                p = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": prediction}, "poses")
-                t = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": targets}, "poses")
-                s = test_data.unnormalize_zero_mean_unit_variance_channel({"poses": seed_sequence}, "poses")
-                _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+    # Google logging.
+    if args.glog_entry and GLOGGER_AVAILABLE:
+        exp_id = os.path.split(eval_dir)[-1].split("-")[0] + ".test"
+        glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
+        gdrive_key = os.environ["GDRIVE_API_KEY"]
+        model_name = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
+        static_values = dict()
+        static_values["Model ID"] = exp_id
+        static_values["Model Name"] = model_name
 
-                # Store each test sample and corresponding predictions with the unique sample IDs.
-                for i in range(prediction.shape[0]):
-                    _eval_result[data_id[i].decode("utf-8")] = (p["poses"][i], t["poses"][i], s["poses"][i])
-        except tf.errors.OutOfRangeError:
-            pass
-        finally:
-            # finalize the computation of the metrics
-            final_metrics = _metrics_engine.get_final_metrics()
-        return final_metrics, _eval_result
+        credentials = tf.gfile.Open(gdrive_key, "r")
+        glogger = GoogleSheetLogger(
+                credentials,
+                glogger_workbook,
+                sheet_names=["until_{}".format(24)],
+                model_identifier=exp_id,
+                static_values=static_values)
 
     print("Evaluating test set...")
-    test_metrics, eval_result = evaluate_model(test_model, test_iter, metrics_engine)
-    print(metrics_engine.get_summary_string_all(test_metrics, target_lengths, pck_thresholds))
+    undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
+    test_metrics, eval_result = evaluate_model(session, test_model,
+                                               test_iter,
+                                               metrics_engine,
+                                               undo_norm_fn,
+                                               _return_results=True)
+    
+    print(metrics_engine.get_summary_string_all(test_metrics, target_lengths,
+                                                pck_thresholds))
+
+    # If there is a new checkpoint, log the result.
+    if args.glog_entry and GLOGGER_AVAILABLE:
+        for t in metrics_engine.target_lengths:
+            eval_ = metrics_engine.get_metrics_until(test_metrics,
+                                                     t,
+                                                     pck_thresholds,
+                                                     prefix="test ")
+            glogger.update_or_append_row(eval_,
+                                         "until_{}".format(t))
 
     if args.visualize:
         data_representation = "quat" if test_model.use_quat else "aa" if test_model.use_aa else "rotmat"
-        # visualize some random samples stored in `eval_result` which is a dict id -> (prediction, seed, target)
+        # visualize some random samples stored in `eval_result` which is a
+        # dict id -> (prediction, seed, target)
         if not args.to_video:
-            visualizer = Visualizer(interactive=True, fk_engine=fk_engine, rep=data_representation)
+            visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
+                                    rep=data_representation)
         else:
-            visualizer = Visualizer(interactive=False, fk_engine=fk_engine, rep=data_representation,
-                                    output_dir=eval_dir, skeleton=not args.no_skel, dense=not args.no_mesh,
+            visualizer = Visualizer(interactive=False, fk_engine=fk_engine,
+                                    rep=data_representation,
+                                    output_dir=eval_dir,
+                                    skeleton=not args.no_skel,
+                                    dense=not args.no_mesh,
                                     to_video=args.to_video)
 
         n_samples_viz = 30
@@ -194,36 +255,54 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
 
 
 if __name__ == '__main__':
-    # If you would like to quantitatively evaluate a model, then --dynamic_test_split shouldn't be passed. In this case,
-    # the model will be evaluated on 180 frame windows extracted from the entire test split. You can still visualize
-    # samples. However, number of predicted frames will be less than or equal to 60.
-    # If you intend to evaluate/visualize longer predictions, then you should pass --dynamic_test_split which enables
-    # using original full-length test sequences. Hence, --seq_length_out can be much longer than 60.
+    # If you would like to quantitatively evaluate a model, then
+    # --dynamic_test_split shouldn't be passed. In this case, the model will be
+    # evaluated on 180 frame windows extracted from the entire test split.
+    # You can still visualize samples. However, number of predicted frames
+    # will be less than or equal to 60. If you intend to evaluate/visualize
+    # longer predictions, then you should pass --dynamic_test_split which
+    # enables using original full-length test sequences. Hence,
+    # --seq_length_out can be much longer than 60.
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_id', required=True, default=None, type=str,
-                        help="Experiment ID (experiment timestamp) or comma-separated list of ids.")
+                        help="Experiment ID (experiment timestamp) or "
+                             "comma-separated list of ids.")
     parser.add_argument('--eval_dir', required=False, default=None, type=str,
-                        help="Visualization save directory. If not passed, then save_dir is used.")
+                        help="Main visualization directory. First, a folder "
+                             "with the experiment name is created inside. "
+                             "If not passed, then save_dir is used.")
     parser.add_argument('--save_dir', required=False, default=None, type=str,
-                        help="Path to experiments. If not passed, then AMASS_EXPERIMENTS environment variable is used.")
+                        help="Path to experiments. If not passed, "
+                             "then AMASS_EXPERIMENTS environment variable is "
+                             "used.")
     parser.add_argument('--data_dir', required=False, default=None, type=str,
-                        help="Path to data. If not passed, then AMASS_DATA environment variable is used.")
+                        help="Path to data. If not passed, "
+                             "then AMASS_DATA environment variable is used.")
     
-    parser.add_argument('--seq_length_in', required=False, type=int, help="Seed sequence length")
-    parser.add_argument('--seq_length_out', required=False, type=int, help="Target sequence length")
-    parser.add_argument('--batch_size', required=False, default=64, type=int, help="Batch size")
+    parser.add_argument('--seq_length_in', required=False, type=int,
+                        help="Seed sequence length")
+    parser.add_argument('--seq_length_out', required=False, type=int,
+                        help="Target sequence length")
+    parser.add_argument('--batch_size', required=False, default=64, type=int,
+                        help="Batch size")
 
     parser.add_argument('--visualize', required=False, action="store_true",
-                        help="Visualize ground-truth and predictions side-by-side by using human skeleton.")
+                        help="Visualize ground-truth and predictions "
+                             "side-by-side by using human skeleton.")
     parser.add_argument('--no_skel', required=False, action="store_true",
-                        help='Dont show skeleton in offline visualization.')
-    parser.add_argument('--no_mesh', required=False,
-                        action="store_true", help='Dont show mesh in offline visualization')
+                        help="Dont show skeleton in offline visualization.")
+    parser.add_argument('--no_mesh', required=False, action="store_true",
+                        help="Dont show mesh in offline visualization")
     parser.add_argument('--to_video', required=False, action="store_true",
-                        help='Save the model predictions to mp4 videos in the experiments folder.')
-    parser.add_argument('--dynamic_test_split', required=False, action="store_true",
+                        help="Save the model predictions to mp4 videos in the "
+                             "experiments folder.")
+    parser.add_argument('--dynamic_test_split', required=False,
+                        action="store_true",
                         help="Test samples are extracted on-the-fly.")
+    parser.add_argument('--glog_entry', required=False,
+                        action="store_true",
+                        help="Create a Google sheet entry if available.")
 
     _args = parser.parse_args()
     if ',' in _args.model_id:
@@ -259,7 +338,10 @@ if __name__ == '__main__':
 
             gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9, allow_growth=True)
             with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
-                _eval_dir = _experiment_dir if _args.eval_dir is None else _args.eval_dir
+                exp_name = os.path.split(_experiment_dir)[-1]
+                _eval_dir = _experiment_dir if _args.eval_dir is None else os.path.join(_args.eval_dir, exp_name)
+                if not os.path.exists(_eval_dir):
+                    os.mkdir(_eval_dir)
                 _test_model, _test_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config,
                                                                    _args.dynamic_test_split)
                 print("Evaluating Model " + str(model_id))
