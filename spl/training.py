@@ -456,9 +456,9 @@ def train():
         if config["use_h36m"]:
             fk_engine = H36MForwardKinematics()
             tls = C.METRIC_TARGET_LENGTHS_H36M_25FPS
-            target_lengths = [x for x in tls] #if x <= train_model.target_seq_len]
+            target_lengths = [x for x in tls if x <= train_model.target_seq_len]
         else:
-            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS] #if x <= train_model.target_seq_len]
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
             fk_engine = SMPLForwardKinematics()
 
         metrics_engine = MetricsEngine(fk_engine,
