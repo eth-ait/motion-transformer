@@ -45,6 +45,7 @@ from common.conversions import rotmat2euler, aa2rotmat
 
 try:
     from common.logger import GoogleSheetLogger
+
     if "GLOGGER_WORKBOOK_AMASS" not in os.environ:
         raise ImportError("GLOGGER_WORKBOOK_AMASS not found.")
     if "GDRIVE_API_KEY" not in os.environ:
@@ -53,7 +54,6 @@ try:
 except ImportError:
     GLOGGER_AVAILABLE = False
     print("GLogger not available...")
-
 
 tf.app.flags.DEFINE_integer("seed", 1234, "Seed value.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment id to restore an existing model.")
@@ -85,7 +85,8 @@ tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 1000, "Decay steps. See
 tf.app.flags.DEFINE_enum("optimizer", "adam", ["adam", "sgd"], "Optimization function type.")
 tf.app.flags.DEFINE_float("grad_clip_norm", 1.0, "Clip gradients to this norm. If 0, gradient clipping is not applied.")
 # Model
-tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d"], "Which model to use.")
+tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d"],
+                         "Which model to use.")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_layers", 1, "# of hidden layers directly on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_size", 256, "Size of hidden layers directly on the inputs.")
@@ -110,8 +111,8 @@ tf.app.flags.DEFINE_enum("autoregressive_input", "sampling_based", ["sampling_ba
 tf.app.flags.DEFINE_integer("transformer_lr", 1, "Whether to use transformer learning rate or not")
 tf.app.flags.DEFINE_integer("transformer_d_model", 128, "Size of d_model of the transformer")
 tf.app.flags.DEFINE_float("transformer_dropout_rate", 0.1, "Dropout rate of the transformer")
-tf.app.flags.DEFINE_integer("transformer_dff", 128, "Size of feed forward layer of the transformer")
-tf.app.flags.DEFINE_integer("transformer_num_layers", 6, "Number of layers of the transformer")
+tf.app.flags.DEFINE_integer("transformer_dff", 64, "Size of feed forward layer of the transformer")
+tf.app.flags.DEFINE_integer("transformer_num_layers", 8, "Number of layers of the transformer")
 tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of heads of the transformer's temporal block")
 tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
 
@@ -142,14 +143,14 @@ def get_model_cls(model_type):
         return Transformer2d
     else:
         raise Exception("Unknown model type.")
-    
+
 
 def create_model(session):
     # Set experiment directory.
     save_dir = args.save_dir if args.save_dir else os.environ["AMASS_EXPERIMENTS"]
     if args.use_h36m:
         save_dir = os.path.join(save_dir, '../', 'experiments_h36m')
-    
+
     # Load an existing config or initialize one based on the command-line arguments.
     if args.experiment_id is not None:
         experiment_dir = glob.glob(os.path.join(save_dir, args.experiment_id + "-*"), recursive=False)[0]
@@ -168,7 +169,7 @@ def create_model(session):
         os.mkdir(experiment_dir)
 
     tf.random.set_random_seed(config["seed"])
-    
+
     # Set data paths.
     data_dir = args.data_dir if args.data_dir else os.environ["AMASS_DATA"]
     if config["use_h36m"]:
@@ -177,7 +178,7 @@ def create_model(session):
     train_data_path = os.path.join(data_dir, config["data_type"], "training", "amass-?????-of-?????")
     test_data_path = os.path.join(data_dir, config["data_type"], "test", "amass-?????-of-?????")
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
-    
+
     # Exhaustive validation uses all motion windows extracted from the sequences. Since it takes much longer, it is
     # advised to use the default validation procedure. It basically extracts a window randomly or from the center of a
     # motion sequence. The latter one is deterministic and reproducible.
@@ -203,11 +204,11 @@ def create_model(session):
     if config.get("exhaustive_validation", False):
         window_length = 0
         assert window_length <= 180, "TFRecords are hardcoded with length of 180."
-    
+
     with tf.name_scope("validation_data"):
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
                                            meta_data_path=meta_data_path,
-                                           batch_size=config["batch_size"]*2,
+                                           batch_size=config["batch_size"] * 2,
                                            shuffle=False,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_CENTER,
@@ -218,14 +219,14 @@ def create_model(session):
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=config["batch_size"]*2,
+                                          batch_size=config["batch_size"] * 2,
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
                                           num_parallel_calls=4,
                                           normalize=not config["no_normalization"])
         test_pl = test_data.get_tf_samples()
-    
+
     # Models.
     with tf.name_scope(C.TRAIN):
         train_model = model_cls(
@@ -250,14 +251,14 @@ def create_model(session):
             mode=C.SAMPLE,
             reuse=True)
         test_model.build_graph()
-    
+
     # Return of this function.
     models = [train_model, valid_model, test_model]
     data = [train_data, valid_data, test_data]
-    
+
     # Global step variable.
     global_step = tf.Variable(1, trainable=False, name='global_step')
-    
+
     if config["use_h36m"]:
         # create model and data for SRNN evaluation
         with tf.name_scope("srnn_data"):
@@ -303,7 +304,7 @@ def create_model(session):
     train_model.summary_routines()
     valid_model.summary_routines()
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
-    
+
     # Initialize a new model or load a pre-trained one.
     if args.experiment_id is None:
         print("Creating model with fresh parameters.")
@@ -329,14 +330,14 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
             prediction, targets, seed_sequence, data_id = res
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
-                    {"poses": prediction}, "poses")
+                {"poses": prediction}, "poses")
             t = undo_normalization_fn(
-                    {"poses": targets}, "poses")
+                {"poses": targets}, "poses")
             _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
-            
+
             if _return_results:
                 s = undo_normalization_fn(
-                        {"poses": seed_sequence}, "poses")
+                    {"poses": seed_sequence}, "poses")
                 # Store each test sample and corresponding predictions with
                 # the unique sample IDs.
                 for k in range(prediction.shape[0]):
@@ -361,12 +362,12 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
             # get the predictions and ground truth values
             res = _eval_model.sampled_step(sess)
             prediction, targets, seed_sequence, data_id = res
-            
+
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
-                    {"poses": prediction}, "poses")["poses"]
+                {"poses": prediction}, "poses")["poses"]
             batch_size, seq_length = p.shape[0], p.shape[1]
-            
+
             # Convert to euler angles to calculate the error.
             # NOTE: these ground truth euler angles come from Martinez et al.,
             # so we shouldn't use quat2euler as this uses a different convention
@@ -380,28 +381,28 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
             else:
                 p_euler = rotmat2euler(
                     np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
-            
+
             p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
             p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
             p_euler_padded = np.reshape(p_euler_padded,
                                         [batch_size, seq_length, -1])
-            
+
             for k in range(batch_size):
                 _d_id = data_id[k].decode("utf-8")
                 _action = _d_id.split('/')[-1]
                 _targ = _gt_euler[_d_id]  # (seq_length, 96)
                 _pred = p_euler_padded[k]  # (seq_length, 96)
-                
+
                 # compute euler loss like Martinez does it,
                 # but we don't have global translation
                 gt_i = np.copy(_targ)
                 gt_i[:, 0:3] = 0.0
                 _pred[:, 0:3] = 0.0
-                
+
                 # compute the error only on the joints that we use for training
                 # only do this on ground truths, predictions are already sparse
                 idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
-                
+
                 euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use],
                                      2)
                 euc_error = np.sum(euc_error, axis=1)
@@ -423,7 +424,7 @@ def train():
 
         # Create the model
         models, data, saver, global_step, experiment_dir, config = create_model(sess)
-        
+
         # If it is h36m data, iterate once over entire dataset to load all
         # ground-truth samples.
         if config["use_h36m"]:
@@ -432,7 +433,7 @@ def train():
 
             srnn_iter = srnn_data.get_iterator()
             srnn_pl = srnn_data.get_tf_samples()
-            
+
             try:
                 sess.run(srnn_iter.initializer)
                 srnn_gts = dict()
@@ -455,9 +456,9 @@ def train():
         if config["use_h36m"]:
             fk_engine = H36MForwardKinematics()
             tls = C.METRIC_TARGET_LENGTHS_H36M_25FPS
-            target_lengths = [x for x in tls if x <= train_model.target_seq_len]
+            target_lengths = [x for x in tls] #if x <= train_model.target_seq_len]
         else:
-            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS] #if x <= train_model.target_seq_len]
             fk_engine = SMPLForwardKinematics()
 
         metrics_engine = MetricsEngine(fk_engine,
@@ -475,24 +476,24 @@ def train():
         train_writer = tf.summary.FileWriter(summaries_dir, sess.graph)
         test_writer = train_writer
         print("Model created")
-        
+
         # Google logging.
         if GLOGGER_AVAILABLE:
             glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
             gdrive_key = os.environ["GDRIVE_API_KEY"]
             model_name = '-'.join(
-                    os.path.split(experiment_dir)[-1].split('-')[1:])
+                os.path.split(experiment_dir)[-1].split('-')[1:])
             static_values = dict()
             static_values["Model ID"] = config["experiment_id"]
             static_values["Model Name"] = model_name
-    
+
             credentials = tf.gfile.Open(gdrive_key, "r")
             glogger = GoogleSheetLogger(
-                    credentials,
-                    glogger_workbook,
-                    sheet_names=["until_{}".format(24)],
-                    model_identifier=config["experiment_id"],
-                    static_values=static_values)
+                credentials,
+                glogger_workbook,
+                sheet_names=["until_{}".format(24)],
+                model_identifier=config["experiment_id"],
+                static_values=static_values)
 
         # Early stopping configuration.
         early_stopping_metric_key = C.METRIC_JOINT_ANGLE
@@ -532,10 +533,10 @@ def train():
                     train_loss += step_loss
 
                     time_counter += (time.perf_counter() - start_time)
-                    
+
                     if step % args.print_frequency == 0:
                         train_loss_avg = train_loss / args.print_frequency
-                        time_elapsed = time_counter/args.print_frequency
+                        time_elapsed = time_counter / args.print_frequency
                         train_loss, time_counter = 0., 0.
                         print(train_str.format(step,
                                                train_loss_avg,
@@ -586,10 +587,10 @@ def train():
                 valid_loss = np.mean(np.concatenate(selected_actions_mean_error,
                                                     axis=0))
                 print("Euler angle valid loss: {}".format(valid_loss))
-            
+
             # Check if the improvement is good enough. If not, we wait to see
             # if there is an improvement (i.e., early_stopping_tolerance).
-            if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
+            if (best_valid_loss - valid_loss) > np.abs(best_valid_loss * improvement_ratio):
                 num_steps_wo_improvement = 0
             else:
                 num_steps_wo_improvement += 1
@@ -628,7 +629,7 @@ def train():
             print(valid_str.format(step,
                                    metrics_engine.get_summary_string(valid_metrics),
                                    valid_time))
-            
+
             print("Evaluating test set...")
             test_metrics, test_time, _ = evaluate_model(sess,
                                                         test_model,
@@ -638,9 +639,9 @@ def train():
             test_str = "Test [{:04d}] \t {} \t total_time: {:.3f}"
             print(test_str.format(step,
                                   metrics_engine.get_summary_string_all(
-                                          test_metrics,
-                                          target_lengths,
-                                          pck_thresholds),
+                                      test_metrics,
+                                      target_lengths,
+                                      pck_thresholds),
                                   test_time))
             if GLOGGER_AVAILABLE:
                 for t in metrics_engine.target_lengths:
@@ -651,7 +652,7 @@ def train():
                     test_["Step"] = checkpoint_step
                     glogger.update_or_append_row(test_,
                                                  "until_{}".format(t))
-                
+
         else:
             predictions_euler, _ = _evaluate_srnn_poses(sess, srnn_model,
                                                         srnn_iter,
@@ -667,7 +668,7 @@ def train():
                 assert len(predictions_euler[action]) == 8
                 euler_mean = np.mean(np.stack(predictions_euler[action]), axis=0)
                 s = "{:<10}:".format(action)
-        
+
                 # get the metrics at the time-steps:
                 at_idxs = [1, 3, 7, 9]
                 test_str = " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}"
