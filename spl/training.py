@@ -135,10 +135,8 @@ def get_model_cls(model_type):
 def create_model(session):
     # Set experiment directory.
     save_dir = args.save_dir if args.save_dir else os.environ["AMASS_EXPERIMENTS"]
-    if args.use_h36m:
-        save_dir = os.path.join(save_dir, '../', 'experiments_h36m')
-    
-    # Load an existing config or initialize one based on the command-line arguments.
+
+    # Load an existing config or initialize with command-line arguments.
     if args.experiment_id is not None:
         experiment_dir = glob.glob(os.path.join(save_dir, args.experiment_id + "-*"), recursive=False)[0]
         config = json.load(open(os.path.join(experiment_dir, "config.json"), "r"))
@@ -160,7 +158,7 @@ def create_model(session):
     # Set data paths.
     data_dir = args.data_dir if args.data_dir else os.environ["AMASS_DATA"]
     if config["use_h36m"]:
-        data_dir = os.path.join(data_dir, '../../h3.6m/tfrecords/')
+        data_dir = os.path.join(data_dir, '../h3.6m/tfrecords/')
 
     train_data_path = os.path.join(data_dir, config["data_type"], "training", "amass-?????-of-?????")
     test_data_path = os.path.join(data_dir, config["data_type"], "test", "amass-?????-of-?????")
@@ -251,6 +249,8 @@ def create_model(session):
         with tf.name_scope("srnn_data"):
             srnn_dir = "srnn_poses_25fps"
             extract_windows_of = 60
+            assert config["source_seq_len"] + config[
+                "target_seq_len"] == 60, "H3.6M dataset is in 25 FPS."
             srnn_path = os.path.join(data_dir, config["data_type"], srnn_dir, "amass-?????-of-?????")
             srnn_data = SRNNTFRecordMotionDataset(data_path=srnn_path,
                                                   meta_data_path=meta_data_path,
@@ -473,14 +473,19 @@ def train():
             static_values = dict()
             static_values["Model ID"] = config["experiment_id"]
             static_values["Model Name"] = model_name
-    
+            
+            if config["use_h36m"]:
+                sheet_name = "h36m"
+            else:
+                sheet_name = "until_{}".format(24)
+            
             credentials = tf.gfile.Open(gdrive_key, "r")
             glogger = GoogleSheetLogger(
-                    credentials,
-                    glogger_workbook,
-                    sheet_names=["until_{}".format(24)],
-                    model_identifier=config["experiment_id"],
-                    static_values=static_values)
+                credentials,
+                glogger_workbook,
+                sheet_names=[sheet_name],
+                model_identifier=config["experiment_id"],
+                static_values=static_values)
 
         # Early stopping configuration.
         early_stopping_metric_key = C.METRIC_JOINT_ANGLE
@@ -573,8 +578,8 @@ def train():
 
                 valid_loss = np.mean(np.concatenate(selected_actions_mean_error,
                                                     axis=0))
-                print("Euler angle valid loss: {}".format(valid_loss))
-            
+                print("Euler angle valid loss on SRNN samples: {}".format(valid_loss))
+
             # Check if the improvement is good enough. If not, we wait to see
             # if there is an improvement (i.e., early_stopping_tolerance).
             if (best_valid_loss - valid_loss) > np.abs(best_valid_loss*improvement_ratio):
@@ -594,14 +599,33 @@ def train():
 
                 # If there is a new checkpoint, log the result.
                 if GLOGGER_AVAILABLE:
-                    for t in metrics_engine.target_lengths:
-                        valid_ = metrics_engine.get_metrics_until(valid_metrics,
-                                                                  t,
-                                                                  pck_thresholds,
-                                                                  prefix="val ")
-                        valid_["Step"] = checkpoint_step
-                        glogger.update_or_append_row(valid_,
-                                                     "until_{}".format(t))
+                    # Note that h3.6m validation performance can be logged wrt.
+                    # time-steps similar to AMASS.
+                    if config["use_h36m"]:
+                        which_actions = ['walking', 'eating', 'discussion', 'smoking']
+                        log_data = dict()
+                        for action in which_actions:
+                            # get the mean over all samples for that action
+                            assert len(predictions_euler[action]) == 8
+                            euler_mean = np.mean(
+                                np.stack(predictions_euler[action]), axis=0)
+        
+                            log_data[action[0] + "80"] = euler_mean[1]
+                            log_data[action[0] + "160"] = euler_mean[3]
+                            log_data[action[0] + "320"] = euler_mean[7]
+                            log_data[action[0] + "400"] = euler_mean[9]
+                        log_data["Step"] = checkpoint_step
+                        glogger.update_or_append_row(log_data, "h36m")
+                    else:
+                        for t in metrics_engine.target_lengths:
+                            valid_ = metrics_engine.get_metrics_until(
+                                valid_metrics,
+                                t,
+                                pck_thresholds,
+                                prefix="val ")
+                            valid_["Step"] = checkpoint_step
+                            glogger.update_or_append_row(valid_,
+                                                         "until_{}".format(t))
 
         print("End of Training.")
         load_latest_checkpoint(sess, saver, experiment_dir)
@@ -644,8 +668,9 @@ def train():
             predictions_euler, _ = _evaluate_srnn_poses(sess, srnn_model,
                                                         srnn_iter,
                                                         srnn_gts, undo_norm_fn)
+            log_data = dict()
             which_actions = ['walking', 'eating', 'discussion', 'smoking']
-
+            
             print("{:<10}".format(""), end="")
             for ms in [80, 160, 320, 400]:
                 print("  {0:4d}  ".format(ms), end="")
@@ -657,13 +682,22 @@ def train():
                 s = "{:<10}:".format(action)
         
                 # get the metrics at the time-steps:
-                at_idxs = [1, 3, 7, 9]
                 test_str = " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}"
-                s += test_str.format(euler_mean[at_idxs[0]],
-                                     euler_mean[at_idxs[1]],
-                                     euler_mean[at_idxs[2]],
-                                     euler_mean[at_idxs[3]])
+                s += test_str.format(euler_mean[1],
+                                     euler_mean[3],
+                                     euler_mean[7],
+                                     euler_mean[9])
                 print(s)
+            
+                log_data[action[0] + "80"] = euler_mean[1]
+                log_data[action[0] + "160"] = euler_mean[3]
+                log_data[action[0] + "320"] = euler_mean[7]
+                log_data[action[0] + "400"] = euler_mean[9]
+            
+            if GLOGGER_AVAILABLE:
+                log_data["Step"] = checkpoint_step
+                glogger.update_or_append_row(log_data, "h36m")
+                
         print("\nDone!")
 
 
