@@ -16,11 +16,11 @@ class Transformer2d(BaseModel):
         self.dff = config.get('transformer_dff')
         self.lr_type = config.get('transformer_lr')
         self.warm_up_steps = 10000  # warm_up steps number for the learning rate
-        self.window_len = 120  # attention window length
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
         # data
+        self.window_len = self.source_seq_len  # attention window length
         self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
