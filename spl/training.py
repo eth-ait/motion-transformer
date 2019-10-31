@@ -35,6 +35,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.vanilla import Transformer1d
 
 from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
@@ -85,7 +86,7 @@ tf.app.flags.DEFINE_integer("learning_rate_decay_steps", 1000, "Decay steps. See
 tf.app.flags.DEFINE_enum("optimizer", "adam", ["adam", "sgd"], "Optimization function type.")
 tf.app.flags.DEFINE_float("grad_clip_norm", 1.0, "Clip gradients to this norm. If 0, gradient clipping is not applied.")
 # Model
-tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d"],
+tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d", "transformer1d"],
                          "Which model to use.")
 tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_layers", 1, "# of hidden layers directly on the inputs.")
@@ -115,6 +116,8 @@ tf.app.flags.DEFINE_integer("transformer_dff", 64, "Size of feed forward layer o
 tf.app.flags.DEFINE_integer("transformer_num_layers", 8, "Number of layers of the transformer")
 tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of heads of the transformer's temporal block")
 tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
+tf.app.flags.DEFINE_integer("transformer_window_length", 120, "length of attention window of the transformer")
+tf.app.flags.DEFINE_integer("warm_up_steps", 10000, "number of warm-up steps")
 
 args = tf.app.flags.FLAGS
 
@@ -141,6 +144,8 @@ def get_model_cls(model_type):
         return Seq2SeqModel
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
+    elif model_type == "transformer1d":
+        return Transformer1d
     else:
         raise Exception("Unknown model type.")
 
@@ -486,12 +491,12 @@ def train():
             static_values = dict()
             static_values["Model ID"] = config["experiment_id"]
             static_values["Model Name"] = model_name
-            
+
             if config["use_h36m"]:
                 sheet_name = "h36m"
             else:
                 sheet_name = "until_{}".format(24)
-            
+
             credentials = tf.gfile.Open(gdrive_key, "r")
             glogger = GoogleSheetLogger(
                 credentials,
@@ -622,7 +627,7 @@ def train():
                             assert len(predictions_euler[action]) == 8
                             euler_mean = np.mean(
                                 np.stack(predictions_euler[action]), axis=0)
-        
+
                             log_data[action[0] + "80"] = euler_mean[1]
                             log_data[action[0] + "160"] = euler_mean[3]
                             log_data[action[0] + "320"] = euler_mean[7]
@@ -683,7 +688,7 @@ def train():
                                                         srnn_gts, undo_norm_fn)
             log_data = dict()
             which_actions = ['walking', 'eating', 'discussion', 'smoking']
-            
+
             print("{:<10}".format(""), end="")
             for ms in [80, 160, 320, 400]:
                 print("  {0:4d}  ".format(ms), end="")
@@ -701,16 +706,16 @@ def train():
                                      euler_mean[7],
                                      euler_mean[9])
                 print(s)
-            
+
                 log_data[action[0] + "80"] = euler_mean[1]
                 log_data[action[0] + "160"] = euler_mean[3]
                 log_data[action[0] + "320"] = euler_mean[7]
                 log_data[action[0] + "400"] = euler_mean[9]
-            
+
             if GLOGGER_AVAILABLE:
                 log_data["Step"] = checkpoint_step
                 glogger.update_or_append_row(log_data, "h36m")
-                
+
         print("\nDone!")
 
 
