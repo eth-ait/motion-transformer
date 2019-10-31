@@ -15,12 +15,13 @@ class Transformer2d(BaseModel):
         self.dropout_rate = config.get('transformer_dropout_rate')
         self.dff = config.get('transformer_dff')
         self.lr_type = config.get('transformer_lr')
-        self.warm_up_steps = 10000  # warm_up steps number for the learning rate
+        self.warm_up_steps = config.get('transformer_warm_up_steps')  # 1000 for h3.6m, 10000 for amass
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
+        self.window_len = config.get('transformer_window_length')#self.source_seq_len  # attention window length
+
         # data
-        self.window_len = self.source_seq_len  # attention window length
         self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
@@ -40,7 +41,7 @@ class Transformer2d(BaseModel):
         """
         config, experiment_name = super(Transformer2d, cls).get_model_config(args, from_config)
 
-        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}"
+        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         args.model_type,
                                                         config["joint_prediction_layer"],
@@ -53,7 +54,9 @@ class Transformer2d(BaseModel):
                                                         config["transformer_num_heads_spacial"],
                                                         config["transformer_num_layers"],
                                                         config["transformer_d_model"],
-                                                        config["transformer_dff"])
+                                                        config["transformer_dff"],
+                                                        config["transformer_window_length"],
+                                                        config["seed"])
         return config, experiment_name
 
     def _learning_rate_scheduler(self, global_step):
