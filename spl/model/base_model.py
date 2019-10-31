@@ -307,6 +307,9 @@ class BaseModel(object):
             config['transformer_num_layers'] = args.transformer_num_layers
             config['transformer_num_heads_temporal'] = args.transformer_num_heads_temporal
             config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
+            config['transformer_warm_up_steps'] = args.warm_up_steps
+            config['transformer_window_length'] = args.transformer_window_length
+
         else:
             config = from_config
 
