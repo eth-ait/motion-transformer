@@ -79,7 +79,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     window_length = config["source_seq_len"] + config["target_seq_len"]
 
     if config["use_h36m"]:
-        data_dir = os.path.join(data_dir, '../../h3.6m/tfrecords/')
+        data_dir = os.path.join(data_dir, '../h3.6m/tfrecords/')
 
     if dynamic_test_split:
         data_split = "test_dynamic"
@@ -226,7 +226,9 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
         # dict id -> (prediction, seed, target)
         if not args.to_video:
             visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
-                                    rep=data_representation)
+                                    rep=data_representation,
+                                    output_dir=eval_dir,
+                                    to_video=True)
         else:
             visualizer = Visualizer(interactive=False, fk_engine=fk_engine,
                                     rep=data_representation,
@@ -253,8 +255,13 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                             'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
                             'CMU/0/CMU/01_01_06']
         print("Visualizing samples...")
-        for i, k in enumerate(sample_keys):
-            visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k + "_i{}".format(i))
+        # for i, k in enumerate(sample_keys):
+        #     visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k + "_i{}".format(i))
+        k = list(eval_result.keys())[0]
+        i = 0
+        visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k + "_i{}".format(i))
+        
+        
 
 
 if __name__ == '__main__':

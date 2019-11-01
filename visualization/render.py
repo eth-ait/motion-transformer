@@ -108,7 +108,6 @@ class Visualizer(object):
                            fig_title=title,
                            parents=self.fk_engine.parents,
                            out_dir=out_dir,
-                           fname=fname,
                            to_video=self.to_video)
 
     def create_clip_smpl(self, joint_angles, title):
@@ -241,6 +240,8 @@ class Visualizer(object):
                            colors=[self.base_color, self.base_color],
                            titles=['prediction', 'target'],
                            fig_title=title,
+                           out_dir=self.video_dir,
+                           fname="video",
                            parents=self.fk_engine.parents,
                            change_color_after_frame=(change_color_after_frame, None),
                            color_after_change=self.prediction_color)
