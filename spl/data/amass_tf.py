@@ -32,7 +32,11 @@ class TFRecordMotionDataset(Dataset):
         print("Loading motion data from {}".format(os.path.abspath(data_path)))
         # Extract a window randomly. If the sequence is shorter, ignore it.
         self.extract_windows_of = kwargs.get("extract_windows_of", 0)
-        # Whether to extract windows randomly, from the beginning or the middle of the sequence.
+        # Determines the index of the initial frame of the window if window_type
+        # is "from_beginning".
+        self.beginning_index = kwargs.get("beginning_index", 0)
+        # Whether to extract windows randomly, from the beginning or the middle
+        # of the sequence.
         self.window_type = kwargs.get("window_type", True)
         self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
         self.num_parallel_calls = kwargs.get("num_parallel_calls", 16)
@@ -138,7 +142,7 @@ class TFRecordMotionDataset(Dataset):
 
     def __pp_get_windows_beginning(self, sample):
         # Extract a window from the beginning of the sequence.
-        sample["poses"] = sample["poses"][0:self.extract_windows_of, :]
+        sample["poses"] = sample["poses"][self.beginning_index:self.extract_windows_of, :]
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 
