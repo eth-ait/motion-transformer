@@ -142,7 +142,7 @@ class TFRecordMotionDataset(Dataset):
 
     def __pp_get_windows_beginning(self, sample):
         # Extract a window from the beginning of the sequence.
-        sample["poses"] = sample["poses"][self.beginning_index:self.extract_windows_of, :]
+        sample["poses"] = sample["poses"][self.beginning_index:self.beginning_index+self.extract_windows_of, :]
         sample["shape"] = tf.shape(sample["poses"])
         return sample
 

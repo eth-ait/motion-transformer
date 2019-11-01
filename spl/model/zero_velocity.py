@@ -96,8 +96,11 @@ class ZeroVelocityBaseline(BaseModel):
             config['num_epochs'] = 0
         else:
             config = from_config
-    
-        config["experiment_id"] = str(int(time.time()))
+
+        if args.new_experiment_id is not None:
+            config["experiment_id"] = args.new_experiment_id
+        else:
+            config["experiment_id"] = str(int(time.time()))
         experiment_name_format = "{}-{}-{}_{}-b{}-in{}_out{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         config["model_type"],

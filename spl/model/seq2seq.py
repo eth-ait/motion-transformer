@@ -45,7 +45,7 @@ class Seq2SeqModel(BaseModel):
         with tf.name_scope("inputs"):
             self.encoder_inputs = self.data_inputs[:, 0:self.source_seq_len - 1]
             self.decoder_inputs = self.data_inputs[:, self.source_seq_len - 1:-1]
-            self.decoder_outputs = self.data_inputs[:, self.source_seq_len:]
+            self.decoder_outputs = self.data_inputs[:, self.source_seq_len:self.source_seq_len+self.target_seq_len]
             
             enc_in = tf.transpose(self.encoder_inputs, [1, 0, 2])
             dec_in = tf.transpose(self.decoder_inputs, [1, 0, 2])

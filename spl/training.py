@@ -58,6 +58,7 @@ except ImportError:
 
 tf.app.flags.DEFINE_integer("seed", 1234, "Seed value.")
 tf.app.flags.DEFINE_string("experiment_id", None, "Unique experiment id to restore an existing model.")
+tf.app.flags.DEFINE_string("new_experiment_id", None, "Unique experiment id to start an experiment.")
 tf.app.flags.DEFINE_string("data_dir", None,
                            "Path to data. If not passed, then AMASS_DATA environment variable is used.")
 tf.app.flags.DEFINE_string("save_dir", None,
@@ -164,6 +165,10 @@ def create_model(session):
         if args.from_config is not None:
             from_config = json.load(open(args.from_config, "r"))
             model_cls = get_model_cls(from_config["model_type"])
+            
+            # TODO(emre) quick hack to run with shorter seed sequence.
+            if args.source_seq_len < 120:
+                from_config["source_seq_len"] = args.source_seq_len
         else:
             from_config = None
             model_cls = get_model_cls(args.model_type)
@@ -201,9 +206,9 @@ def create_model(session):
     if config["use_h36m"]:
         default_seed_len = 50
     beginning_index = default_seed_len - config["source_seq_len"]
-    window_length = config["source_seq_len"] + config["target_seq_len"]
     
     with tf.name_scope("training_data"):
+        window_length = config["source_seq_len"] + config["target_seq_len"]
         train_data = TFRecordMotionDataset(data_path=train_data_path,
                                            meta_data_path=meta_data_path,
                                            batch_size=config["batch_size"],
@@ -213,11 +218,10 @@ def create_model(session):
                                            num_parallel_calls=4,
                                            normalize=not config["no_normalization"])
         train_pl = train_data.get_tf_samples()
-
-    if config.get("exhaustive_validation", False):
-        window_length = 0
-
+    
     with tf.name_scope("validation_data"):
+        if config.get("exhaustive_validation", False):
+            window_length = 0
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
                                            meta_data_path=meta_data_path,
                                            batch_size=config["batch_size"] * 2,
@@ -229,6 +233,7 @@ def create_model(session):
         valid_pl = valid_data.get_tf_samples()
     
     with tf.name_scope("test_data"):
+        window_length = config["source_seq_len"] + config["target_seq_len"]
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
                                           batch_size=config["batch_size"] * 2,
@@ -237,7 +242,7 @@ def create_model(session):
                                           window_type=C.DATA_WINDOW_BEGINNING,
                                           num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
-                                          transition_idx=beginning_index)
+                                          beginning_index=beginning_index)
         test_pl = test_data.get_tf_samples()
 
     # Models.
@@ -505,8 +510,8 @@ def train():
             if config["use_h36m"]:
                 sheet_name = "h36m"
             else:
-                sheet_name = "until_{}".format(24)
-
+                sheet_name = "until_{}".format(18)
+            
             credentials = tf.gfile.Open(gdrive_key, "r")
             glogger = GoogleSheetLogger(
                 credentials,
