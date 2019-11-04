@@ -181,8 +181,8 @@ def create_model(session):
     train_data_path = os.path.join(data_dir, config["data_type"], "training", "amass-?????-of-?????")
     test_data_path = os.path.join(data_dir, config["data_type"], "test", "amass-?????-of-?????")
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
-
-    # Exhaustive validation uses all motion windows extracted from the sequences. Since it takes much longer, it is
+    
+    # Exhaustive validation uses all motion windows extracted from the sequences Since it takes much longer, it is
     # advised to use the default validation procedure. It basically extracts a window randomly or from the center of a
     # motion sequence. The latter one is deterministic and reproducible.
     if config.get("exhaustive_validation", False):
@@ -191,8 +191,18 @@ def create_model(session):
         valid_data_path = os.path.join(data_dir, config["data_type"], "validation_dynamic", "amass-?????-of-?????")
 
     # Data splits.
-    # Each sample in training data is a full motion clip. We extract windows of seed+target length randomly.
+    # Each sample in training data is a full motion clip. We extract windows
+    # of seed+target length randomly.
+    
+    # Set a fixed seed length of 2 seconds (120 and 50 frames for AMASS and H36M) datasets, respectively.
+    # If the model uses shorter, it is clipped. This is required to ensure that
+    # in shorter seed sequence cases, the validation and the test samples are still the same.
+    default_seed_len = 120
+    if config["use_h36m"]:
+        default_seed_len = 50
+    beginning_index = default_seed_len - config["source_seq_len"]
     window_length = config["source_seq_len"] + config["target_seq_len"]
+    
     with tf.name_scope("training_data"):
         train_data = TFRecordMotionDataset(data_path=train_data_path,
                                            meta_data_path=meta_data_path,
@@ -206,7 +216,6 @@ def create_model(session):
 
     if config.get("exhaustive_validation", False):
         window_length = 0
-        assert window_length <= 180, "TFRecords are hardcoded with length of 180."
 
     with tf.name_scope("validation_data"):
         valid_data = TFRecordMotionDataset(data_path=valid_data_path,
@@ -218,7 +227,7 @@ def create_model(session):
                                            num_parallel_calls=4,
                                            normalize=not config["no_normalization"])
         valid_pl = valid_data.get_tf_samples()
-
+    
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
@@ -227,7 +236,8 @@ def create_model(session):
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
                                           num_parallel_calls=4,
-                                          normalize=not config["no_normalization"])
+                                          normalize=not config["no_normalization"],
+                                          transition_idx=beginning_index)
         test_pl = test_data.get_tf_samples()
 
     # Models.
