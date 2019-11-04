@@ -67,6 +67,7 @@ tf.app.flags.DEFINE_string("from_config", None,
                            "Path to an existing config.json to start a new experiment.")
 tf.app.flags.DEFINE_integer("print_frequency", 100, "Print/log every this many training steps.")
 tf.app.flags.DEFINE_integer("test_frequency", 1000, "Runs validation every this many training steps.")
+tf.app.flags.DEFINE_string("glog_comment", None, "A descriptive text for Google Sheet entry.")
 # If from_config is used, the rest will be ignored.
 # Data
 tf.app.flags.DEFINE_enum("data_type", "rotmat", ["rotmat", "aa", "quat"],
@@ -89,7 +90,7 @@ tf.app.flags.DEFINE_float("grad_clip_norm", 1.0, "Clip gradients to this norm. I
 # Model
 tf.app.flags.DEFINE_enum("model_type", "transformer2d", ["rnn", "seq2seq", "zero_velocity", "transformer2d", "transformer1d"],
                          "Which model to use.")
-tf.app.flags.DEFINE_float("input_dropout_rate", 0.1, "Dropout rate on the inputs.")
+tf.app.flags.DEFINE_float("input_dropout_rate", 0, "Dropout rate on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_layers", 1, "# of hidden layers directly on the inputs.")
 tf.app.flags.DEFINE_integer("input_hidden_size", 256, "Size of hidden layers directly on the inputs.")
 tf.app.flags.DEFINE_enum("cell_type", "lstm", ["lstm", "gru"], "RNN cell type: gru or lstm.")
@@ -119,6 +120,7 @@ tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of head
 tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
 tf.app.flags.DEFINE_integer("transformer_window_length", 120, "length of attention window of the transformer")
 tf.app.flags.DEFINE_integer("warm_up_steps", 10000, "number of warm-up steps")
+tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a shared embedding layer instead of joint-specific layers or not.")
 
 args = tf.app.flags.FLAGS
 
@@ -506,6 +508,8 @@ def train():
             static_values = dict()
             static_values["Model ID"] = config["experiment_id"]
             static_values["Model Name"] = model_name
+            if args.glog_comment is not None:
+                static_values["Comment"] = args.glog_comment
 
             if config["use_h36m"]:
                 sheet_name = "h36m"

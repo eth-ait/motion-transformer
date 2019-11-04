@@ -1,6 +1,7 @@
+import time
+
 import numpy as np
 import tensorflow as tf
-import spl.util.tf_utils as model_utils
 from spl.model.base_model import BaseModel
 from common.constants import Constants as C
 
@@ -16,6 +17,7 @@ class Transformer2d(BaseModel):
         self.dff = config.get('transformer_dff')
         self.lr_type = config.get('transformer_lr')
         self.warm_up_steps = config.get('transformer_warm_up_steps')  # 1000 for h3.6m, 10000 for amass
+        self.shared_embedding_layer = config.get('shared_embedding_layer', False)
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
@@ -39,12 +41,48 @@ class Transformer2d(BaseModel):
         Returns:
             experiment configuration (dict), experiment name (str)
         """
-        config, experiment_name = super(Transformer2d, cls).get_model_config(args, from_config)
+        if from_config is None:
+            config = dict()
+            config['seed'] = args.seed
+            config['model_type'] = args.model_type
+            config['data_type'] = args.data_type
+            config['use_h36m'] = args.use_h36m
+    
+            config['no_normalization'] = args.no_normalization
+            config['batch_size'] = args.batch_size
+            config['source_seq_len'] = args.source_seq_len
+            config['target_seq_len'] = args.target_seq_len
+    
+            config['early_stopping_tolerance'] = args.early_stopping_tolerance
+            config['num_epochs'] = args.num_epochs
+    
+            config['learning_rate'] = args.learning_rate
+            config['learning_rate_decay_steps'] = args.learning_rate_decay_steps
+            config['learning_rate_decay_rate'] = args.learning_rate_decay_rate
+            config['grad_clip_norm'] = args.grad_clip_norm
+            config['optimizer'] = args.optimizer
+            config['input_dropout_rate'] = args.input_dropout_rate
+    
+            config['residual_velocity'] = args.residual_velocity
+            config['loss_type'] = args.loss_type
+    
+            config['transformer_lr'] = args.transformer_lr
+            config['transformer_d_model'] = args.transformer_d_model
+            config['transformer_dropout_rate'] = args.transformer_dropout_rate
+            config['transformer_dff'] = args.transformer_dff
+            config['transformer_num_layers'] = args.transformer_num_layers
+            config['transformer_num_heads_temporal'] = args.transformer_num_heads_temporal
+            config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
+            config['transformer_warm_up_steps'] = args.warm_up_steps
+            config['transformer_window_length'] = args.transformer_window_length
+            config['shared_embedding_layer'] = args.shared_embedding_layer
+        else:
+            config = from_config
 
-        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
+        config["experiment_id"] = str(int(time.time()))
+        experiment_name_format = "{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         args.model_type,
-                                                        config["joint_prediction_layer"],
                                                         "h36m" if args.use_h36m else "amass",
                                                         args.data_type,
                                                         args.batch_size,
@@ -359,8 +397,24 @@ class Transformer2d(BaseModel):
         # different joints have different encoding matrices
         inputs = tf.transpose(inputs, [2, 0, 1, 3])  # (num_joints, batch_size, seq_len, joint_size)
         embed = []
+
+        inp_drop_rate = self.config.get("input_dropout_rate", 0)
+        if inp_drop_rate > 0:
+            inp_shape = tf.shape(inputs)
+            # Apply dropout on the entire rotation matrix of a joint.
+            noise_shape = (inp_shape[0], inp_shape[1], inp_shape[2], 1)
+            with tf.variable_scope('input_dropout', reuse=self.reuse):
+                inputs = tf.layers.dropout(inputs,
+                                           rate=inp_drop_rate,
+                                           seed=self.config["seed"],
+                                           training=self.is_training,
+                                           noise_shape=noise_shape)
+        
         for joint_idx in range(self.NUM_JOINTS):
-            with tf.variable_scope("embedding_" + str(joint_idx), reuse=self.reuse):
+            emb_var_scope = "embedding_" + str(joint_idx)
+            if self.shared_embedding_layer:
+                emb_var_scope = "embedding"
+            with tf.variable_scope(emb_var_scope, reuse=tf.AUTO_REUSE):
                 joint_rep = tf.layers.dense(inputs[joint_idx], self.d_model)  # (batch_size, seq_len, d_model)
                 embed += [joint_rep]
         x = tf.concat(embed, axis=-1)
@@ -368,7 +422,7 @@ class Transformer2d(BaseModel):
         # add the positional encoding
         x += self.pos_encoding
 
-        with tf.variable_scope("input_dropout", reuse=self.reuse):
+        with tf.variable_scope("embedding_dropout", reuse=self.reuse):
             x = tf.layers.dropout(x, training=self.is_training, rate=self.dropout_rate)
 
         # put into several attention layers

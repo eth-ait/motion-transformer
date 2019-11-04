@@ -6,12 +6,12 @@ The working directory must be the same with python file's directory.
 """
 
 NUM_CPU = 8
-MEMORY = 3000
+MEMORY = 5000
 NUM_GPU = 1
 WALL_TIME = 23
 cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
 
-experiment_list= [
+experiment_list = [
     # 'python spl/training.py --from_config /cluster/home/eaksan/motion-modelling-github/pretrained_configs/1565875869-Seq2seq/config.json',
     # # 'python spl/training.py --from_config /cluster/home/eaksan/motion-modelling-github/pretrained_configs/1564419538-Seq2seq-SPL/config.json',
     # 'python spl/training.py --from_config /cluster/home/eaksan/motion-modelling-github/pretrained_configs/1565875871-Seq2seq-dropout/config.json',
@@ -46,9 +46,16 @@ experiment_list= [
     # 'python spl/training.py --from_config /cluster/home/eaksan/motion-modelling-github/pretrained_configs/1564419527-RNN-SPL/config.json  --source_seq_len 120 ',
 ]
 
+transformer_experiments = [
+    'python spl/training.py ',
+    'python spl/training.py --shared_embedding_layer ',
+    'python spl/training.py --input_dropout_rate 0.1 ',
+    'python spl/training.py --shared_embedding_layer --input_dropout_rate 0.1 ',
+]
+
 # Create a unique experiment timestamp.
 experiment_timestamp = str(int(time.time()))
-for work_id, experiment in enumerate(experiment_list):
+for work_id, experiment in enumerate(transformer_experiments):
     experiment_id = "{}.{}".format(experiment_timestamp, work_id+1)
     time.sleep(1)
     print(experiment_id)
