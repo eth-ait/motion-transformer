@@ -583,7 +583,9 @@ def train():
                                                           metrics_engine,
                                                           undo_norm_fn)
             # print an informative string to the console
-            valid_log = metrics_engine.get_summary_string(valid_metrics)
+            valid_log = metrics_engine.get_summary_string_all(valid_metrics,
+                                                              [config["target_seq_len"]],
+                                                              pck_thresholds)
             print(valid_str.format(step,
                                    valid_log,
                                    valid_time))
@@ -674,8 +676,11 @@ def train():
                                                           valid_iter,
                                                           metrics_engine,
                                                           undo_norm_fn)
+            valid_log = metrics_engine.get_summary_string_all(valid_metrics,
+                                                              [config["target_seq_len"]],
+                                                              pck_thresholds)
             print(valid_str.format(step,
-                                   metrics_engine.get_summary_string(valid_metrics),
+                                   valid_log,
                                    valid_time))
 
             print("Evaluating test set...")

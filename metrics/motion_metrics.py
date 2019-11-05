@@ -497,8 +497,9 @@ class MetricsEngine(object):
             s += "   {}: {:.3f}".format(m, val)
 
         # print pcks last
-        pck_threshs = [5, 10, 15]
+        pck_threshs = [0.05, 0.1, 0.15]
         for t in pck_threshs:
+            t = t*100
             m_name = "pck_{}".format(t)
             val = metric_results[m_name][seq_length - 1] if at_mode else np.mean(metric_results[m_name])
             s += "   {}: {:.3f}".format(m_name, val)
@@ -523,8 +524,8 @@ class MetricsEngine(object):
             A summary string.
         """
         s = ""
-        for seq_length in sorted(target_lengths):
-            s += "\nMetrics until {:<2}:".format(seq_length)
+        for i, seq_length in enumerate(sorted(target_lengths)):
+            s += "Metrics until {:<2}:".format(seq_length)
             for m in sorted(metric_results):
                 if m.startswith("pck"):
                     continue
@@ -544,6 +545,8 @@ class MetricsEngine(object):
 
             auc = cls.calculate_auc(pck_values, pck_thresholds, seq_length)
             s += "   AUC: {:.3f}".format(auc)
+            if i + 1 < len(target_lengths):
+                s += "\n"
             
         return s
     
