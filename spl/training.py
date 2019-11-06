@@ -121,6 +121,11 @@ tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads
 tf.app.flags.DEFINE_integer("transformer_window_length", 120, "length of attention window of the transformer")
 tf.app.flags.DEFINE_integer("warm_up_steps", 10000, "number of warm-up steps")
 tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a shared embedding layer instead of joint-specific layers or not.")
+# They are for ablations and will go away.
+tf.app.flags.DEFINE_boolean("shared_temporal_layer", False, "-")
+tf.app.flags.DEFINE_boolean("shared_spatial_layer", False, "-")
+tf.app.flags.DEFINE_boolean("shared_attention_block", False, "-")
+tf.app.flags.DEFINE_boolean("residual_attention_block", False, "-")
 
 args = tf.app.flags.FLAGS
 
