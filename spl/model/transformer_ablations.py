@@ -25,14 +25,22 @@ class Transformer2d(BaseModel):
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
-        self.window_len = config.get('transformer_window_length')#self.source_seq_len  # attention window length
+        self.window_len = config.get('transformer_window_length')  # attention window length
+        self.random_window_min = config.get('random_window_min', 0)
+        self.temporal_mask_drop = config.get('temporal_mask_drop', 0.0)
 
         # data
-        self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
+        if self.is_training:
+            self.sequence_length = self.source_seq_len + self.target_seq_len - 1
+        else:
+            self.sequence_length = self.source_seq_len
+            
+        self.target_input = self.data_inputs[:, :-1, :]
+        self.target_real = self.data_inputs[:, 1:, :]
+        
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
-        self.target_input = self.prediction_targets[:, :-1, :]
-        self.target_real = self.prediction_targets[:, 1:, :]
+        self.attention_weights = None  # Set later
 
     @classmethod
     def get_model_config(cls, args, from_config=None):
@@ -84,6 +92,8 @@ class Transformer2d(BaseModel):
             config['shared_spatial_layer'] = args.shared_spatial_layer
             config['shared_attention_block'] = args.shared_attention_block
             config['residual_attention_block'] = args.residual_attention_block
+            config['random_window_min'] = args.random_window_min
+            config['temporal_mask_drop'] = args.temporal_mask_drop
         else:
             config = from_config
 
@@ -180,8 +190,23 @@ class Transformer2d(BaseModel):
         create a look ahead mask given a certain window length
         :return: the mask (window_length, window_length)
         '''
-        size = self.window_len
-        mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+        ahead_mask = 1 - tf.linalg.band_part(tf.ones((self.sequence_length, self.sequence_length)), -1, 0)
+
+        if self.random_window_min > 0:  # and self.is_training:
+            random_win_len = tf.random.uniform([self.sequence_length], self.random_window_min, self.window_len, dtype=tf.int32)
+            window_mask_padding = tf.maximum(0, tf.range(1, self.sequence_length + 1) - random_win_len)
+        else:
+            window_mask_padding = tf.maximum(0, tf.range(1, self.sequence_length+1) - self.window_len)
+        window_mask = tf.sequence_mask(window_mask_padding, dtype=tf.float32, maxlen=self.sequence_length)
+
+        mask = tf.maximum(ahead_mask, window_mask)
+        
+        if self.temporal_mask_drop > 0 and self.is_training:
+            drop_mask = tf.cast(tf.random.uniform((self.sequence_length, self.sequence_length), 0, 1) < self.temporal_mask_drop, tf.float32)
+            mask_ = tf.maximum(mask, drop_mask)
+            # Ensure that the first timestep is not masked.
+            mask = tf.concat([mask[:, 0:1], mask_[:, 1:]], axis=1)
+            
         return mask  # (seq_len, seq_len)
 
     def get_angles(self, pos, i):
@@ -199,7 +224,7 @@ class Transformer2d(BaseModel):
         calculate the positional encoding given the window length
         :return: positional encoding (1, window_length, 1, d_model)
         '''
-        angle_rads = self.get_angles(np.arange(self.window_len)[:, np.newaxis], np.arange(self.d_model)[np.newaxis, :])
+        angle_rads = self.get_angles(np.arange(self.sequence_length)[:, np.newaxis], np.arange(self.d_model)[np.newaxis, :])
 
         # apply sin to even indices in the array; 2i
         angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
@@ -446,8 +471,7 @@ class Transformer2d(BaseModel):
             if self.shared_embedding_layer:
                 emb_var_scope = "embedding"
             with tf.variable_scope(emb_var_scope, reuse=tf.AUTO_REUSE):
-                joint_rep = tf.layers.dense(inputs[joint_idx], self.d_model//2, activation=tf.nn.relu)  # (batch_size, seq_len, d_model)
-                joint_rep = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+                joint_rep = tf.layers.dense(inputs[joint_idx], self.d_model)  # (batch_size, seq_len, d_model)
                 embed += [tf.expand_dims(joint_rep, axis=2)]
         x = tf.concat(embed, axis=2)
         # x = tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], self.NUM_JOINTS, self.d_model])
@@ -499,13 +523,14 @@ class Transformer2d(BaseModel):
         outputs = tf.reshape(outputs, [batch_siz, seq_len, self.HUMAN_SIZE])
         if self.residual_velocity:
             outputs += self.target_input
-
+        
+        self.attention_weights = attn_weights
         return outputs
 
     def build_loss(self):
         predictions_pose = self.outputs
         targets_pose = self.target_real
-        seq_len = self.window_len
+        seq_len = self.sequence_length
 
         with tf.name_scope("loss_angles"):
             diff = targets_pose - predictions_pose
@@ -555,7 +580,8 @@ class Transformer2d(BaseModel):
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         assert self.is_eval, "Only works in sampling mode."
 
-        input_sequence = seed_sequence[:, -self.window_len:, :]
+        # input_sequence = seed_sequence[:, -self.window_len:, :]
+        input_sequence = seed_sequence
         num_steps = prediction_steps
         dummy_frame = np.zeros([seed_sequence.shape[0], 1, seed_sequence.shape[2]])
         predictions = []
@@ -563,7 +589,7 @@ class Transformer2d(BaseModel):
         for step in range(num_steps):
             # Insert a dummy frame since the model shifts the inputs by one step.
             model_inputs = np.concatenate([input_sequence, dummy_frame], axis=1)
-            model_outputs = session.run(self.outputs, feed_dict={self.data_inputs: model_inputs})
+            model_outputs, attention_weights = session.run([self.outputs, self.attention_weights], feed_dict={self.data_inputs: model_inputs})
             prediction = model_outputs[:, -1:, :]
             predictions.append(prediction)
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)

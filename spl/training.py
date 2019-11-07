@@ -120,12 +120,14 @@ tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of head
 tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
 tf.app.flags.DEFINE_integer("transformer_window_length", 120, "length of attention window of the transformer")
 tf.app.flags.DEFINE_integer("warm_up_steps", 10000, "number of warm-up steps")
-tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a shared embedding layer instead of joint-specific layers or not.")
 # They are for ablations and will go away.
+tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a shared embedding layer instead of joint-specific layers or not.")
 tf.app.flags.DEFINE_boolean("shared_temporal_layer", False, "-")
 tf.app.flags.DEFINE_boolean("shared_spatial_layer", False, "-")
 tf.app.flags.DEFINE_boolean("shared_attention_block", False, "-")
 tf.app.flags.DEFINE_boolean("residual_attention_block", False, "-")
+tf.app.flags.DEFINE_integer("random_window_min", 0, "-")
+tf.app.flags.DEFINE_float("temporal_mask_drop", 0, "-")
 
 args = tf.app.flags.FLAGS
 
@@ -445,8 +447,7 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
 
 def train():
     # Limit TF to take a fraction of the GPU memory
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9,
-                                allow_growth=True)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.99, allow_growth=True)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
 
         # Create the model
