@@ -95,7 +95,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     with tf.name_scope("test_data"):
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=64,
+                                          batch_size=32,
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
@@ -127,6 +127,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
 def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                    undo_normalization_fn, _return_results=False):
     # make a full pass on the validation or test dataset and compute the metrics
+    n_batches = 0
     _eval_result = dict()
     _metrics_engine.reset()
     session.run(_eval_iter.initializer)
@@ -152,9 +153,13 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                         p["poses"][k],
                         t["poses"][k],
                         s["poses"][k])
+            n_batches += 1
+            if n_batches == 5:
+                break
     except tf.errors.OutOfRangeError:
-        # finalize the computation of the metrics
-        final_metrics = _metrics_engine.get_final_metrics()
+        pass
+    # finalize the computation of the metrics
+    final_metrics = _metrics_engine.get_final_metrics()
     return final_metrics, _eval_result
 
 
@@ -257,11 +262,22 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                        "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics",
                        "CMU/26/CMU/86_86_03"]
         '''
-        idxs = [i for i in range(64)]
-        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+        # idxs = [i for i in range(64)]
+        # sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+
+        sample_keys = ["ACCAD/0/ACCAD/Male1Walking_c3dWalk_SB_B14_SB__SB2__SB_Walk_SB_turn_SB_right_SB_135_dynamics",
+                       "ACCAD/0/ACCAD/Male2MartialArtsStances_c3dD10_SB__SB2__SB_victory_SB_2_dynamics",
+                       "BioMotion/0/BioMotion/rub0010000_treadmill_norm_dynamics",
+                       "BioMotion/0/BioMotion/rub0080021_catching_and_throwing_dynamics",
+                       "BioMotion/0/BioMotion/rub0320027_circle_walk_dynamics"]
+        
         print("Visualizing samples...")
         for i, k in enumerate(sample_keys):
-            visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1],
+            prediction, target, seed = eval_result[k]
+            len_diff = prediction.shape[0] - target.shape[0]
+            if len_diff > 0:
+                target = np.concatenate([target, np.tile(target[-1:], (len_diff, 1))], axis=0)
+            visualizer.visualize_results(seed, prediction, target,
                                          title=k + "_i{}".format(i))
 
 
