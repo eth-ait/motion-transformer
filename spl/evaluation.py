@@ -27,7 +27,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.transformer import Transformer2d
+from spl.model.buggy_transformer import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -35,9 +35,9 @@ from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
 from metrics.motion_metrics import MetricsEngine
 
-
 try:
     from common.logger import GoogleSheetLogger
+
     if "GLOGGER_WORKBOOK_AMASS" not in os.environ:
         raise ImportError("GLOGGER_WORKBOOK_AMASS not found.")
     if "GDRIVE_API_KEY" not in os.environ:
@@ -79,14 +79,14 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     window_length = config["source_seq_len"] + config["target_seq_len"]
 
     if config["use_h36m"]:
-        data_dir = os.path.join(data_dir, '../h3.6m/tfrecords/')
+        data_dir = os.path.join(data_dir, '../../h3.6m/tfrecords/')
 
     if dynamic_test_split:
         data_split = "test_dynamic"
     else:
         assert window_length <= 180, "TFRecords are hardcoded with length of 180."
         data_split = "test"
-    
+
     test_data_path = os.path.join(data_dir, config["data_type"], data_split, "amass-?????-of-?????")
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
     print("Loading test data from " + test_data_path)
@@ -137,25 +137,25 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
             prediction, targets, seed_sequence, data_id = res
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
-                    {"poses": prediction}, "poses")
+                {"poses": prediction}, "poses")
             t = undo_normalization_fn(
-                    {"poses": targets}, "poses")
+                {"poses": targets}, "poses")
             _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
-        
+
             if _return_results:
                 s = undo_normalization_fn(
-                        {"poses": seed_sequence}, "poses")
+                    {"poses": seed_sequence}, "poses")
                 # Store each test sample and corresponding predictions with
                 # the unique sample IDs.
                 for k in range(prediction.shape[0]):
                     _eval_result[data_id[k].decode("utf-8")] = (
-                            p["poses"][k],
-                            t["poses"][k],
-                            s["poses"][k])
+                        p["poses"][k],
+                        t["poses"][k],
+                        s["poses"][k])
     except tf.errors.OutOfRangeError:
         # finalize the computation of the metrics
         final_metrics = _metrics_engine.get_final_metrics()
-    return final_metrics,  _eval_result
+    return final_metrics, _eval_result
 
 
 def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
@@ -169,7 +169,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     else:
         fk_engine = SMPLForwardKinematics()
         target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= test_model.target_seq_len]
-    
+
     representation = C.QUATERNION if test_model.use_quat else C.ANGLE_AXIS if test_model.use_aa else C.ROT_MATRIX
     metrics_engine = MetricsEngine(fk_engine,
                                    target_lengths,
@@ -193,11 +193,11 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
 
         credentials = tf.gfile.Open(gdrive_key, "r")
         glogger = GoogleSheetLogger(
-                credentials,
-                glogger_workbook,
-                sheet_names=["until_{}".format(24)],
-                model_identifier=exp_id,
-                static_values=static_values)
+            credentials,
+            glogger_workbook,
+            sheet_names=["until_{}".format(24)],
+            model_identifier=exp_id,
+            static_values=static_values)
 
     print("Evaluating test set...")
     undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
@@ -206,7 +206,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                                metrics_engine,
                                                undo_norm_fn,
                                                _return_results=True)
-    
+
     print(metrics_engine.get_summary_string_all(test_metrics, target_lengths,
                                                 pck_thresholds))
 
@@ -226,9 +226,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
         # dict id -> (prediction, seed, target)
         if not args.to_video:
             visualizer = Visualizer(interactive=True, fk_engine=fk_engine,
-                                    rep=data_representation,
-                                    output_dir=eval_dir,
-                                    to_video=True)
+                                    rep=data_representation)
         else:
             visualizer = Visualizer(interactive=False, fk_engine=fk_engine,
                                     rep=data_representation,
@@ -249,19 +247,22 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
         sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
 
         # Find an entry by name
-        sample_keys = ['CMU/0/CMU/120_120_18']
+        ''' 
+        #sample_keys = ['CMU/0/CMU/120_120_18']
         interesting_keys = ['CMU/0/CMU/106_106_34',
                             'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
                             'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
                             'CMU/0/CMU/01_01_06']
+        sample_keys = ["CMU/0/CMU/120_120_18",
+                       "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics",
+                       "CMU/26/CMU/86_86_03"]
+        '''
+        idxs = [i for i in range(64)]
+        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
         print("Visualizing samples...")
-        # for i, k in enumerate(sample_keys):
-        #     visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k + "_i{}".format(i))
-        k = list(eval_result.keys())[0]
-        i = 0
-        visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1], title=k + "_i{}".format(i))
-        
-        
+        for i, k in enumerate(sample_keys):
+            visualizer.visualize_results(eval_result[k][2], eval_result[k][0], eval_result[k][1],
+                                         title=k + "_i{}".format(i))
 
 
 if __name__ == '__main__':
@@ -273,7 +274,7 @@ if __name__ == '__main__':
     # longer predictions, then you should pass --dynamic_test_split which
     # enables using original full-length test sequences. Hence,
     # --seq_length_out can be much longer than 60.
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_id', required=True, default=None, type=str,
                         help="Experiment ID (experiment timestamp) or "
@@ -289,7 +290,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', required=False, default=None, type=str,
                         help="Path to data. If not passed, "
                              "then AMASS_DATA environment variable is used.")
-    
+
     parser.add_argument('--seq_length_in', required=False, type=int,
                         help="Seed sequence length")
     parser.add_argument('--seq_length_out', required=False, type=int,
@@ -324,7 +325,7 @@ if __name__ == '__main__':
     _save_dir = _args.save_dir if _args.save_dir else os.environ["AMASS_EXPERIMENTS"]
     # Set data paths.
     _data_dir = _args.data_dir if _args.data_dir else os.environ["AMASS_DATA"]
-    
+
     # Run evaluation for each model id.
     for model_id in model_ids:
         try:
@@ -356,7 +357,7 @@ if __name__ == '__main__':
                                                                    _args.dynamic_test_split)
                 print("Evaluating Model " + str(model_id))
                 evaluate(sess, _test_model, _test_data, _args, _eval_dir, _config["use_h36m"])
-                
+
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))
             raise Exception(e)
