@@ -330,7 +330,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     to_video=args.to_video)
 
         # Find an entry by name
-        idxs = [i for i in range(32)]
+        idxs = [i for i in range(10)]
         sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
 
         print("Visualizing samples...")
