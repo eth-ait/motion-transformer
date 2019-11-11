@@ -1,7 +1,6 @@
-import time
-
 import numpy as np
 import tensorflow as tf
+import spl.util.tf_utils as model_utils
 from spl.model.base_model import BaseModel
 from common.constants import Constants as C
 
@@ -17,7 +16,6 @@ class Transformer2d(BaseModel):
         self.dff = config.get('transformer_dff')
         self.lr_type = config.get('transformer_lr')
         self.warm_up_steps = config.get('transformer_warm_up_steps')  # 1000 for h3.6m, 10000 for amass
-        self.shared_embedding_layer = config.get('shared_embedding_layer', False)
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
@@ -41,51 +39,12 @@ class Transformer2d(BaseModel):
         Returns:
             experiment configuration (dict), experiment name (str)
         """
-        if from_config is None:
-            config = dict()
-            config['seed'] = args.seed
-            config['model_type'] = args.model_type
-            config['data_type'] = args.data_type
-            config['use_h36m'] = args.use_h36m
-    
-            config['no_normalization'] = args.no_normalization
-            config['batch_size'] = args.batch_size
-            config['source_seq_len'] = args.source_seq_len
-            config['target_seq_len'] = args.target_seq_len
-    
-            config['early_stopping_tolerance'] = args.early_stopping_tolerance
-            config['num_epochs'] = args.num_epochs
-    
-            config['learning_rate'] = args.learning_rate
-            config['learning_rate_decay_steps'] = args.learning_rate_decay_steps
-            config['learning_rate_decay_rate'] = args.learning_rate_decay_rate
-            config['grad_clip_norm'] = args.grad_clip_norm
-            config['optimizer'] = args.optimizer
-            config['input_dropout_rate'] = args.input_dropout_rate
-    
-            config['residual_velocity'] = args.residual_velocity
-            config['loss_type'] = args.loss_type
-    
-            config['transformer_lr'] = args.transformer_lr
-            config['transformer_d_model'] = args.transformer_d_model
-            config['transformer_dropout_rate'] = args.transformer_dropout_rate
-            config['transformer_dff'] = args.transformer_dff
-            config['transformer_num_layers'] = args.transformer_num_layers
-            config['transformer_num_heads_temporal'] = args.transformer_num_heads_temporal
-            config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
-            config['transformer_warm_up_steps'] = args.warm_up_steps
-            config['transformer_window_length'] = args.transformer_window_length
-            config['shared_embedding_layer'] = args.shared_embedding_layer
-        else:
-            config = from_config
+        config, experiment_name = super(Transformer2d, cls).get_model_config(args, from_config)
 
-        if args.new_experiment_id is not None:
-            config["experiment_id"] = args.new_experiment_id
-        else:
-            config["experiment_id"] = str(int(time.time()))
-        experiment_name_format = "{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
+        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         args.model_type,
+                                                        config["joint_prediction_layer"],
                                                         "h36m" if args.use_h36m else "amass",
                                                         args.data_type,
                                                         args.batch_size,
@@ -232,17 +191,19 @@ class Transformer2d(BaseModel):
 
         # different joints have different embedding matrices
         for joint_idx in range(self.NUM_JOINTS):
-            with tf.variable_scope('joint_' + str(joint_idx), reuse=self.reuse):
+            joint_var_scope = scope + "joint_" + str(joint_idx)
+            with tf.variable_scope(joint_var_scope, reuse=tf.AUTO_REUSE):
+                # with tf.variable_scope('joint_' + str(joint_idx), reuse=self.reuse):
 
                 # get the representation vector of the joint
                 joint_rep = x[joint_idx]  # (batch_size, seq_len, d_model)
 
                 # embed it to query, key and value vectors
-                with tf.variable_scope(scope + '_query', reuse=self.reuse):
+                with tf.variable_scope('_query', reuse=self.reuse):
                     q = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope(scope + '_key', reuse=self.reuse):
+                with tf.variable_scope('_key', reuse=self.reuse):
                     k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope(scope + '_value', reuse=self.reuse):
+                with tf.variable_scope('_value', reuse=self.reuse):
                     v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
 
                 # split it to several attention heads
@@ -264,12 +225,17 @@ class Transformer2d(BaseModel):
 
                 # go through a fully connected layer
                 with tf.variable_scope(scope + '_output_dense', reuse=self.reuse):
-                    output = tf.layers.dense(concat_attention, self.d_model)  # (batch_size, seq_len, d_model)
+                    output = tf.expand_dims(tf.layers.dense(concat_attention, self.d_model), axis=2)
+                # (batch_size, seq_len, 1, d_model)
                 outputs += [output]
-                attn_weights += [attention_weights]
-        outputs = tf.concat(outputs, axis=-1)  # (batch_size, seq_len, num_joints, d_model)
-        outputs = tf.reshape(outputs, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
+
+                last_attention_weights = attention_weights[:, :, -1, :]  # (batch_size, num_heads, seq_len)
+                attn_weights += [last_attention_weights]
+
+        outputs = tf.concat(outputs, axis=2)  # (batch_size, seq_len, num_joints, d_model)
+        attn_weights = tf.stack(attn_weights, axis=1)  # (batch_size, num_joints, num_heads, seq_len)
         return outputs, attn_weights
+
 
     def split_heads(self, x, shape0, shape1, attn_dim, num_heads):
         '''
@@ -302,13 +268,14 @@ class Transformer2d(BaseModel):
         x = tf.transpose(x, perm=[2, 0, 1, 3])  # (num_joints, batch_size, seq_len, d_model)
         q_joints = []
         for joint_idx in range(self.NUM_JOINTS):
-            with tf.variable_scope(scope + '_query_' + str(joint_idx), reuse=self.reuse):
-                q = tf.layers.dense(x[joint_idx], self.d_model)  # (batch_size, seq_len, d_model)
+            query_var_scope = "_query_" + str(joint_idx)
+            with tf.variable_scope(query_var_scope, reuse=tf.AUTO_REUSE):
+                q = tf.expand_dims(tf.layers.dense(x[joint_idx], self.d_model), axis=2)  # (batch_size, seq_len, d_model)
                 q_joints += [q]
-        q_joints = tf.concat(q_joints, axis=-1)  # (batch_size, seq_len, num_joints * d_model)
+        q_joints = tf.concat(q_joints, axis=2)  # (batch_size, seq_len, num_joints, d_model)
         batch_size = tf.shape(q_joints)[0]
         seq_len = tf.shape(q_joints)[1]
-        q_joints = tf.reshape(q_joints, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
+        # q_joints = tf.reshape(q_joints, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
 
         # split it to several attention heads
         q_joints = self.split_heads(q_joints, batch_size, seq_len,
@@ -325,12 +292,15 @@ class Transformer2d(BaseModel):
         scaled_attention, attention_weights = self.scaled_dot_product_attention(q_joints, k, v, mask)
         # (batch_size, seq_len, num_heads, num_joints, depth)
         # concatenate the outputs from different heads
+        scaled_attention = tf.transpose(scaled_attention, perm=[0, 1, 3, 2, 4])
         concat_attention = tf.reshape(scaled_attention, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
         # (batch_size, seq_len, num_joints, d_model)
 
         # go through a fully connected layer
         with tf.variable_scope(scope + '_output_dense', reuse=self.reuse):
             output = tf.layers.dense(concat_attention, self.d_model)
+
+        attention_weights = attention_weights[:, -1, :, :, :]  # (batch_size, num_heads, num_joints, num_joints)
 
         return output, attention_weights
 
@@ -346,7 +316,7 @@ class Transformer2d(BaseModel):
         # different joints have different embedding matrices
         for idx in range(self.NUM_JOINTS):
             with tf.variable_scope(scope + '_ff1_' + str(idx), reuse=self.reuse):
-                joint_outputs = tf.layers.dense(inputs[idx], self.dff)
+                joint_outputs = tf.layers.dense(inputs[idx], self.dff, activation='relu')
             with tf.variable_scope(scope + '_ff2_' + str(idx), reuse=self.reuse):
                 joint_outputs = tf.layers.dense(joint_outputs, self.d_model)
             outputs += [joint_outputs]
@@ -400,24 +370,8 @@ class Transformer2d(BaseModel):
         # different joints have different encoding matrices
         inputs = tf.transpose(inputs, [2, 0, 1, 3])  # (num_joints, batch_size, seq_len, joint_size)
         embed = []
-
-        inp_drop_rate = self.config.get("input_dropout_rate", 0)
-        if inp_drop_rate > 0:
-            inp_shape = tf.shape(inputs)
-            # Apply dropout on the entire rotation matrix of a joint.
-            noise_shape = (inp_shape[0], inp_shape[1], inp_shape[2], 1)
-            with tf.variable_scope('input_dropout', reuse=self.reuse):
-                inputs = tf.layers.dropout(inputs,
-                                           rate=inp_drop_rate,
-                                           seed=self.config["seed"],
-                                           training=self.is_training,
-                                           noise_shape=noise_shape)
-        
         for joint_idx in range(self.NUM_JOINTS):
-            emb_var_scope = "embedding_" + str(joint_idx)
-            if self.shared_embedding_layer:
-                emb_var_scope = "embedding"
-            with tf.variable_scope(emb_var_scope, reuse=tf.AUTO_REUSE):
+            with tf.variable_scope("embedding_" + str(joint_idx), reuse=self.reuse):
                 joint_rep = tf.layers.dense(inputs[joint_idx], self.d_model)  # (batch_size, seq_len, d_model)
                 embed += [joint_rep]
         x = tf.concat(embed, axis=-1)
@@ -425,17 +379,22 @@ class Transformer2d(BaseModel):
         # add the positional encoding
         x += self.pos_encoding
 
-        with tf.variable_scope("embedding_dropout", reuse=self.reuse):
+        with tf.variable_scope("input_dropout", reuse=self.reuse):
             x = tf.layers.dropout(x, training=self.is_training, rate=self.dropout_rate)
 
         # put into several attention layers
         # (batch_size, seq_len, num_joints, d_model)
+        attention_weights_temporal = []
+        attention_weights_spatial = []
         attention_weights = {}
         for i in range(self.num_layers):
             x, block1, block2 = self.para_transformer_layer(x, look_ahead_mask, scope="transformer_layer_" + str(i))
-            attention_weights['transformer_layer{}_block1'.format(i + 1)] = block1
-            attention_weights['transformer_layer{}_block2'.format(i + 1)] = block2
+            attention_weights_temporal += [block1]  # (batch_size, num_joints, num_heads, seq_len)
+            attention_weights_spatial += [block2]  # (batch_size, num_heads, num_joints, num_joints)
         # (batch_size, seq_len, num_joints, d_model)
+
+        attention_weights['temporal'] = tf.stack(attention_weights_temporal, axis=1)  # (batch_size, num_layers, num_joints, num_heads, seq_len)
+        attention_weights['spatial'] = tf.stack(attention_weights_spatial, axis=1)  # (batch_size, num_layers, num_heads, num_joints, num_joints)
 
         # decode each feature to the rotation matrix space
         # different joints have different decoding matrices
@@ -457,7 +416,7 @@ class Transformer2d(BaseModel):
         seq_len = shape[1]
         target_input = self.target_input
         target_input = tf.reshape(target_input, [batch_siz, seq_len, self.NUM_JOINTS, self.JOINT_SIZE])
-        outputs, attn_weights = self.transformer(target_input, self.look_ahead_mask)
+        outputs, self.attn_weights = self.transformer(target_input, self.look_ahead_mask)
         outputs = tf.reshape(outputs, [batch_siz, seq_len, self.HUMAN_SIZE])
         if self.residual_velocity:
             outputs += self.target_input
@@ -509,10 +468,10 @@ class Transformer2d(BaseModel):
         data_sample = batch[C.BATCH_INPUT]
         targets = data_sample[:, self.source_seq_len:, :]
         seed_sequence = data_sample[:, :self.source_seq_len, :]
-        prediction = self.sample(session=session,
+        prediction, attentions = self.sample(session=session,
                                  seed_sequence=seed_sequence,
                                  prediction_steps=self.target_seq_len)
-        return prediction, targets, seed_sequence, data_id
+        return prediction, targets, seed_sequence, data_id, attentions
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         assert self.is_eval, "Only works in sampling mode."
@@ -521,6 +480,7 @@ class Transformer2d(BaseModel):
         num_steps = prediction_steps
         dummy_frame = np.zeros([seed_sequence.shape[0], 1, seed_sequence.shape[2]])
         predictions = []
+        attentions = []
 
         for step in range(num_steps):
             # Insert a dummy frame since the model shifts the inputs by one step.
@@ -528,7 +488,9 @@ class Transformer2d(BaseModel):
             model_outputs = session.run(self.outputs, feed_dict={self.data_inputs: model_inputs})
             prediction = model_outputs[:, -1:, :]
             predictions.append(prediction)
+            attention = session.run(self.attn_weights, feed_dict={self.data_inputs: model_inputs})
+            attentions += [attention]
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)
             input_sequence = input_sequence[:, 1:, :]
 
-        return np.concatenate(predictions, axis=1)
+        return np.concatenate(predictions, axis=1), attentions
