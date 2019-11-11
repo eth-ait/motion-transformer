@@ -357,7 +357,10 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
         while True:
             # Get the predictions and ground truth values
             res = _eval_model.sampled_step(sess)
-            prediction, targets, seed_sequence, data_id = res
+            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+                prediction, targets, seed_sequence, data_id, attention = res
+            else:
+                prediction, targets, seed_sequence, data_id = res
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
                 {"poses": prediction}, "poses")
@@ -391,7 +394,10 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
         while True:
             # get the predictions and ground truth values
             res = _eval_model.sampled_step(sess)
-            prediction, targets, seed_sequence, data_id = res
+            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+                prediction, targets, seed_sequence, data_id, attention = res
+            else:
+                prediction, targets, seed_sequence, data_id = res
 
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
