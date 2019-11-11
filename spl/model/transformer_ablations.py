@@ -18,6 +18,7 @@ class Transformer2d(BaseModel):
         self.lr_type = config.get('transformer_lr')
         self.warm_up_steps = config.get('transformer_warm_up_steps')  # 1000 for h3.6m, 10000 for amass
         self.shared_embedding_layer = config.get('shared_embedding_layer', False)
+        self.shared_output_layer = config.get('shared_output_layer', False)
         self.shared_temporal_layer = config.get('shared_temporal_layer', False)
         self.shared_spatial_layer = config.get('shared_spatial_layer', False)
         self.shared_attention_block = config.get('shared_attention_block', False)
@@ -89,6 +90,7 @@ class Transformer2d(BaseModel):
             config['transformer_warm_up_steps'] = args.warm_up_steps
             config['transformer_window_length'] = args.transformer_window_length
             config['shared_embedding_layer'] = args.shared_embedding_layer
+            config['shared_output_layer'] = args.shared_output_layer
             config['shared_temporal_layer'] = args.shared_temporal_layer
             config['shared_spatial_layer'] = args.shared_spatial_layer
             config['shared_attention_block'] = args.shared_attention_block
@@ -531,16 +533,22 @@ class Transformer2d(BaseModel):
         attention_weights['spatial'] = tf.stack(attention_weights_spatial, axis=1)  # (batch_size, num_layers, num_heads, num_joints, num_joints)
 
         # decode each feature to the rotation matrix space
-        # different joints have different decoding matrices
-        x = tf.transpose(x, [2, 0, 1, 3])  # (num_joints, batch_size, seq_len, joint_size)
-        output = []
-        for joint_idx in range(self.NUM_JOINTS):
-            with tf.variable_scope("final_output_" + str(joint_idx), reuse=self.reuse):
-                joint_output = tf.layers.dense(x[joint_idx], self.JOINT_SIZE)
-                output += [tf.expand_dims(joint_output, axis=2)]
-        final_output = tf.concat(output, axis=2)
-        # final_output = tf.reshape(final_output, [tf.shape(final_output)[0], tf.shape(final_output)[1],
-        #                                          self.NUM_JOINTS, self.JOINT_SIZE])
+        if self.shared_output_layer:
+            out_var_scope = "final_output"
+            with tf.variable_scope(out_var_scope, reuse=self.reuse):
+                final_output = tf.layers.dense(x, self.JOINT_SIZE)
+        else:
+            # different joints have different decoding matrices
+            output = []
+            # (num_joints, batch_size, seq_len, joint_size)
+            x = tf.transpose(x, [2, 0, 1, 3])
+            for joint_idx in range(self.NUM_JOINTS):
+                out_var_scope = "final_output_" + str(joint_idx)
+                
+                with tf.variable_scope(out_var_scope, reuse=tf.AUTO_REUSE):
+                    joint_output = tf.layers.dense(x[joint_idx], self.JOINT_SIZE)
+                    output += [tf.expand_dims(joint_output, axis=2)]
+            final_output = tf.concat(output, axis=2)
 
         return final_output, attention_weights
 
