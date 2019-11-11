@@ -309,9 +309,11 @@ class Transformer2d(BaseModel):
                 output = tf.layers.dense(concat_attention, self.d_model)  # (batch_size, seq_len, d_model)
             
             outputs += [tf.expand_dims(output, axis=2)]
-            attn_weights += [attention_weights]
+            last_attention_weights = attention_weights[:, :, -1, :]  # (batch_size, num_heads, seq_len)
+            attn_weights += [last_attention_weights]
+            
         outputs = tf.concat(outputs, axis=2)  # (batch_size, seq_len, num_joints, d_model)
-        # outputs = tf.reshape(outputs, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
+        attn_weights = tf.stack(attn_weights, axis=1)  # (batch_size, num_joints, num_heads, seq_len)
         return outputs, attn_weights
 
     def split_heads(self, x, shape0, shape1, attn_dim, num_heads):
@@ -399,6 +401,8 @@ class Transformer2d(BaseModel):
                     dense_out = tf.layers.dense(joint_out, self.d_model)
                 out_list.append(tf.expand_dims(dense_out, axis=2))
             output = tf.concat(out_list, axis=2)
+        
+        attention_weights = attention_weights[:, -1, :, :, :]  # (batch_size, num_heads, num_joints, num_joints)
             
         return output, attention_weights
 
@@ -505,6 +509,8 @@ class Transformer2d(BaseModel):
 
         # put into several attention layers
         # (batch_size, seq_len, num_joints, d_model)
+        attention_weights_temporal = []
+        attention_weights_spatial = []
         attention_weights = {}
         for i in range(self.num_layers):
             if self.shared_attention_block:
@@ -513,13 +519,16 @@ class Transformer2d(BaseModel):
                 transformer_var_scope = "transformer_layer_" + str(i)
                 
             x_out, block1, block2 = self.para_transformer_layer(x, look_ahead_mask, scope=transformer_var_scope)
-            attention_weights['transformer_layer{}_block1'.format(i + 1)] = block1
-            attention_weights['transformer_layer{}_block2'.format(i + 1)] = block2
+            attention_weights_temporal += [block1]  # (batch_size, num_joints, num_heads, seq_len)
+            attention_weights_spatial += [block2]  # (batch_size, num_heads, num_joints, num_joints)
             if self.residual_attention_block:
                 x += x_out
             else:
                 x = x_out
         # (batch_size, seq_len, num_joints, d_model)
+        
+        attention_weights['temporal'] = tf.stack(attention_weights_temporal, axis=1)  # (batch_size, num_layers, num_joints, num_heads, seq_len)
+        attention_weights['spatial'] = tf.stack(attention_weights_spatial, axis=1)  # (batch_size, num_layers, num_heads, num_joints, num_joints)
 
         # decode each feature to the rotation matrix space
         # different joints have different decoding matrices
@@ -594,10 +603,10 @@ class Transformer2d(BaseModel):
         data_sample = batch[C.BATCH_INPUT]
         targets = data_sample[:, self.source_seq_len:, :]
         seed_sequence = data_sample[:, :self.source_seq_len, :]
-        prediction = self.sample(session=session,
+        prediction, attentions = self.sample(session=session,
                                  seed_sequence=seed_sequence,
                                  prediction_steps=self.target_seq_len)
-        return prediction, targets, seed_sequence, data_id
+        return prediction, targets, seed_sequence, data_id, attentions
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
         assert self.is_eval, "Only works in sampling mode."
@@ -607,6 +616,7 @@ class Transformer2d(BaseModel):
         num_steps = prediction_steps
         dummy_frame = np.zeros([seed_sequence.shape[0], 1, seed_sequence.shape[2]])
         predictions = []
+        attentions = []
 
         for step in range(num_steps):
             # Insert a dummy frame since the model shifts the inputs by one step.
@@ -614,7 +624,9 @@ class Transformer2d(BaseModel):
             model_outputs, attention_weights = session.run([self.outputs, self.attention_weights], feed_dict={self.data_inputs: model_inputs})
             prediction = model_outputs[:, -1:, :]
             predictions.append(prediction)
+            attention = session.run(self.attn_weights, feed_dict={self.data_inputs: model_inputs})
+            attentions += [attention]
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)
             input_sequence = input_sequence[:, -self.source_seq_len:, :]
 
-        return np.concatenate(predictions, axis=1)
+        return np.concatenate(predictions, axis=1), attentions
