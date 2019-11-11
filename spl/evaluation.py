@@ -40,6 +40,9 @@ import matplotlib.pyplot as plt
 
 plt.switch_backend('agg')
 
+
+using_attention_model = 1
+
 try:
     from common.logger import GoogleSheetLogger
 
@@ -141,7 +144,10 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
         while True:
             # Get the predictions and ground truth values
             res = _eval_model.sampled_step(session)
-            prediction, targets, seed_sequence, data_id, attention = res
+            if using_attention_model == 1:
+                prediction, targets, seed_sequence, data_id, attention = res
+            else:
+                prediction, targets, seed_sequence, data_id = res
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
                 {"poses": prediction}, "poses")
@@ -160,12 +166,14 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                         t["poses"][k],
                         s["poses"][k])
 
-                for num_frame in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
-                    for i in range(prediction.shape[0]):
-                        if num_frame == 0:
-                            _attention_weights[data_id[i].decode("utf-8")] = [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
-                        else:
-                            _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+                if using_attention_model == 1:
+                    for num_frame in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
+                        for i in range(prediction.shape[0]):
+                            if num_frame == 0:
+                                _attention_weights[data_id[i].decode("utf-8")] = [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+                            else:
+                                _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+
                 n_batches += 1
                 if n_batches == 1:
                     break
@@ -322,11 +330,6 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     to_video=args.to_video)
 
         # Find an entry by name
-        sample_keys = ["ACCAD/0/ACCAD/Male1Walking_c3dWalk_SB_B14_SB__SB2__SB_Walk_SB_turn_SB_right_SB_135_dynamics",
-                       "ACCAD/0/ACCAD/Male2MartialArtsStances_c3dD10_SB__SB2__SB_victory_SB_2_dynamics",
-                       "BioMotion/0/BioMotion/rub0010000_treadmill_norm_dynamics",
-                       "BioMotion/0/BioMotion/rub0080021_catching_and_throwing_dynamics",
-                       "BioMotion/0/BioMotion/rub0320027_circle_walk_dynamics"]
         idxs = [i for i in range(32)]
         sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
 
@@ -338,11 +341,24 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
             dir_prefix = 'skeleton'
             out_dir = os.path.join(eval_dir, dir_prefix, fname)
             print(out_dir + ' visualizing.')
-            for num_frame in range(12):
-                visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
-                visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
+
+            if using_attention_model == 1:
+                for num_frame in range(12):
+                    visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
+                    visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
 
             prediction, target, seed = eval_result[k]
+
+            heat = np.transpose(prediction)
+            fig = plt.figure()
+            ax = fig.add_subplot(1, 1, 1)
+            sn.heatmap(heat, ax=ax, annot=False, vmin=-1.0, vmax=1.0, cmap='RdBu')
+            ax.set(aspect=1)
+            plt.axis('off')
+            fig.savefig(os.path.join(out_dir, 'whole.png'))
+            plt.close(fig)
+            plt.clf()
+
             len_diff = prediction.shape[0] - target.shape[0]
             if len_diff > 0:
                 target = np.concatenate([target, np.tile(target[-1:], (len_diff, 1))], axis=0)

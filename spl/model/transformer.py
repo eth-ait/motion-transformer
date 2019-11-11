@@ -485,10 +485,9 @@ class Transformer2d(BaseModel):
         for step in range(num_steps):
             # Insert a dummy frame since the model shifts the inputs by one step.
             model_inputs = np.concatenate([input_sequence, dummy_frame], axis=1)
-            model_outputs = session.run(self.outputs, feed_dict={self.data_inputs: model_inputs})
+            model_outputs, attention = session.run([self.outputs, self.attn_weights], feed_dict={self.data_inputs: model_inputs})
             prediction = model_outputs[:, -1:, :]
             predictions.append(prediction)
-            attention = session.run(self.attn_weights, feed_dict={self.data_inputs: model_inputs})
             attentions += [attention]
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)
             input_sequence = input_sequence[:, 1:, :]
