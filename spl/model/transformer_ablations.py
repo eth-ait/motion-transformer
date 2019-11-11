@@ -92,6 +92,7 @@ class Transformer2d(BaseModel):
             config['shared_temporal_layer'] = args.shared_temporal_layer
             config['shared_spatial_layer'] = args.shared_spatial_layer
             config['shared_attention_block'] = args.shared_attention_block
+            config['shared_pw_ffn'] = args.shared_pw_ffn
             config['residual_attention_block'] = args.residual_attention_block
             config['random_window_min'] = args.random_window_min
             config['temporal_mask_drop'] = args.temporal_mask_drop
@@ -264,47 +265,51 @@ class Transformer2d(BaseModel):
         seq_len = tf.shape(x)[1]
         x = tf.transpose(x, perm=[2, 0, 1, 3])  # (num_joints, batch_size, seq_len, d_model)
 
-        # different joints have different embedding matrices
+        value_var_scope = scope + "_value"
+        key_var_scope = scope + "_key"
+        dense_var_scope = scope + '_output_dense'
+        # different joints have different embedding matrices.
         for joint_idx in range(self.NUM_JOINTS):
     
-            joint_var_scope = "joint_" + str(joint_idx)
-            if self.shared_temporal_layer:
-                joint_var_scope = "joint"
-            with tf.variable_scope(joint_var_scope, reuse=tf.AUTO_REUSE):
-                # get the representation vector of the joint
-                joint_rep = x[joint_idx]  # (batch_size, seq_len, d_model)
+            query_var_scope = scope + "_query_" + str(joint_idx)
+            if not self.shared_temporal_layer:
+                value_var_scope = scope + "_value_" + str(joint_idx)
+                key_var_scope = scope + "_key_" + str(joint_idx)
+                dense_var_scope = scope + "_output_dense_" + str(joint_idx)
+            
+            # get the representation vector of the joint
+            joint_rep = x[joint_idx]  # (batch_size, seq_len, d_model)
+            
+            with tf.variable_scope(query_var_scope, reuse=tf.AUTO_REUSE):
+                q = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+            with tf.variable_scope(key_var_scope, reuse=tf.AUTO_REUSE):
+                k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+            with tf.variable_scope(value_var_scope, reuse=tf.AUTO_REUSE):
+                v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
 
-                # embed it to query, key and value vectors
-                with tf.variable_scope(scope + '_query', reuse=tf.AUTO_REUSE):
-                    q = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope(scope + '_key', reuse=tf.AUTO_REUSE):
-                    k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope(scope + '_value', reuse=tf.AUTO_REUSE):
-                    v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+            # split it to several attention heads
+            q = self.sep_split_heads(q, batch_size, seq_len, self.num_heads_temporal)
+            # (batch_size, num_heads, seq_len, depth)
+            k = self.sep_split_heads(k, batch_size, seq_len, self.num_heads_temporal)
+            # (batch_size, num_heads, seq_len, depth)
+            v = self.sep_split_heads(v, batch_size, seq_len, self.num_heads_temporal)
+            # (batch_size, num_heads, seq_len, depth)
+            # calculate the updated encoding by scaled dot product attention
+            scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask)
+            # (batch_size, num_heads, seq_len, depth)
+            scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])
+            # (batch_size, seq_len, num_heads, depth)
 
-                # split it to several attention heads
-                q = self.sep_split_heads(q, batch_size, seq_len, self.num_heads_temporal)
-                # (batch_size, num_heads, seq_len, depth)
-                k = self.sep_split_heads(k, batch_size, seq_len, self.num_heads_temporal)
-                # (batch_size, num_heads, seq_len, depth)
-                v = self.sep_split_heads(v, batch_size, seq_len, self.num_heads_temporal)
-                # (batch_size, num_heads, seq_len, depth)
-                # calculate the updated encoding by scaled dot product attention
-                scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask)
-                # (batch_size, num_heads, seq_len, depth)
-                scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])
-                # (batch_size, seq_len, num_heads, depth)
+            # concatenate the outputs from different heads
+            concat_attention = tf.reshape(scaled_attention, [batch_size, seq_len, self.d_model])
+            # (batch_size, seq_len, d_model)
 
-                # concatenate the outputs from different heads
-                concat_attention = tf.reshape(scaled_attention, [batch_size, seq_len, self.d_model])
-                # (batch_size, seq_len, d_model)
-
-                # go through a fully connected layer
-                with tf.variable_scope(scope + '_output_dense', reuse=tf.AUTO_REUSE):
-                    output = tf.layers.dense(concat_attention, self.d_model)  # (batch_size, seq_len, 1, d_model)
-                
-                outputs += [tf.expand_dims(output, axis=2)]
-                attn_weights += [attention_weights]
+            # go through a fully connected layer
+            with tf.variable_scope(dense_var_scope, reuse=tf.AUTO_REUSE):
+                output = tf.layers.dense(concat_attention, self.d_model)  # (batch_size, seq_len, d_model)
+            
+            outputs += [tf.expand_dims(output, axis=2)]
+            attn_weights += [attention_weights]
         outputs = tf.concat(outputs, axis=2)  # (batch_size, seq_len, num_joints, d_model)
         # outputs = tf.reshape(outputs, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
         return outputs, attn_weights
@@ -336,13 +341,12 @@ class Transformer2d(BaseModel):
         x = tf.transpose(x, perm=[2, 0, 1, 3])  # (num_joints, batch_size, seq_len, d_model)
         
         q_joints, v_joints, k_joints = [], [], []
-        query_var_scope = scope + "_query"
-        value_var_scope = scope + "_query"
+        value_var_scope = scope + "_value"
         key_var_scope = scope + "_key"
         for joint_idx in range(self.NUM_JOINTS):
     
+            query_var_scope = scope + "_query_" + str(joint_idx)
             if not self.shared_spatial_layer:
-                query_var_scope = scope + "_query_" + str(joint_idx)
                 value_var_scope = scope + "_value_" + str(joint_idx)
                 key_var_scope = scope + "_key_" + str(joint_idx)
             
@@ -363,11 +367,10 @@ class Transformer2d(BaseModel):
         v_joints = tf.concat(v_joints, axis=2)  # (batch_size, seq_len, num_joints, d_model)
         batch_size = tf.shape(q_joints)[0]
         seq_len = tf.shape(q_joints)[1]
-        # q_joints = tf.reshape(q_joints, [batch_size, seq_len, self.NUM_JOINTS, self.d_model])
 
         # split it to several attention heads
         q = self.split_heads(q_joints, batch_size, seq_len,
-                                    self.NUM_JOINTS, self.num_heads_spacial)
+                             self.NUM_JOINTS, self.num_heads_spacial)
         # (batch_size, seq_len, num_heads, num_joints, depth)
         k = self.split_heads(k_joints, batch_size, seq_len,
                              self.NUM_JOINTS, self.num_heads_spacial)
@@ -385,9 +388,18 @@ class Transformer2d(BaseModel):
         # (batch_size, seq_len, num_joints, d_model)
 
         # go through a fully connected layer
-        with tf.variable_scope(scope + '_output_dense', reuse=tf.AUTO_REUSE):
-            output = tf.layers.dense(concat_attention, self.d_model)
-
+        if self.shared_spatial_layer:
+            with tf.variable_scope(scope + '_output_dense', reuse=tf.AUTO_REUSE):
+                output = tf.layers.dense(concat_attention, self.d_model)
+        else:
+            out_list = []
+            for joint_idx in range(self.NUM_JOINTS):
+                joint_out = concat_attention[:, :, joint_idx]
+                with tf.variable_scope(scope + '_output_dense_' + str(joint_idx), reuse=tf.AUTO_REUSE):
+                    dense_out = tf.layers.dense(joint_out, self.d_model)
+                out_list.append(tf.expand_dims(dense_out, axis=2))
+            output = tf.concat(out_list, axis=2)
+            
         return output, attention_weights
 
     def point_wise_feed_forward_network(self, inputs, scope, share_layer=False):
@@ -401,7 +413,7 @@ class Transformer2d(BaseModel):
         outputs = []
         if share_layer:
             with tf.variable_scope(scope + '_ff1', reuse=tf.AUTO_REUSE):
-                joint_outputs = tf.layers.dense(inputs, self.dff)
+                joint_outputs = tf.layers.dense(inputs, self.dff, activation=tf.nn.relu)
             with tf.variable_scope(scope + '_ff2', reuse=tf.AUTO_REUSE):
                 outputs = tf.layers.dense(joint_outputs, self.d_model)
         else:

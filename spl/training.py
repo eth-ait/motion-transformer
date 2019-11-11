@@ -125,6 +125,7 @@ tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a s
 tf.app.flags.DEFINE_boolean("shared_temporal_layer", False, "-")
 tf.app.flags.DEFINE_boolean("shared_spatial_layer", False, "-")
 tf.app.flags.DEFINE_boolean("shared_attention_block", False, "-")
+tf.app.flags.DEFINE_boolean("shared_pw_ffn", False, "-")
 tf.app.flags.DEFINE_boolean("residual_attention_block", False, "-")
 tf.app.flags.DEFINE_integer("random_window_min", 0, "-")
 tf.app.flags.DEFINE_float("temporal_mask_drop", 0, "-")
