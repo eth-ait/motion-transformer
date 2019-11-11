@@ -27,13 +27,18 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.buggy_transformer import Transformer2d
+from spl.model.transformer import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
 from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
+import seaborn as sn
+import pandas as pd
 from metrics.motion_metrics import MetricsEngine
+import matplotlib.pyplot as plt
+
+plt.switch_backend('agg')
 
 try:
     from common.logger import GoogleSheetLogger
@@ -130,12 +135,13 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
     n_batches = 0
     _eval_result = dict()
     _metrics_engine.reset()
+    _attention_weights = dict()
     session.run(_eval_iter.initializer)
     try:
         while True:
             # Get the predictions and ground truth values
             res = _eval_model.sampled_step(session)
-            prediction, targets, seed_sequence, data_id = res
+            prediction, targets, seed_sequence, data_id, attention = res
             # Unnormalize predictions if there normalization applied.
             p = undo_normalization_fn(
                 {"poses": prediction}, "poses")
@@ -153,14 +159,89 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                         p["poses"][k],
                         t["poses"][k],
                         s["poses"][k])
-            n_batches += 1
-            if n_batches == 5:
-                break
+
+                for num_frame in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
+                    for i in range(prediction.shape[0]):
+                        if num_frame == 0:
+                            _attention_weights[data_id[i].decode("utf-8")] = [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+                        else:
+                            _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+                n_batches += 1
+                if n_batches == 1:
+                    break
     except tf.errors.OutOfRangeError:
         pass
-    # finalize the computation of the metrics
+        # finalize the computation of the metrics
     final_metrics = _metrics_engine.get_final_metrics()
-    return final_metrics, _eval_result
+    return final_metrics, _eval_result, _attention_weights
+
+def visualize_temporal(mat, save_path, num_frame):
+    # mat: (num_layers, num_joints, num_heads, seq_len)
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    fig = plt.figure()
+    num_layers = mat.shape[0]
+    num_joints = mat.shape[1]
+    num_heads = mat.shape[2]
+    seq_len = mat.shape[3]
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            ax = fig.add_subplot(num_layers, num_heads, layer_idx * num_heads + head_idx + 1)
+            ax.axis('off')
+            array = mat[layer_idx, :, head_idx, :]  # (num_joints, seq_len)
+            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(seq_len)])
+            sn.heatmap(df_cm, annot=False, cmap="YlGnBu", ax=ax, vmin=0.0, vmax=1.0, cbar=False)
+
+    fig.savefig(os.path.join(save_path, 'temporal_attn' + str(num_frame) + '.png'))
+    plt.close(fig)
+    plt.clf()
+
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            array = mat[layer_idx, :, head_idx, :]  # (num_joints, seq_len)
+            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(seq_len)])
+            fig = plt.figure()
+            ax = fig.add_subplot(1, 1, 1)
+            sn.heatmap(df_cm, annot=False, cmap="YlGnBu", vmin=0.0, vmax=1.0, ax=ax)
+            fig.savefig(os.path.join(save_path,
+                                     'temporal_' + 'layer_' + str(layer_idx) + 'head_' + str(head_idx) + '_' + str(
+                                         num_frame) + '.png'))
+            plt.close(fig)
+            plt.clf()
+
+
+def visualize_spatial(mat, save_path, num_frame):
+    # mat: (num_layers, num_heads, num_joints, num_joints)
+    fig = plt.figure()
+    num_layers = mat.shape[0]
+    num_heads = mat.shape[1]
+    num_joints = mat.shape[2]
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            ax = fig.add_subplot(num_layers, num_heads, layer_idx * num_heads + head_idx + 1)
+            ax.axis('off')
+            array = mat[layer_idx, head_idx, :, :]  # (num_joints, num_joints)
+            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(num_joints)])
+            sn.heatmap(df_cm, annot=False, cmap="YlGnBu", ax=ax, vmin=0.0, vmax=1.0, cbar=False)
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    plt.axis('off')
+    fig.savefig(os.path.join(save_path, 'spatial_attn' + str(num_frame) + '.png'))
+    plt.close(fig)
+    plt.clf()
+
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            array = mat[layer_idx, head_idx, :, :]  # (num_joints, num_joints)
+            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(num_joints)])
+            fig = plt.figure()
+            ax = fig.add_subplot(1, 1, 1)
+            sn.heatmap(df_cm, annot=False, cmap="YlGnBu", vmin=0.0, vmax=1.0, ax=ax)
+            fig.savefig(os.path.join(save_path,
+                                     'spatial_' + 'layer_' + str(layer_idx) + 'head_' + str(head_idx) + '_' + str(
+                                         num_frame) + '.png'))
+            plt.close(fig)
+            plt.clf()
 
 
 def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
@@ -206,7 +287,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
 
     print("Evaluating test set...")
     undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
-    test_metrics, eval_result = evaluate_model(session, test_model,
+    test_metrics, eval_result, attention_weights = evaluate_model(session, test_model,
                                                test_iter,
                                                metrics_engine,
                                                undo_norm_fn,
@@ -240,39 +321,27 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     dense=not args.no_mesh,
                                     to_video=args.to_video)
 
-        n_samples_viz = 30
-        # Get random indices or just all of them.
-        rng = np.random.RandomState(4313)
-        idxs = rng.randint(0, len(eval_result), size=n_samples_viz)
-        # idxs = list(range(n_samples_viz))
-
-        # Select some indices for faster visualization or just all of them.
-        # selected_idxs = [4]  # [12, 13, 14, 27, 29]  # [5, 6, 7, 19]  # [0, 1, 2, 5, 6, 7, 9, 19, 24, 27]
-        # sample_keys = [list(sorted(eval_result.keys()))[i] for ii, i in enumerate(idxs) if ii in selected_idxs]
-        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
-
         # Find an entry by name
-        ''' 
-        #sample_keys = ['CMU/0/CMU/120_120_18']
-        interesting_keys = ['CMU/0/CMU/106_106_34',
-                            'BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics',
-                            'Transition/0/Transition/mazen_c3dairkick_walkbackwards',
-                            'CMU/0/CMU/01_01_06']
-        sample_keys = ["CMU/0/CMU/120_120_18",
-                       "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics",
-                       "CMU/26/CMU/86_86_03"]
-        '''
-        # idxs = [i for i in range(64)]
-        # sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
-
         sample_keys = ["ACCAD/0/ACCAD/Male1Walking_c3dWalk_SB_B14_SB__SB2__SB_Walk_SB_turn_SB_right_SB_135_dynamics",
                        "ACCAD/0/ACCAD/Male2MartialArtsStances_c3dD10_SB__SB2__SB_victory_SB_2_dynamics",
                        "BioMotion/0/BioMotion/rub0010000_treadmill_norm_dynamics",
                        "BioMotion/0/BioMotion/rub0080021_catching_and_throwing_dynamics",
                        "BioMotion/0/BioMotion/rub0320027_circle_walk_dynamics"]
-        
+        idxs = [i for i in range(32)]
+        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+
         print("Visualizing samples...")
         for i, k in enumerate(sample_keys):
+            title = k
+            fname = title.replace('/', '.')
+            fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
+            dir_prefix = 'skeleton'
+            out_dir = os.path.join(eval_dir, dir_prefix, fname)
+            print(out_dir + ' visualizing.')
+            for num_frame in range(12):
+                visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
+                visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
+
             prediction, target, seed = eval_result[k]
             len_diff = prediction.shape[0] - target.shape[0]
             if len_diff > 0:
