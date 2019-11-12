@@ -40,8 +40,24 @@ import matplotlib.pyplot as plt
 
 plt.switch_backend('agg')
 
-
 using_attention_model = 1
+
+
+sample_keys = [
+    # Shorter than 1200 steps.
+    "BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics",
+    "BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics",
+    "CMU/0/CMU/136_136_18",
+    "CMU/0/CMU/143_143_23",  # punching
+    # Longer than 1200
+    "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
+    "BioMotion/0/BioMotion/rub1110002_treadmill_slow_dynamics",
+    "BioMotion/0/BioMotion/rub1030000_treadmill_norm_dynamics",
+    "BioMotion/0/BioMotion/rub0800029_scamper_dynamics",
+    "BioMotion/0/BioMotion/rub0830021_catching_and_throwing_dynamics",
+    "Eyes/0/Eyes/kaiwajump_SB2_06_SB2_rope_SB_normal_SB_run_SB_fast_SB2_kaiwa_dynamics",
+    "Eyes/0/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
+    ]
 
 try:
     from common.logger import GoogleSheetLogger
@@ -84,16 +100,19 @@ def get_model_cls(model_type):
 
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split):
     model_cls = get_model_cls(config["model_type"])
-    window_length = config["source_seq_len"] + config["target_seq_len"]
 
     if config["use_h36m"]:
         data_dir = os.path.join(data_dir, '../../h3.6m/tfrecords/')
 
     if dynamic_test_split:
         data_split = "test_dynamic"
+        window_length = config["source_seq_len"]
+        filter_sample_keys = sample_keys
     else:
-        assert window_length <= 180, "TFRecords are hardcoded with length of 180."
         data_split = "test"
+        window_length = config["source_seq_len"] + config["target_seq_len"]
+        filter_sample_keys = None
+        assert window_length <= 180, "TFRecords are hardcoded with length of 180."
 
     test_data_path = os.path.join(data_dir, config["data_type"], data_split, "amass-?????-of-?????")
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
@@ -108,7 +127,8 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
                                           num_parallel_calls=4,
-                                          normalize=not config["no_normalization"])
+                                          normalize=not config["no_normalization"],
+                                          filter_by_key=filter_sample_keys)
         test_pl = test_data.get_tf_samples()
 
     # Create model.
@@ -330,44 +350,44 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     to_video=args.to_video)
 
         # Find an entry by name
-        idxs = [i for i in range(32)]
-        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
-        # sample_keys = ["BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics"]
-
+        # idxs = [i for i in range(32)]
+        # sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+        
         print("Visualizing samples...")
         for i, k in enumerate(sample_keys):
-            title = k
-            fname = title.replace('/', '.')
-            fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
-            dir_prefix = 'skeleton'
-            out_dir = os.path.join(eval_dir, dir_prefix, fname)
-            print(out_dir + ' visualizing.')
+            if k in eval_result:
+                title = k
+                fname = title.replace('/', '.')
+                fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
+                dir_prefix = 'skeleton'
+                out_dir = os.path.join(eval_dir, dir_prefix, fname)
+                print(out_dir + ' visualizing.')
 
+                if using_attention_model == 1:
+                    for num_frame in range(12):
+                        visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
+                        visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
 
-            if using_attention_model == 1:
-                for num_frame in range(12):
-                    visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
-                    visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
+                prediction, target, seed = eval_result[k]
 
+                heat = np.transpose(prediction)
+                fig = plt.figure()
+                ax = fig.add_subplot(1, 1, 1)
+                sn.heatmap(heat, ax=ax, annot=False, vmin=-1.0, vmax=1.0, cmap='YlGnBu')
+                ax.set(aspect=1)
+                plt.axis('off')
+                fig.savefig(os.path.join(out_dir, 'whole.png'))
+                plt.close(fig)
+                plt.clf()
+                np.save(os.path.join(out_dir, 'whole.npy'), heat)
 
-            prediction, target, seed = eval_result[k]
-
-            heat = np.transpose(prediction)
-            fig = plt.figure()
-            ax = fig.add_subplot(1, 1, 1)
-            sn.heatmap(heat, ax=ax, annot=False, vmin=-1.0, vmax=1.0, cmap='YlGnBu')
-            ax.set(aspect=1)
-            plt.axis('off')
-            fig.savefig(os.path.join(out_dir, 'whole.png'))
-            plt.close(fig)
-            plt.clf()
-            np.save(os.path.join(out_dir, 'whole.npy'), heat)
-
-            len_diff = prediction.shape[0] - target.shape[0]
-            if len_diff > 0:
-                target = np.concatenate([target, np.tile(target[-1:], (len_diff, 1))], axis=0)
-            visualizer.visualize_results(seed, prediction, target,
-                                         title=k + "_i{}".format(i))
+                len_diff = prediction.shape[0] - target.shape[0]
+                if len_diff > 0:
+                    target = np.concatenate([target, np.tile(target[-1:], (len_diff, 1))], axis=0)
+                visualizer.visualize_results(seed, prediction, target,
+                                             title=k + "_i{}".format(i))
+            else:
+                print("Sequence " + k + " not found!")
 
 
 if __name__ == '__main__':
@@ -462,7 +482,7 @@ if __name__ == '__main__':
                                                                    _args.dynamic_test_split)
                 print("Evaluating Model " + str(model_id))
                 evaluate(sess, _test_model, _test_data, _args, _eval_dir, _config["use_h36m"])
-
+                
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))
             raise Exception(e)

@@ -41,6 +41,10 @@ class TFRecordMotionDataset(Dataset):
         self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
         self.num_parallel_calls = kwargs.get("num_parallel_calls", 16)
         self.normalize = kwargs.get("normalize", True)
+        keys_to_filter = kwargs.get("filter_by_key", None)
+        self.tf_sample_keys = None
+        if keys_to_filter is not None:
+            self.tf_sample_keys = tf.constant(keys_to_filter)
 
         super(TFRecordMotionDataset, self).__init__(data_path, meta_data_path, batch_size, shuffle, **kwargs)
 
@@ -74,8 +78,13 @@ class TFRecordMotionDataset(Dataset):
         if self.shuffle:
             self.tf_data = self.tf_data.shuffle(self.batch_size*10)
 
+        if self.tf_sample_keys is not None:
+            self.tf_data = self.tf_data.filter(
+                    functools.partial(self.__pp_name_filter))
+        
         if self.extract_windows_of > 0:
             self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
+            
             if self.window_type == C.DATA_WINDOW_BEGINNING:
                 self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_beginning),
                                                 num_parallel_calls=self.num_parallel_calls)
@@ -132,6 +141,9 @@ class TFRecordMotionDataset(Dataset):
 
     def __pp_filter(self, sample):
         return tf.shape(sample["poses"])[0] >= self.length_threshold
+    
+    def __pp_name_filter(self, sample):
+        return tf.reduce_sum(tf.cast(tf.equal(sample["sample_id"], self.tf_sample_keys), tf.int32 )) > 0
 
     def __pp_get_windows_random(self, sample):
         start = tf.random_uniform((1, 1), minval=0, maxval=tf.shape(sample["poses"])[0]-self.extract_windows_of+1, dtype=tf.int32)[0][0]
