@@ -350,9 +350,9 @@ class Transformer2d(BaseModel):
         for joint_idx in range(self.NUM_JOINTS):
     
             query_var_scope = scope + "_query_" + str(joint_idx)
-            if not self.shared_spatial_layer:
-                value_var_scope = scope + "_value_" + str(joint_idx)
-                key_var_scope = scope + "_key_" + str(joint_idx)
+            # if not self.shared_spatial_layer:
+            #     value_var_scope = scope + "_value_" + str(joint_idx)
+            #     key_var_scope = scope + "_key_" + str(joint_idx)
             
             joint_rep = x[joint_idx]
             # embed each vector to key, value and query vectors
@@ -637,3 +637,32 @@ class Transformer2d(BaseModel):
             input_sequence = input_sequence[:, -self.source_seq_len:, :]
 
         return np.concatenate(predictions, axis=1), attentions
+
+
+def _generate_relative_positions_matrix(length, max_relative_position):
+    """Generates matrix of relative positions between inputs."""
+    range_vec = tf.range(length)
+    range_mat = tf.reshape(tf.tile(range_vec, [length]),
+                           [length, length])
+    distance_mat = range_mat - tf.transpose(range_mat)
+    distance_mat_clipped = tf.clip_by_value(distance_mat,
+                                            -max_relative_position,
+                                            max_relative_position)
+    # Shift values to be >= 0. Each integer still uniquely identifies a relative
+    # position difference.
+    final_mat = distance_mat_clipped + max_relative_position
+    return final_mat
+
+
+def _generate_relative_positions_embeddings(length, depth,
+                                            max_relative_position, name):
+    """Generates tensor of size [1 if cache else length, length, depth]."""
+    with tf.variable_scope(name):
+        relative_positions_matrix = _generate_relative_positions_matrix(
+                length, max_relative_position)
+        vocab_size = max_relative_position*2 + 1
+        # Generates embedding for each relative position of dimension depth.
+        embeddings_table = tf.get_variable("embeddings",
+                                           [vocab_size, depth])
+        embeddings = tf.gather(embeddings_table, relative_positions_matrix)
+        return embeddings
