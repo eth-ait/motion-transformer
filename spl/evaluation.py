@@ -175,7 +175,7 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                                 _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
 
                 n_batches += 1
-                if n_batches == 1:
+                if n_batches == 5:
                     break
     except tf.errors.OutOfRangeError:
         pass
@@ -330,8 +330,9 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     to_video=args.to_video)
 
         # Find an entry by name
-        idxs = [i for i in range(32)]
-        sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+        #idxs = [i for i in range(32)]
+        #sample_keys = [list(sorted(eval_result.keys()))[i] for i in idxs]
+        sample_keys = ["BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics"]
 
         print("Visualizing samples...")
         for i, k in enumerate(sample_keys):
@@ -342,22 +343,25 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
             out_dir = os.path.join(eval_dir, dir_prefix, fname)
             print(out_dir + ' visualizing.')
 
+
             if using_attention_model == 1:
                 for num_frame in range(12):
                     visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
                     visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
+
 
             prediction, target, seed = eval_result[k]
 
             heat = np.transpose(prediction)
             fig = plt.figure()
             ax = fig.add_subplot(1, 1, 1)
-            sn.heatmap(heat, ax=ax, annot=False, vmin=-1.0, vmax=1.0, cmap='RdBu')
+            sn.heatmap(heat, ax=ax, annot=False, vmin=-1.0, vmax=1.0, cmap='YlGnBu')
             ax.set(aspect=1)
             plt.axis('off')
             fig.savefig(os.path.join(out_dir, 'whole.png'))
             plt.close(fig)
             plt.clf()
+            np.save(os.path.join(out_dir, 'whole.npy'), heat)
 
             len_diff = prediction.shape[0] - target.shape[0]
             if len_diff > 0:
