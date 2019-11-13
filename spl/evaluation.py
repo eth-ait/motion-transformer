@@ -27,7 +27,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.transformer_ablations import Transformer2d
+from spl.model.transformer import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -128,7 +128,8 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           window_type=C.DATA_WINDOW_CENTER,
                                           num_parallel_calls=1,
                                           normalize=not config["no_normalization"],
-                                          filter_by_key=filter_sample_keys)
+                                          filter_by_key=filter_sample_keys,
+                                          apply_length_filter=False)
         test_pl = test_data.get_tf_samples()
 
     # Create model.
