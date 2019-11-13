@@ -72,13 +72,13 @@ tf.app.flags.DEFINE_string("glog_comment", None, "A descriptive text for Google 
 # Data
 tf.app.flags.DEFINE_enum("data_type", "rotmat", ["rotmat", "aa", "quat"],
                          "Which data representation: rotmat (rotation matrix), aa (angle axis), quat (quaternion).")
-tf.app.flags.DEFINE_boolean("use_h36m", True, "Use H36M for training and validation.")
+tf.app.flags.DEFINE_boolean("use_h36m", False, "Use H36M for training and validation.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
-tf.app.flags.DEFINE_integer("source_seq_len", 50, "Number of frames to feed into the encoder.")
-tf.app.flags.DEFINE_integer("target_seq_len", 10, "Number of frames that the decoder has to predict.")
+tf.app.flags.DEFINE_integer("source_seq_len", 120, "Number of frames to feed into the encoder.")
+tf.app.flags.DEFINE_integer("target_seq_len", 24, "Number of frames that the decoder has to predict.")
 tf.app.flags.DEFINE_integer("batch_size", 32, "Batch size to use during training.")
 # Training loop.
-tf.app.flags.DEFINE_integer("num_epochs", 10000, "Training epochs.")
+tf.app.flags.DEFINE_integer("num_epochs", 1000, "Training epochs.")
 tf.app.flags.DEFINE_boolean("exhaustive_validation", False, "Use entire validation samples (takes much longer).")
 tf.app.flags.DEFINE_integer("early_stopping_tolerance", 20, "# of waiting steps until the validation loss improves.")
 # Optimization.
@@ -114,12 +114,12 @@ tf.app.flags.DEFINE_enum("autoregressive_input", "sampling_based", ["sampling_ba
 tf.app.flags.DEFINE_integer("transformer_lr", 1, "Whether to use transformer learning rate or not")
 tf.app.flags.DEFINE_integer("transformer_d_model", 128, "Size of d_model of the transformer")
 tf.app.flags.DEFINE_float("transformer_dropout_rate", 0.1, "Dropout rate of the transformer")
-tf.app.flags.DEFINE_integer("transformer_dff", 256, "Size of feed forward layer of the transformer")
+tf.app.flags.DEFINE_integer("transformer_dff", 64, "Size of feed forward layer of the transformer")
 tf.app.flags.DEFINE_integer("transformer_num_layers", 8, "Number of layers of the transformer")
 tf.app.flags.DEFINE_integer("transformer_num_heads_temporal", 8, "Number of heads of the transformer's temporal block")
 tf.app.flags.DEFINE_integer("transformer_num_heads_spacial", 8, "Number of heads of the transformer's spatial block")
-tf.app.flags.DEFINE_integer("transformer_window_length", 50, "length of attention window of the transformer")
-tf.app.flags.DEFINE_integer("warm_up_steps", 1000, "number of warm-up steps")
+tf.app.flags.DEFINE_integer("transformer_window_length", 120, "length of attention window of the transformer")
+tf.app.flags.DEFINE_integer("warm_up_steps", 10000, "number of warm-up steps")
 # They are for ablations and will go away.
 tf.app.flags.DEFINE_boolean("shared_embedding_layer", False, "Whether to use a shared embedding layer instead of joint-specific layers or not.")
 tf.app.flags.DEFINE_boolean("shared_output_layer", False, "-")
