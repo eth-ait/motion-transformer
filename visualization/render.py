@@ -80,7 +80,8 @@ class Visualizer(object):
         else:
             assert self.skeleton or self.dense, "either skeleton or mesh (or both) should be displayed"
             assert output_dir
-            self.expected_n_input_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
+            # self.expected_n_input_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
+            self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
             
     def create_clip_skeleton(self, joint_angles, title):
         """Creates clip of a given sequence in rotation matrix format.

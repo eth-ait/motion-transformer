@@ -27,7 +27,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.transformer import Transformer2d
+from spl.model.transformer_ablations import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -43,12 +43,12 @@ plt.switch_backend('agg')
 using_attention_model = 1
 
 
-sample_keys = [
+sample_keys_amass = [
     # Shorter than 1200 steps.
-    "BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics",
-    "BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics",
     "CMU/0/CMU/136_136_18",
     "CMU/0/CMU/143_143_23",  # punching
+    "BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics",
+    "BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics",
     # Longer than 1200
     "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
     "BioMotion/0/BioMotion/rub1110002_treadmill_slow_dynamics",
@@ -58,6 +58,16 @@ sample_keys = [
     "Eyes/0/Eyes/kaiwajump_SB2_06_SB2_rope_SB_normal_SB_run_SB_fast_SB2_kaiwa_dynamics",
     "Eyes/0/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
     ]
+
+
+sample_keys_h36m = [
+        "h36/0/S9_walkingd",
+        "h36/0/S7_discussi",
+        "h36/0/S9_smoki",
+        "h36/0/S6_walkingd",
+        "h36/0/S11_sitti",
+        "h36/0/S11_walkingtogeth"
+        ]
 
 try:
     from common.logger import GoogleSheetLogger
@@ -101,8 +111,10 @@ def get_model_cls(model_type):
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split):
     model_cls = get_model_cls(config["model_type"])
 
+    sample_keys = sample_keys_amass
     if config["use_h36m"]:
-        data_dir = os.path.join(data_dir, '../../h3.6m/tfrecords/')
+        data_dir = os.path.join(data_dir, '../h3.6m/tfrecords/')
+        sample_keys = sample_keys_h36m
 
     if dynamic_test_split:
         data_split = "test_dynamic"
@@ -281,10 +293,12 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     if use_h36m:
         fk_engine = H36MForwardKinematics()
         target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_H36M if x <= test_model.target_seq_len]
+        sample_keys = sample_keys_h36m
     else:
         fk_engine = SMPLForwardKinematics()
         target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= test_model.target_seq_len]
-
+        sample_keys = sample_keys_amass
+    
     representation = C.QUATERNION if test_model.use_quat else C.ANGLE_AXIS if test_model.use_aa else C.ROT_MATRIX
     metrics_engine = MetricsEngine(fk_engine,
                                    target_lengths,
@@ -483,6 +497,15 @@ if __name__ == '__main__':
                                                                    _args.dynamic_test_split)
                 print("Evaluating Model " + str(model_id))
                 evaluate(sess, _test_model, _test_data, _args, _eval_dir, _config["use_h36m"])
+
+                # _eval_iter = _test_data.get_iterator()
+                # sess.run(_eval_iter.initializer)
+                # try:
+                #     while True:
+                #         data_ids, data_samples = sess.run([_test_model.data_ids, _test_model.data_inputs])
+                #         print(data_ids)
+                # except tf.errors.OutOfRangeError:
+                #     pass
                 
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))
