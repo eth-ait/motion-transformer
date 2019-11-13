@@ -83,7 +83,7 @@ class TFRecordMotionDataset(Dataset):
                     functools.partial(self.__pp_name_filter))
         
         if self.extract_windows_of > 0:
-            self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
+            # self.tf_data = self.tf_data.filter(functools.partial(self.__pp_filter))
             
             if self.window_type == C.DATA_WINDOW_BEGINNING:
                 self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_beginning),

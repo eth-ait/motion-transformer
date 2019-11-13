@@ -609,6 +609,14 @@ class Transformer2d(BaseModel):
         batch = session.run(self.data_placeholders)
         data_id = batch[C.BATCH_ID]
         data_sample = batch[C.BATCH_INPUT]
+        # To get rid of 0 paddings.
+        seq_len = batch[C.BATCH_SEQ_LEN]
+        max_len = seq_len.max()
+        if (seq_len != max_len).sum() != 0:
+            for i in range(seq_len.shape[0]):
+                len_ = seq_len[i]
+                data_sample[i, len_:] = np.tile(data_sample[i, len_-1], (max_len-len_, 1))
+            
         targets = data_sample[:, self.source_seq_len:, :]
         seed_sequence = data_sample[:, :self.source_seq_len, :]
         prediction, attentions = self.sample(session=session,
