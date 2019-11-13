@@ -484,15 +484,14 @@ class Transformer2d(BaseModel):
 
         inp_drop_rate = self.config.get("input_dropout_rate", 0)
         if inp_drop_rate > 0:
-            inp_shape = tf.shape(inputs)
             # Apply dropout on the entire rotation matrix of a joint.
-            noise_shape = (inp_shape[0], inp_shape[1], inp_shape[2], 1)
+            # inp_shape = tf.shape(inputs)
+            # noise_shape = (inp_shape[0], inp_shape[1], inp_shape[2], 1)
             with tf.variable_scope('input_dropout', reuse=self.reuse):
                 inputs = tf.layers.dropout(inputs,
                                            rate=inp_drop_rate,
                                            seed=self.config["seed"],
-                                           training=self.is_training,
-                                           noise_shape=noise_shape)
+                                           training=self.is_training)
         
         for joint_idx in range(self.NUM_JOINTS):
             emb_var_scope = "embedding_" + str(joint_idx)

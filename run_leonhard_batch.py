@@ -6,144 +6,175 @@ The working directory must be the same with python file's directory.
 """
 
 NUM_CPU = 8
-MEMORY = 3000
+MEMORY = 5000
 NUM_GPU = 1
 WALL_TIME = 23
-# cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" -R "select[gpu_model0==GeForceGTX1080Ti]" '
-cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:50 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
+cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" -R "select[gpu_model0==GeForceGTX1080Ti]" '
+# cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:50 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
 
 
 transformer_experiments = [
     'python spl/training.py '
-    '--glog_comment "shared_emb_ffn_out" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--random_window_min 0 --temporal_mask_drop 0 '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 1 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 2 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 3 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 4 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 5 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 6 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 7 '
+    '--transformer_d_model 128 --transformer_dff 256 ',
+    
+    'python spl/training.py '
+    '--glog_comment "ablation_nlayers" '
     '--transformer_window_length 120 --transformer_num_layers 8 '
     '--transformer_d_model 128 --transformer_dff 256 ',
     
     'python spl/training.py '
-    '--glog_comment "shared_emb_spat_ffn_out" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--shared_spatial_layer '
-    '--random_window_min 0 --temporal_mask_drop 0 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 9 '
     '--transformer_d_model 128 --transformer_dff 256 ',
     
     'python spl/training.py '
-    '--glog_comment "shared_emb_ffn_out-rand100_mask01" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--random_window_min 100 --temporal_mask_drop 0.1 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
+    '--glog_comment "ablation_nlayers" '
+    '--transformer_window_length 120 --transformer_num_layers 10 '
     '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat_ffn_out-rand100_mask01" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--shared_spatial_layer '
-    '--random_window_min 100 --temporal_mask_drop 0.1 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb" '
-    '--shared_embedding_layer '
-    '--random_window_min 0 --temporal_mask_drop 0 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat" '
-    '--shared_embedding_layer --shared_spatial_layer '
-    '--random_window_min 0 --temporal_mask_drop 0 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb-rand100_mask01" '
-    '--shared_embedding_layer '
-    '--random_window_min 100 --temporal_mask_drop 0.1 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat-rand100_mask01" '
-    '--shared_embedding_layer --shared_spatial_layer '
-    '--random_window_min 100 --temporal_mask_drop 0.1 '
-    '--transformer_window_length 120 --transformer_num_layers 8 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
+
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_out" '
+    # '--shared_embedding_layer --shared_output_layer '
+    # '--random_window_min 0 --temporal_mask_drop 0 '
+    # '--transformer_window_length 120 --transformer_num_layers 8 '
+    # '--transformer_d_model 128 --transformer_dff 256 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_spat_out" '
+    # '--shared_embedding_layer --shared_output_layer '
+    # '--shared_spatial_layer '
+    # '--random_window_min 0 --temporal_mask_drop 0 '
+    # '--transformer_window_length 120 --transformer_num_layers 8 '
+    # '--transformer_d_model 128 --transformer_dff 256 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_out-rand100_mask01" '
+    # '--shared_embedding_layer --shared_output_layer '
+    # '--random_window_min 100 --temporal_mask_drop 0.1 '
+    # '--transformer_window_length 120 --transformer_num_layers 8 '
+    # '--transformer_d_model 128 --transformer_dff 256 ',
 ]
 
 transformer_h36m = [
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_ffn_out" '
+    # '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
+    # '--random_window_min 0 --temporal_mask_drop 0 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 4 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_spat_ffn_out" '
+    # '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
+    # '--shared_spatial_layer '
+    # '--random_window_min 0 --temporal_mask_drop 0 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 4 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_ffn_out-rand40_mask01" '
+    # '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
+    # '--random_window_min 40 --temporal_mask_drop 0.1 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 4 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_spat_ffn_out-rand40_mask01" '
+    # '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
+    # '--shared_spatial_layer '
+    # '--random_window_min 40 --temporal_mask_drop 0.1 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 4 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    
     'python spl/training.py '
-    '--glog_comment "shared_emb_ffn_out" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
+    '--glog_comment "shared_emb_out-idrop01" '
+    '--shared_embedding_layer --shared_output_layer --input_dropout_rate 0.1 '
     '--random_window_min 0 --temporal_mask_drop 0 '
     '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
     '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
+    '--transformer_d_model 128 --transformer_dff 64 ',
     
     'python spl/training.py '
-    '--glog_comment "shared_emb_spat_ffn_out" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--shared_spatial_layer '
+    '--glog_comment "shared_emb-idrop01" '
+    '--shared_embedding_layer --input_dropout_rate 0.1 '
     '--random_window_min 0 --temporal_mask_drop 0 '
     '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
     '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_ffn_out-rand40_mask01" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--random_window_min 40 --temporal_mask_drop 0.1 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat_ffn_out-rand40_mask01" '
-    '--shared_embedding_layer --shared_embedding_layer --shared_pw_ffn '
-    '--shared_spatial_layer '
-    '--random_window_min 40 --temporal_mask_drop 0.1 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb" '
-    '--shared_embedding_layer '
-    '--random_window_min 0 --temporal_mask_drop 0 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat" '
-    '--shared_embedding_layer --shared_spatial_layer '
-    '--random_window_min 0 --temporal_mask_drop 0 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb-rand40_mask01" '
-    '--shared_embedding_layer '
-    '--random_window_min 40 --temporal_mask_drop 0.1 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
-    
-    'python spl/training.py '
-    '--glog_comment "shared_emb_spat-rand40_mask01" '
-    '--shared_embedding_layer --shared_spatial_layer '
-    '--random_window_min 40 --temporal_mask_drop 0.1 '
-    '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    '--transformer_window_length 50 --transformer_num_layers 4 '
-    '--transformer_d_model 128 --transformer_dff 256 ',
+    '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_out-rand40_mask01" '
+    # '--shared_embedding_layer --shared_output_layer '
+    # '--random_window_min 40 --temporal_mask_drop 0.1 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 4 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_spat" '
+    # '--shared_embedding_layer --shared_spatial_layer '
+    # '--random_window_min 0 --temporal_mask_drop 0 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 6 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb-rand40_mask01" '
+    # '--shared_embedding_layer '
+    # '--random_window_min 40 --temporal_mask_drop 0.1 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 6 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
+    #
+    # 'python spl/training.py '
+    # '--glog_comment "shared_emb_spat-rand40_mask01" '
+    # '--shared_embedding_layer --shared_spatial_layer '
+    # '--random_window_min 40 --temporal_mask_drop 0.1 '
+    # '--num_epochs 10000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
+    # '--transformer_window_length 50 --transformer_num_layers 6 '
+    # '--transformer_d_model 128 --transformer_dff 64 ',
 ]
 
 # Create a unique experiment timestamp.
 experiment_timestamp = str(int(time.time()))
-for work_id, experiment in enumerate(transformer_h36m):
+for work_id, experiment in enumerate(transformer_experiments):
     experiment_id = "{}.{}".format(experiment_timestamp, work_id+1)
     time.sleep(1)
     print(experiment_id)
