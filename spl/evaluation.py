@@ -230,7 +230,7 @@ def visualize_temporal(mat, save_path, num_frame):
             ax = fig.add_subplot(num_layers, num_heads, layer_idx * num_heads + head_idx + 1)
             ax.axis('off')
             array = mat[layer_idx, :, head_idx, :]  # (num_joints, seq_len)
-            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(seq_len)])
+            df_cm = pd.DataFrame(array, index=[(i+1) for i in range(num_joints)], columns=[(i+1) for i in range(seq_len)])
             sn.heatmap(df_cm, annot=False, cmap="YlGnBu", ax=ax, vmin=0.0, vmax=1.0, cbar=False)
 
     fig.savefig(os.path.join(save_path, 'temporal_attn' + str(num_frame) + '.png'))
@@ -240,7 +240,7 @@ def visualize_temporal(mat, save_path, num_frame):
     for layer_idx in range(num_layers):
         for head_idx in range(num_heads):
             array = mat[layer_idx, :, head_idx, :]  # (num_joints, seq_len)
-            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(seq_len)])
+            df_cm = pd.DataFrame(array, index=[(i+1) for i in range(num_joints)], columns=[(i+1) for i in range(seq_len)])
             fig = plt.figure()
             ax = fig.add_subplot(1, 1, 1)
             sn.heatmap(df_cm, annot=False, cmap="YlGnBu", vmin=0.0, vmax=1.0, ax=ax)
@@ -262,7 +262,7 @@ def visualize_spatial(mat, save_path, num_frame):
             ax = fig.add_subplot(num_layers, num_heads, layer_idx * num_heads + head_idx + 1)
             ax.axis('off')
             array = mat[layer_idx, head_idx, :, :]  # (num_joints, num_joints)
-            df_cm = pd.DataFrame(array, index=[i for i in range(num_joints)], columns=[i for i in range(num_joints)])
+            df_cm = pd.DataFrame(array, index=[(i+1) for i in range(num_joints)], columns=[(i+1) for i in range(num_joints)])
             sn.heatmap(df_cm, annot=False, cmap="YlGnBu", ax=ax, vmin=0.0, vmax=1.0, cbar=False)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
