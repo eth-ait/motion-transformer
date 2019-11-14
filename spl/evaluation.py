@@ -27,7 +27,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.transformer_ablations import Transformer2d
+from spl.model.transformer import Transformer2d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -111,35 +111,42 @@ def get_model_cls(model_type):
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split):
     model_cls = get_model_cls(config["model_type"])
 
+    window_length = config["source_seq_len"] + config["target_seq_len"]
     sample_keys = sample_keys_amass
     if config["use_h36m"]:
         data_dir = os.path.join(data_dir, '../h3.6m/tfrecords/')
         sample_keys = sample_keys_h36m
 
-    if dynamic_test_split:
+    if dynamic_test_split:  # For visualization
         data_split = "test_dynamic"
-        window_length = config["source_seq_len"] + config["target_seq_len"]
         filter_sample_keys = sample_keys
-    else:
+        beginning_index = 0
+        window_type = C.DATA_WINDOW_CENTER
+    else:  # For quantitative evaluation.
         data_split = "test"
-        window_length = config["source_seq_len"] + config["target_seq_len"]
         filter_sample_keys = None
-        assert window_length <= 180, "TFRecords are hardcoded with length of 180."
+        default_seed_len = 120
+        if config["use_h36m"]:
+            default_seed_len = 50
+        beginning_index = default_seed_len - config["source_seq_len"]
+        window_type = C.DATA_WINDOW_BEGINNING
 
     test_data_path = os.path.join(data_dir, config["data_type"], data_split, "amass-?????-of-?????")
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
     print("Loading test data from " + test_data_path)
-
+    
     # Create dataset.
     with tf.name_scope("test_data"):
+        window_length = config["source_seq_len"] + config["target_seq_len"]
         test_data = TFRecordMotionDataset(data_path=test_data_path,
                                           meta_data_path=meta_data_path,
-                                          batch_size=32,
+                                          batch_size=config["batch_size"]*2,
                                           shuffle=False,
                                           extract_windows_of=window_length,
-                                          window_type=C.DATA_WINDOW_CENTER,
-                                          num_parallel_calls=1,
+                                          window_type=window_type,
+                                          num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
+                                          beginning_index=beginning_index,
                                           filter_by_key=filter_sample_keys,
                                           apply_length_filter=False)
         test_pl = test_data.get_tf_samples()
@@ -201,17 +208,16 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
 
                 if using_attention_model == 1:
                     for num_frame in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
-                        for i in range(prediction.shape[0]):
-                            if num_frame == 0:
-                                _attention_weights[data_id[i].decode("utf-8")] = [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
-                            else:
-                                _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
-
+                        if num_frame <= prediction.shape[1]:
+                            for i in range(prediction.shape[0]):
+                                if num_frame == 0:
+                                    _attention_weights[data_id[i].decode("utf-8")] = [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
+                                else:
+                                    _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
                 n_batches += 1
-                if n_batches == 5:
-                    break
     except tf.errors.OutOfRangeError:
         pass
+    print("Evaluated on " + str(n_batches) + " batches.")
         # finalize the computation of the metrics
     final_metrics = _metrics_engine.get_final_metrics()
     return final_metrics, _eval_result, _attention_weights
@@ -312,11 +318,12 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
 
     # Google logging.
     if args.glog_entry and GLOGGER_AVAILABLE:
-        exp_id = os.path.split(eval_dir)[-1].split("-")[0] + ".test"
+        exp_id = os.path.split(eval_dir)[-1].split("-")[0]
         glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
         gdrive_key = os.environ["GDRIVE_API_KEY"]
         model_name = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
         static_values = dict()
+        # exp_id = exp_id + "-W" + str(args.seq_length_in)
         static_values["Model ID"] = exp_id
         static_values["Model Name"] = model_name
 
@@ -330,11 +337,12 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
 
     print("Evaluating test set...")
     undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
-    test_metrics, eval_result, attention_weights = evaluate_model(session, test_model,
-                                               test_iter,
-                                               metrics_engine,
-                                               undo_norm_fn,
-                                               _return_results=True)
+    test_metrics, eval_result, attention_weights = evaluate_model(session,
+                                                                  test_model,
+                                                                  test_iter,
+                                                                  metrics_engine,
+                                                                  undo_norm_fn,
+                                                                  _return_results=True)
 
     print(metrics_engine.get_summary_string_all(test_metrics, target_lengths,
                                                 pck_thresholds))
@@ -454,6 +462,8 @@ if __name__ == '__main__':
     parser.add_argument('--glog_entry', required=False,
                         action="store_true",
                         help="Create a Google sheet entry if available.")
+    parser.add_argument('--new_experiment_id', required=False, default=None,
+                        type=str, help="Not used. only for leonhard.")
 
     _args = parser.parse_args()
     if ',' in _args.model_id:

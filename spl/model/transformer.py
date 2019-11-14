@@ -22,6 +22,7 @@ class Transformer2d(BaseModel):
         self.window_len = config.get('transformer_window_length')#self.source_seq_len  # attention window length
 
         # data
+        self.window_len = self.source_seq_len
         self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
