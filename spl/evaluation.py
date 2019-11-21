@@ -28,6 +28,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.vanilla import Transformer1d
 
 from common.constants import Constants as C
 from visualization.render import Visualizer
@@ -40,23 +41,54 @@ import matplotlib.pyplot as plt
 
 plt.switch_backend('agg')
 
-using_attention_model = 1
-
 
 sample_keys_amass = [
-    # Shorter than 1200 steps.
-    "CMU/0/CMU/136_136_18",
-    "CMU/0/CMU/143_143_23",  # punching
-    "BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics",
-    "BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics",
-    # Longer than 1200
+    # Additional samples
+    # "Eyes/0/Eyes/kaiwawalk_SB2_03_SB2_sneak_SB2_kaiwa_dynamics",
+    # "Eyes/0/Eyes/kaiwaturn_SB2_02_SB2_look_SB_around_SB2_kaiwa_dynamics",
+    # "Eyes/0/Eyes/hamashowalk_SB2_06_SB2_catwalk_SB2_hamasho_dynamics",
+    # "Eyes/0/Eyes/ichigepose_SB2_20_SB2_zombee_SB2_ichige_dynamics",
+    # "Eyes/0/Eyes/kudowalk_SB2_07_SB2_moonwalk_SB2_kudo_dynamics",
+    # "BioMotion/0/BioMotion/rub0390000_treadmill_norm_dynamics",
+    # "BioMotion/0/BioMotion/rub0680000_treadmill_norm_dynamics",
+    # "BioMotion/0/BioMotion/rub0420028_scamper_dynamics"
+    # "Eyes/0/Eyes/hamashogesture_etc_SB2_20_SB2_swing_SB_chair_SB2_hamasho_dynamics",
+    # "HDM05/0/HDM05/bdHDM_bd_03_SB2_02_02_120_dynamics",
+    # "Eyes/0/Eyes/shionojump_SB2_10_SB2_rope_SB_long_SB2_shiono_dynamics",
+    # # Shorter than 1200 steps.
+    # "CMU/0/CMU/136_136_18",
+    # "CMU/0/CMU/143_143_23",  # punching
+    # "BioMotion/0/BioMotion/rub0700002_treadmill_slow_dynamics",
+    # "BioMotion/0/BioMotion/rub0220001_treadmill_fast_dynamics",
+    # # Longer than 1200
+    # "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
+    # "BioMotion/0/BioMotion/rub1110002_treadmill_slow_dynamics",
+    # "BioMotion/0/BioMotion/rub1030000_treadmill_norm_dynamics",
+    # "BioMotion/0/BioMotion/rub0800029_scamper_dynamics",
+    # "BioMotion/0/BioMotion/rub0830021_catching_and_throwing_dynamics",
+    # "Eyes/0/Eyes/kaiwajump_SB2_06_SB2_rope_SB_normal_SB_run_SB_fast_SB2_kaiwa_dynamics",
+    # "Eyes/0/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
+    
+    # "BioMotion/0/BioMotion/rub0830021_catching_and_throwing_dynamics",
+    # "CMU/0/CMU/143_143_23",
+    # "Eyes/0/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
+    # "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
+    # "BioMotion/0/BioMotion/rub0410003_treadmill_jog_dynamics",
+    # "BioMotion/0/BioMotion/rub0290000_treadmill_norm_dynamics",
+    # "BioMotion/0/BioMotion/rub0830029_jumping2_dynamics",
+    # "BioMotion/0/BioMotion/rub0150028_circle_walk_dynamics",
+    # "BioMotion/0/BioMotion/rub0050003_treadmill_jog_dynamics",
+    # "Eyes/0/Eyes/hamadajump_SB2_12_SB2_boxer_SB_step_SB2_hamada_dynamics",
+    # "Eyes/0/Eyes/azumithrow_toss_SB2_06_SB2_both_SB_hands_SB_under_SB_light_SB2_azumi_dynamics",
+    # "ACCAD/0/ACCAD/Female1Running_c3dC4_SB__SB2__SB_Run_SB_to_SB_walk1_dynamics",
+    # "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics",
+    # "Transition/0/Transition/mazen_c3djumpingjacks_turntwist180",
+    # "Transition/0/Transition/mazen_c3dJOOF_runbackwards",
+    
+    "BioMotion/0/BioMotion/rub0290000_treadmill_norm_dynamics",
+    "ACCAD/0/ACCAD/Male1Running_c3dRun_SB_C27_SB__SB2__SB_crouch_SB_to_SB_run_dynamics",
+    "HDM05/0/HDM05/bdHDM_bd_03_SB2_02_02_120_dynamics",
     "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
-    "BioMotion/0/BioMotion/rub1110002_treadmill_slow_dynamics",
-    "BioMotion/0/BioMotion/rub1030000_treadmill_norm_dynamics",
-    "BioMotion/0/BioMotion/rub0800029_scamper_dynamics",
-    "BioMotion/0/BioMotion/rub0830021_catching_and_throwing_dynamics",
-    "Eyes/0/Eyes/kaiwajump_SB2_06_SB2_rope_SB_normal_SB_run_SB_fast_SB2_kaiwa_dynamics",
-    "Eyes/0/Eyes/yokoyamathrow_toss_SB2_01_SB2_over_SB2_yokoyama_dynamics",
     ]
 
 
@@ -104,6 +136,8 @@ def get_model_cls(model_type):
         return Seq2SeqModel
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
+    elif model_type == "transformer1d":
+        return Transformer1d
     else:
         raise Exception("Unknown model type.")
 
@@ -180,11 +214,17 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
     _metrics_engine.reset()
     _attention_weights = dict()
     session.run(_eval_iter.initializer)
+
+    using_attention_model = False
+    if isinstance(_eval_model, Transformer2d):
+        print("Using Attention Model.")
+        using_attention_model = True
+    
     try:
         while True:
             # Get the predictions and ground truth values
             res = _eval_model.sampled_step(session)
-            if using_attention_model == 1:
+            if using_attention_model:
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
                 prediction, targets, seed_sequence, data_id = res
@@ -206,7 +246,7 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                         t["poses"][k],
                         s["poses"][k])
 
-                if using_attention_model == 1:
+                if using_attention_model:
                     for num_frame in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
                         if num_frame <= prediction.shape[1]:
                             for i in range(prediction.shape[0]):
@@ -293,6 +333,10 @@ def visualize_spatial(mat, save_path, num_frame):
 
 def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     test_iter = test_data.get_iterator()
+
+    using_attention_model = False
+    if isinstance(test_model, Transformer2d):
+        using_attention_model = True
 
     # Create metrics engine including summaries
     pck_thresholds = C.METRIC_PCK_THRESHS
@@ -384,9 +428,13 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                 fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
                 dir_prefix = 'skeleton'
                 out_dir = os.path.join(eval_dir, dir_prefix, fname)
+                
+                if not os.path.exists(out_dir):
+                    os.makedirs(out_dir)
+                
                 print(out_dir + ' visualizing.')
 
-                if using_attention_model == 1:
+                if using_attention_model:
                     for num_frame in range(12):
                         visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
                         visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
@@ -510,12 +558,16 @@ if __name__ == '__main__':
 
                 # _eval_iter = _test_data.get_iterator()
                 # sess.run(_eval_iter.initializer)
+                # n_samples = 0
                 # try:
                 #     while True:
                 #         data_ids, data_samples = sess.run([_test_model.data_ids, _test_model.data_inputs])
-                #         print(data_ids)
+                #         for id_ in data_ids:
+                #             print(id_)
+                #             n_samples += 1
                 # except tf.errors.OutOfRangeError:
                 #     pass
+                # print("# samples: " + str(n_samples))
                 
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))
