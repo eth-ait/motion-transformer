@@ -131,8 +131,17 @@ class RNN(BaseModel):
         batch = session.run(self.data_placeholders)
         data_id = batch[C.BATCH_ID]
         data_sample = batch[C.BATCH_INPUT]
-        targets = data_sample[:, self.source_seq_len:]
 
+        # To get rid of 0 paddings.
+        seq_len = batch[C.BATCH_SEQ_LEN]
+        max_len = seq_len.max()
+        if (seq_len != max_len).sum() != 0:
+            for i in range(seq_len.shape[0]):
+                len_ = seq_len[i]
+                data_sample[i, len_:] = np.tile(data_sample[i, len_ - 1],
+                                                (max_len - len_, 1))
+        
+        targets = data_sample[:, self.source_seq_len:]
         # Get the model state by feeding the seed sequence.
         seed_sequence = data_sample[:, :self.source_seq_len]
         predictions = self.sample(session, seed_sequence, prediction_steps=self.target_seq_len)

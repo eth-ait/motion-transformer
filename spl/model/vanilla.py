@@ -4,6 +4,7 @@ import spl.util.tf_utils as model_utils
 from spl.model.base_model import BaseModel
 from common.constants import Constants as C
 
+
 # the vanilla transformer
 class Transformer1d(BaseModel):
     def __init__(self, config, data_pl, mode, reuse, **kwargs):
@@ -198,7 +199,7 @@ class Transformer1d(BaseModel):
 
     def point_wise_feed_forward_network(self, inputs, scope="feedforward"):
         with tf.variable_scope(scope + '_ff1', reuse=self.reuse):
-            outputs = tf.layers.dense(inputs, self.dff)
+            outputs = tf.layers.dense(inputs, self.dff, activation=tf.nn.relu)
         with tf.variable_scope(scope + '_ff2', reuse=self.reuse):
             outputs = tf.layers.dense(outputs, self.d_model)
         return outputs
@@ -289,6 +290,16 @@ class Transformer1d(BaseModel):
         data_id = batch[C.BATCH_ID]
         data_sample = batch[C.BATCH_INPUT]
         targets = data_sample[:, self.source_seq_len:, :]
+
+        # To get rid of 0 paddings.
+        seq_len = batch[C.BATCH_SEQ_LEN]
+        max_len = seq_len.max()
+        if (seq_len != max_len).sum() != 0:
+            for i in range(seq_len.shape[0]):
+                len_ = seq_len[i]
+                data_sample[i, len_:] = np.tile(data_sample[i, len_ - 1],
+                                                (max_len - len_, 1))
+        
         seed_sequence = data_sample[:, :self.source_seq_len, :]
         prediction = self.sample(session=session,
                                  seed_sequence=seed_sequence,
