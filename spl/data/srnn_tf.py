@@ -43,7 +43,7 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
         self.tf_data = self.tf_data.prefetch(self.batch_size*10)
 
         if self.extract_windows_of > 0:
-            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_middle),
+            self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_beginning),
                                             num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_to_model(self):

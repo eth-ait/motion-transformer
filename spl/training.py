@@ -292,9 +292,7 @@ def create_model(session):
         # create model and data for SRNN evaluation
         with tf.name_scope("srnn_data"):
             srnn_dir = "srnn_poses_25fps"
-            extract_windows_of = 60
-            assert config["source_seq_len"] + config[
-                "target_seq_len"] == 60, "H3.6M dataset is in 25 FPS."
+            extract_windows_of = config["source_seq_len"] + config["target_seq_len"]
             srnn_path = os.path.join(data_dir, config["data_type"], srnn_dir, "amass-?????-of-?????")
             srnn_data = SRNNTFRecordMotionDataset(data_path=srnn_path,
                                                   meta_data_path=meta_data_path,
@@ -626,12 +624,11 @@ def train():
                 selected_actions_mean_error = []
 
                 for action in ['walking', 'eating', 'discussion', 'smoking']:
-                    selected_actions_mean_error.append(
-                        np.stack(predictions_euler[action]))
+                    selected_actions_mean_error.append(np.stack(predictions_euler[action]))
 
-                valid_loss = np.mean(np.concatenate(selected_actions_mean_error,
-                                                    axis=0))
-                print("Euler angle valid loss on SRNN samples: {}".format(valid_loss))
+                srnn_valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0))
+                print("Euler angle valid loss on SRNN samples: {}".format(srnn_valid_loss))
+                valid_loss = srnn_valid_loss
 
             # Check if the improvement is good enough. If not, we wait to see
             # if there is an improvement (i.e., early_stopping_tolerance).
@@ -667,6 +664,10 @@ def train():
                             log_data[action[0] + "160"] = euler_mean[3]
                             log_data[action[0] + "320"] = euler_mean[7]
                             log_data[action[0] + "400"] = euler_mean[9]
+                            if euler_mean.shape[0] > 12:
+                                log_data[action[0] + "560"] = euler_mean[13]
+                                log_data[action[0] + "1000"] = euler_mean[24]
+                                
                         log_data["Step"] = checkpoint_step
                         glogger.update_or_append_row(log_data, "h36m")
                     else:
@@ -730,7 +731,15 @@ def train():
             print("{:<10}".format(""), end="")
             for ms in [80, 160, 320, 400]:
                 print("  {0:4d}  ".format(ms), end="")
+
+            if predictions_euler[which_actions[0]][0].shape[0] > 12:
+                for ms in [560, 1000]:
+                    print("  {0:4d}  ".format(ms), end="")
             print()
+            
+            test_str = " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}"
+            long_test_str = " \t{:.3f} \t{:.3f}"
+            
             for action in which_actions:
                 # get the mean over all samples for that action
                 assert len(predictions_euler[action]) == 8
@@ -738,17 +747,22 @@ def train():
                 s = "{:<10}:".format(action)
 
                 # get the metrics at the time-steps:
-                test_str = " {:.3f} \t{:.3f} \t{:.3f} \t{:.3f}"
                 s += test_str.format(euler_mean[1],
                                      euler_mean[3],
                                      euler_mean[7],
                                      euler_mean[9])
+                if euler_mean.shape[0] > 12:
+                    s += long_test_str.format(euler_mean[13],
+                                              euler_mean[24])
                 print(s)
 
                 log_data[action[0] + "80"] = euler_mean[1]
                 log_data[action[0] + "160"] = euler_mean[3]
                 log_data[action[0] + "320"] = euler_mean[7]
                 log_data[action[0] + "400"] = euler_mean[9]
+                if euler_mean.shape[0] > 12:
+                    log_data[action[0] + "560"] = euler_mean[13]
+                    log_data[action[0] + "1000"] = euler_mean[24]
 
             if GLOGGER_AVAILABLE:
                 log_data["Step"] = checkpoint_step
