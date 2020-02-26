@@ -74,8 +74,10 @@ tf.app.flags.DEFINE_enum("data_type", "rotmat", ["rotmat", "aa", "quat"],
                          "Which data representation: rotmat (rotation matrix), aa (angle axis), quat (quaternion).")
 tf.app.flags.DEFINE_boolean("use_h36m", False, "Use H36M for training and validation.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
+tf.app.flags.DEFINE_float("random_noise_ratio", 0, "Random uniform noise on inputs.")
 tf.app.flags.DEFINE_integer("source_seq_len", 120, "Number of frames to feed into the encoder.")
 tf.app.flags.DEFINE_integer("target_seq_len", 24, "Number of frames that the decoder has to predict.")
+tf.app.flags.DEFINE_integer("loss_seq_len", 0, "# of frames for training objective.")
 tf.app.flags.DEFINE_integer("batch_size", 32, "Batch size to use during training.")
 # Training loop.
 tf.app.flags.DEFINE_integer("num_epochs", 1000, "Training epochs.")
@@ -226,7 +228,7 @@ def create_model(session):
                                            shuffle=True,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_RANDOM,
-                                           num_parallel_calls=4,
+                                           num_parallel_calls=2,
                                            normalize=not config["no_normalization"])
         train_pl = train_data.get_tf_samples()
     
@@ -239,7 +241,7 @@ def create_model(session):
                                            shuffle=False,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_CENTER,
-                                           num_parallel_calls=4,
+                                           num_parallel_calls=2,
                                            normalize=not config["no_normalization"])
         valid_pl = valid_data.get_tf_samples()
     
@@ -251,7 +253,7 @@ def create_model(session):
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
-                                          num_parallel_calls=4,
+                                          num_parallel_calls=2,
                                           normalize=not config["no_normalization"],
                                           beginning_index=beginning_index)
         test_pl = test_data.get_tf_samples()
@@ -298,9 +300,11 @@ def create_model(session):
                                                   meta_data_path=meta_data_path,
                                                   batch_size=config["batch_size"],
                                                   shuffle=False,
-                                                  extract_windows_of=extract_windows_of,
-                                                  extract_random_windows=False,
-                                                  num_parallel_calls=4,
+                                                  seed_len=config["source_seq_len"],
+                                                  target_len=config["target_seq_len"],
+                                                  # extract_windows_of=extract_windows_of,
+                                                  # extract_random_windows=False,
+                                                  num_parallel_calls=2,
                                                   normalize=not config["no_normalization"])
             srnn_pl = srnn_data.get_tf_samples()
 
@@ -549,6 +553,7 @@ def train():
         time_counter = 0.0
         step = 0
         epoch = 0
+        print_steps = 0
         train_loss = 0.0
         train_iter = train_data.get_iterator()
         valid_iter = valid_data.get_iterator()
@@ -568,20 +573,21 @@ def train():
                 try:
                     start_time = time.perf_counter()
                     step += 1
-
-                    step_loss, summary, _ = train_model.step(sess)
-                    train_writer.add_summary(summary, step)
-                    train_loss += step_loss
-
-                    time_counter += (time.perf_counter() - start_time)
-
+                    
                     if step % args.print_frequency == 0:
-                        train_loss_avg = train_loss / args.print_frequency
-                        time_elapsed = time_counter / args.print_frequency
-                        train_loss, time_counter = 0., 0.
+                        train_loss_avg = train_loss / print_steps
+                        time_elapsed = time_counter / print_steps
+                        train_loss, time_counter, print_steps = 0., 0., 0
                         print(train_str.format(step,
                                                train_loss_avg,
                                                time_elapsed))
+                    
+                    step_loss, summary, _ = train_model.step(sess)
+                    train_writer.add_summary(summary, step)
+                    train_loss += step_loss
+                    print_steps += 1
+
+                    time_counter += (time.perf_counter() - start_time)
                 except tf.errors.OutOfRangeError:
                     sess.run(train_iter.initializer)
                     epoch += 1
@@ -626,7 +632,7 @@ def train():
                 for action in ['walking', 'eating', 'discussion', 'smoking']:
                     selected_actions_mean_error.append(np.stack(predictions_euler[action]))
 
-                srnn_valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0))
+                srnn_valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0), 0)[[1, 3, 7, 9]].mean()
                 print("Euler angle valid loss on SRNN samples: {}".format(srnn_valid_loss))
                 valid_loss = srnn_valid_loss
 

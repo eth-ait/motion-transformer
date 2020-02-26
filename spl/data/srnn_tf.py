@@ -27,6 +27,10 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
     Dataset class for the test sequences on H3.6M defined by Jain et al. in the S-RNN paper.
     """
     def __init__(self, data_path, meta_data_path, batch_size, shuffle, **kwargs):
+        self.seed_len = kwargs.get("seed_len", 0)
+        self.target_len = kwargs.get("target_len", 0)
+        self.ref = 50  # where srnn targets start.
+        
         super(SRNNTFRecordMotionDataset, self).__init__(data_path, meta_data_path, batch_size, shuffle, **kwargs)
 
     def tf_data_transformations(self):
@@ -42,12 +46,17 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
         self.tf_data = self.tf_data.map(functools.partial(self.__parse_single_tfexample_fn), num_parallel_calls=self.num_parallel_calls)
         self.tf_data = self.tf_data.prefetch(self.batch_size*10)
 
-        if self.extract_windows_of > 0:
+        if self.seed_len > 0 and self.target_len > 0:
+            self.tf_data = self.tf_data.map(
+                functools.partial(self.__pp_get_windows_referenced),
+                num_parallel_calls=self.num_parallel_calls)
+        elif self.extract_windows_of > 0:
             self.tf_data = self.tf_data.map(functools.partial(self.__pp_get_windows_beginning),
                                             num_parallel_calls=self.num_parallel_calls)
 
     def tf_data_to_model(self):
-        # Converts the data into the format that a model expects. Creates input, target, sequence_length, etc.
+        # Converts the data into the format that a model expects.
+        # Creates input, target, sequence_length, etc.
         self.tf_data = self.tf_data.map(functools.partial(self.__to_model_inputs), num_parallel_calls=self.num_parallel_calls)
         self.tf_data = self.tf_data.padded_batch(self.batch_size, padded_shapes=self.tf_data.output_shapes)
         self.tf_data = self.tf_data.prefetch(2)
@@ -56,6 +65,14 @@ class SRNNTFRecordMotionDataset(TFRecordMotionDataset):
         sample["poses"] = sample["poses"][0:self.extract_windows_of, :]
         sample["shape"] = tf.shape(sample["poses"])
         sample["euler_targets"] = sample["euler_targets"][0:self.extract_windows_of, :]
+        sample["euler_shape"] = tf.shape(sample["euler_targets"])
+        return sample
+    
+    def __pp_get_windows_referenced(self, sample):
+        # Extract windows with respect to the reference step.
+        sample["poses"] = sample["poses"][self.ref-self.seed_len:self.ref+self.target_len, :]
+        sample["shape"] = tf.shape(sample["poses"])
+        sample["euler_targets"] = sample["euler_targets"][self.ref-self.seed_len:self.ref+self.target_len, :]
         sample["euler_shape"] = tf.shape(sample["euler_targets"])
         return sample
 
