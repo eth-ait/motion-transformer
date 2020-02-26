@@ -117,11 +117,12 @@ class RNN(BaseModel):
             outputs = session.run(output_feed)
             return outputs[0], outputs[1], outputs[2]
 
-    def sampled_step(self, session):
+    def sampled_step(self, session, prediction_steps=None):
         """
         Generates a synthetic sequence by feeding the prediction at t+1. First, we get the next sample from the dataset.
         Args:
           session: Tensorflow session object.
+          prediction_steps: Not used. It is for compatibility.
         Returns:
           Prediction with shape (batch_size, self.target_seq_len, feature_size), ground-truth targets, seed sequence and
           unique sample IDs.

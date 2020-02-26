@@ -21,9 +21,15 @@ class Transformer2d(BaseModel):
 
         self.window_len = config.get('transformer_window_length')#self.source_seq_len  # attention window length
 
-        # data
-        self.window_len = self.source_seq_len
-        self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
+        # Modified to handle variable-length sequences.
+        # If you want to checkout to
+        # commit 3b42d95f4d0c519a0531a792c04ef99d8800848e
+        
+        # self.window_len = self.source_seq_len
+        # self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
+        self.window_len = self.source_seq_len + self.target_seq_len - 1
+        self.prediction_targets = self.data_inputs
+        
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
         self.target_input = self.prediction_targets[:, :-1, :]
@@ -378,7 +384,9 @@ class Transformer2d(BaseModel):
         x = tf.concat(embed, axis=-1)
         x = tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], self.NUM_JOINTS, self.d_model])
         # add the positional encoding
-        x += self.pos_encoding
+        # x += self.pos_encoding
+        inp_seq_len = tf.shape(inputs)[2]
+        x += self.pos_encoding[:, :inp_seq_len]
 
         with tf.variable_scope("input_dropout", reuse=self.reuse):
             x = tf.layers.dropout(x, training=self.is_training, rate=self.dropout_rate)
@@ -388,6 +396,8 @@ class Transformer2d(BaseModel):
         attention_weights_temporal = []
         attention_weights_spatial = []
         attention_weights = {}
+        
+        look_ahead_mask = look_ahead_mask[:inp_seq_len, :inp_seq_len]
         for i in range(self.num_layers):
             x, block1, block2 = self.para_transformer_layer(x, look_ahead_mask, scope="transformer_layer_" + str(i))
             attention_weights_temporal += [block1]  # (batch_size, num_joints, num_heads, seq_len)
@@ -462,7 +472,8 @@ class Transformer2d(BaseModel):
             outputs = session.run(output_feed)
             return outputs[0], outputs[1], outputs[2]
 
-    def sampled_step(self, session):
+    def sampled_step(self, session, prediction_steps=None):
+        prediction_steps = prediction_steps or self.target_seq_len
         assert self.is_eval, "Only works in sampling mode."
         batch = session.run(self.data_placeholders)
         data_id = batch[C.BATCH_ID]
@@ -479,8 +490,8 @@ class Transformer2d(BaseModel):
         targets = data_sample[:, self.source_seq_len:, :]
         seed_sequence = data_sample[:, :self.source_seq_len, :]
         prediction, attentions = self.sample(session=session,
-                                 seed_sequence=seed_sequence,
-                                 prediction_steps=self.target_seq_len)
+                                             seed_sequence=seed_sequence,
+                                             prediction_steps=prediction_steps)
         return prediction, targets, seed_sequence, data_id, attentions
 
     def sample(self, session, seed_sequence, prediction_steps, **kwargs):
@@ -500,6 +511,7 @@ class Transformer2d(BaseModel):
             predictions.append(prediction)
             attentions += [attention]
             input_sequence = np.concatenate([input_sequence, predictions[-1]], axis=1)
-            input_sequence = input_sequence[:, 1:, :]
+            # input_sequence = input_sequence[:, 1:, :]
+            input_sequence = input_sequence[:, -self.window_len:]
 
         return np.concatenate(predictions, axis=1), attentions

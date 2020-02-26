@@ -36,6 +36,10 @@ class Transformer2d(BaseModel):
             self.sequence_length = self.source_seq_len + self.target_seq_len - 1
         else:
             self.sequence_length = self.source_seq_len
+        
+        self.loss_seq_len = config.get('loss_seq_len', 0)
+        if self.loss_seq_len == 0:
+            self.loss_seq_len = self.sequence_length
             
         self.target_input = self.data_inputs[:, :-1, :]
         self.target_real = self.data_inputs[:, 1:, :]
@@ -98,6 +102,9 @@ class Transformer2d(BaseModel):
             config['residual_attention_block'] = args.residual_attention_block
             config['random_window_min'] = args.random_window_min
             config['temporal_mask_drop'] = args.temporal_mask_drop
+            
+            config['random_noise_ratio'] = args.random_noise_ratio
+            config['loss_seq_len'] = args.loss_seq_len
         else:
             config = from_config
 
@@ -196,7 +203,7 @@ class Transformer2d(BaseModel):
         '''
         ahead_mask = 1 - tf.linalg.band_part(tf.ones((self.sequence_length, self.sequence_length)), -1, 0)
 
-        if self.random_window_min > 0:  # and self.is_training:
+        if self.random_window_min > 0 and self.is_training:
             random_win_len = tf.random.uniform([self.sequence_length], self.random_window_min, self.window_len, dtype=tf.int32)
             window_mask_padding = tf.maximum(0, tf.range(1, self.sequence_length + 1) - random_win_len)
         else:
@@ -557,6 +564,11 @@ class Transformer2d(BaseModel):
         seq_len = shape[1]
         target_input = self.target_input
         target_input = tf.reshape(target_input, [batch_siz, seq_len, self.NUM_JOINTS, self.JOINT_SIZE])
+
+        rand_noise = self.config.get("random_noise_ratio", 0)
+        if rand_noise > 0:
+            target_input += tf.random.uniform(tf.shape(target_input), minval=-rand_noise, maxval=rand_noise)
+        
         outputs, attn_weights = self.transformer(target_input, self.look_ahead_mask)
         outputs = tf.reshape(outputs, [batch_siz, seq_len, self.HUMAN_SIZE])
         if self.residual_velocity:
@@ -566,9 +578,10 @@ class Transformer2d(BaseModel):
         return outputs
 
     def build_loss(self):
-        predictions_pose = self.outputs
-        targets_pose = self.target_real
-        seq_len = self.sequence_length
+        predictions_pose = self.outputs[:, :self.loss_seq_len]
+        targets_pose = self.target_real[:, :self.loss_seq_len]
+        # seq_len = self.sequence_length
+        seq_len = self.loss_seq_len
 
         with tf.name_scope("loss_angles"):
             diff = targets_pose - predictions_pose
