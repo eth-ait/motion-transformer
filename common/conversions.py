@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import numpy as np
 import quaternion
 import cv2
+import tensorflow as tf
 
 
 def rad2deg(v):
@@ -280,3 +281,41 @@ def local_rot_to_global(joint_angles, parents, rep="rotmat", left_mult=False):
             rm = parent_rot if left_mult else local_rot
             out[..., j, :, :] = np.matmul(lm, rm)
     return out
+
+
+# batch*n
+def normalize_vector(v, return_mag=False):
+    batch = tf.shape(v)[0]
+    v_mag = tf.sqrt(tf.reduce_sum(tf.pow(v, 2), axis=-1))  # batch
+    v_mag = tf.maximum(v_mag, 1e-6)
+    v_mag = tf.reshape(v_mag, (batch, 1))
+    v_mag = tf.tile(v_mag, (1, tf.shape(v)[1]))
+    v = v/v_mag
+    if (return_mag == True):
+        return v, v_mag[:, 0]
+    else:
+        return v
+
+
+# u, v batch*n
+def cross_product(u, v):
+    i = tf.expand_dims(u[:, 1]*v[:, 2] - u[:, 2]*v[:, 1], axis=-1)
+    j = tf.expand_dims(u[:, 2]*v[:, 0] - u[:, 0]*v[:, 2], axis=-1)
+    k = tf.expand_dims(u[:, 0]*v[:, 1] - u[:, 1]*v[:, 0], axis=-1)
+    out = tf.concat([i, j, k], axis=1)  # batch*3
+    return out
+
+
+def compute_rotation_matrix_from_ortho6d(ortho6d):
+    x_raw = ortho6d[:, 0:3]  # batch*3
+    y_raw = ortho6d[:, 3:6]  # batch*3
+    
+    x = normalize_vector(x_raw)  # batch*3
+    z = cross_product(x, y_raw)  # batch*3
+    z = normalize_vector(z)  # batch*3
+    y = cross_product(z, x)  # batch*3
+    
+    matrix = tf.concat([tf.expand_dims(x, axis=-1),
+                        tf.expand_dims(y, axis=-1),
+                        tf.expand_dims(z, axis=-1)], axis=-1)  # batch*3*3
+    return matrix

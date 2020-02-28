@@ -3,6 +3,7 @@ import tensorflow as tf
 import spl.util.tf_utils as model_utils
 from spl.model.base_model import BaseModel
 from common.constants import Constants as C
+from common.conversions import compute_rotation_matrix_from_ortho6d
 
 
 # The two dimensional Transformer
@@ -19,7 +20,8 @@ class Transformer2d(BaseModel):
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
-        self.window_len = config.get('transformer_window_length')#self.source_seq_len  # attention window length
+        self.window_len = config.get('transformer_window_length')  #self.source_seq_len  # attention window length
+        self.use_6d_outputs = config.get('use_6d_outputs', False)
 
         # Modified to handle variable-length sequences.
         # If you want to checkout to
@@ -28,12 +30,13 @@ class Transformer2d(BaseModel):
         # self.window_len = self.source_seq_len
         # self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
         self.window_len = self.source_seq_len + self.target_seq_len - 1
-        self.prediction_targets = self.data_inputs
         
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
-        self.target_input = self.prediction_targets[:, :-1, :]
-        self.target_real = self.prediction_targets[:, 1:, :]
+        # self.data_input and self.data_targets are aligned, but there might be
+        # differences between them in terms of preprocessing or representation.
+        self.target_input = self.data_inputs[:, :-1, :]
+        self.target_real = self.data_targets[:, 1:, :]
 
     @classmethod
     def get_model_config(cls, args, from_config=None):
@@ -409,15 +412,37 @@ class Transformer2d(BaseModel):
 
         # decode each feature to the rotation matrix space
         # different joints have different decoding matrices
-        x = tf.transpose(x, [2, 0, 1, 3])  # (num_joints, batch_size, seq_len, joint_size)
-        output = []
-        for joint_idx in range(self.NUM_JOINTS):
-            with tf.variable_scope("final_output_" + str(joint_idx), reuse=self.reuse):
-                joint_output = tf.layers.dense(x[joint_idx], self.JOINT_SIZE)
-                output += [joint_output]
-        final_output = tf.concat(output, axis=-1)
-        final_output = tf.reshape(final_output, [tf.shape(final_output)[0], tf.shape(final_output)[1],
-                                                 self.NUM_JOINTS, self.JOINT_SIZE])
+        if not self.use_6d_outputs:
+            # (num_joints, batch_size, seq_len, joint_size)
+            x = tf.transpose(x, [2, 0, 1, 3])
+            output = []
+            for joint_idx in range(self.NUM_JOINTS):
+                with tf.variable_scope("final_output_" + str(joint_idx), reuse=self.reuse):
+                    joint_output = tf.layers.dense(x[joint_idx], self.JOINT_SIZE)
+                    output += [joint_output]
+    
+            final_output = tf.concat(output, axis=-1)
+            final_output = tf.reshape(final_output, [tf.shape(final_output)[0],
+                                                     tf.shape(final_output)[1],
+                                                     self.NUM_JOINTS,
+                                                     self.JOINT_SIZE])
+        else:
+            # (num_joints, batch_size, seq_len, joint_size)
+            x = tf.transpose(x, [2, 0, 1, 3])
+            output = []
+            for joint_idx in range(self.NUM_JOINTS):
+                with tf.variable_scope("final_output_" + str(joint_idx), reuse=self.reuse):
+                    joint_output = tf.layers.dense(x[joint_idx], 6)
+                    output += [joint_output]
+            
+            n_joints = tf.shape(x)[0]
+            batch_size = tf.shape(x)[1]
+            seq_len = tf.shape(x)[2]
+
+            orto6d = tf.concat(output, axis=-1)
+            orto6d = tf.reshape(orto6d, [-1, 6])
+            rot_mat = compute_rotation_matrix_from_ortho6d(orto6d)
+            final_output = tf.reshape(rot_mat, [batch_size, seq_len, n_joints, 9])
 
         return final_output, attention_weights
 
@@ -450,6 +475,19 @@ class Transformer2d(BaseModel):
                 per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 per_joint_loss = tf.reduce_mean(per_joint_loss)
                 loss_ = per_joint_loss
+                
+            elif self.loss_type == C.LOSS_GEODESIC:
+                target_angles = tf.reshape(targets_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                predicted_angles = tf.reshape(predictions_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                m = tf.matmul(target_angles, predicted_angles, transpose_b=True)
+                cos = (m[:,:,:, 0,0] + m[:,:,:, 1,1] + m[:,:,:, 2,2] - 1) / 2
+                cos = tf.minimum(cos, tf.ones_like(cos))
+                cos = tf.maximum(cos, -1*tf.ones_like(cos))
+                theta = tf.acos(cos)
+
+                per_joint_loss = tf.reduce_sum(theta, axis=-1)
+                per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
+                loss_ = tf.reduce_mean(per_joint_loss)
             else:
                 raise Exception("Unknown angle loss.")
 

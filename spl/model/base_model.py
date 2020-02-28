@@ -169,6 +169,19 @@ class BaseModel(object):
                 per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 per_joint_loss = tf.reduce_mean(per_joint_loss)
                 loss_ = per_joint_loss
+            
+            elif self.loss_type == C.LOSS_GEODESIC:
+                target_angles = tf.reshape(target_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                predicted_angles = tf.reshape(predicted_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                m = tf.matmul(target_angles, predicted_angles, transpose_b=True)
+                cos = (m[:,:,:, 0,0] + m[:,:,:, 1,1] + m[:,:,:, 2,2] - 1) / 2
+                cos = tf.minimum(cos, tf.ones_like(cos))
+                cos = tf.maximum(cos, -1*tf.ones_like(cos))
+                theta = tf.acos(cos)
+
+                per_joint_loss = tf.reduce_sum(theta, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                loss_ = per_joint_loss
             else:
                 raise Exception("Unknown loss.")
             return loss_

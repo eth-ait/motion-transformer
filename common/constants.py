@@ -83,6 +83,7 @@ class Constants(object):
 
     LOSS_POSE_ALL_MEAN = "all_mean"
     LOSS_POSE_JOINT_SUM = "joint_sum"
+    LOSS_GEODESIC = "geodesic"
 
     LOSS_ACTION_CENT = "cross_entropy"
     LOSS_ACTION_L2 = "l2"
