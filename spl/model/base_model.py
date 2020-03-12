@@ -79,6 +79,7 @@ class BaseModel(object):
         self.use_quat = config['data_type'] == C.QUATERNION
         self.use_aa = config['data_type'] == C.ANGLE_AXIS
         self.use_rotmat = config['data_type'] == C.ROT_MATRIX
+        self.use_euler = config['data_type'] == C.EULER_ANGLE
         self.use_h36m = config.get("use_h36m", False)
         
         # Architecture.
@@ -100,7 +101,7 @@ class BaseModel(object):
         self.summary_update = None  # Summary op to write summaries. Set by `summary_routines`.
         
         # Hard-coded parameters.
-        self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa else 9
+        self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa or self.use_euler else 9
         self.NUM_JOINTS = 21 if self.use_h36m else 15
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE
@@ -285,6 +286,7 @@ class BaseModel(object):
             config['use_h36m'] = args.use_h36m
     
             config['no_normalization'] = args.no_normalization
+            config['normalization_dim'] = args.normalization_dim
             config['batch_size'] = args.batch_size
             config['source_seq_len'] = args.source_seq_len
             config['target_seq_len'] = args.target_seq_len
@@ -322,6 +324,12 @@ class BaseModel(object):
             config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
             config['transformer_warm_up_steps'] = args.warm_up_steps
             config['transformer_window_length'] = args.transformer_window_length
+
+            config['abs_pos_encoding'] = args.abs_pos_encoding
+            config['temp_abs_pos_encoding'] = args.temp_abs_pos_encoding
+            config['temp_rel_pos_encoding'] = args.temp_rel_pos_encoding
+            config['shared_templ_kv'] = args.shared_templ_kv
+            config['max_relative_position'] = args.max_relative_position
 
         else:
             config = from_config

@@ -38,6 +38,19 @@ class Transformer2d(BaseModel):
         self.target_input = self.data_inputs[:, :-1, :]
         self.target_real = self.data_targets[:, 1:, :]
 
+        self.abs_pos_encoding = config.get('abs_pos_encoding', True)
+        self.temp_abs_pos_encoding = config.get('temp_abs_pos_encoding', False)
+        self.temp_rel_pos_encoding = config.get('temp_rel_pos_encoding', False)
+        self.shared_templ_kv = config.get('shared_templ_kv', False)
+        
+        self.max_relative_position = config.get('max_relative_position', 50)
+        if self.temp_rel_pos_encoding:
+            rel_emb_size = self.d_model // self.num_heads_temporal
+            with tf.variable_scope("relative_embeddings", reuse=self.reuse):
+                vocab_size = self.max_relative_position*2 + 1
+                self.key_embedding_table = tf.get_variable("key_embeddings", [vocab_size, rel_emb_size])
+                self.value_embedding_table = tf.get_variable("value_embeddings", [vocab_size, rel_emb_size])
+
     @classmethod
     def get_model_config(cls, args, from_config=None):
         """Given command-line arguments, creates the configuration dictionary.
@@ -77,7 +90,10 @@ class Transformer2d(BaseModel):
         return tf.math.rsqrt(d_model) * tf.math.minimum(arg1, arg2)
 
     def optimization_routines(self):
-        """Creates and optimizer, applies gradient regularizations and sets the parameter_update operation."""
+        """
+        Creates and optimizer, applies gradient regularization and sets the
+        parameter_update operation.
+        """
         global_step = tf.train.get_global_step(graph=None)
         if self.lr_type == 1:
             learning_rate = self._learning_rate_scheduler(global_step)
@@ -108,7 +124,33 @@ class Transformer2d(BaseModel):
                                                               global_step=global_step)
 
     @staticmethod
-    def scaled_dot_product_attention(q, k, v, mask):
+    def generate_relative_positions_matrix(length_q, length_k, max_relative_position):
+        """
+        Generates matrix of relative positions between inputs.
+        Return a relative index matrix of shape [length_q, length_k]
+        """
+        range_vec_k = tf.range(length_k)
+        range_vec_q = range_vec_k[-length_q:]
+        distance_mat = range_vec_k[None, :] - range_vec_q[:, None]
+        distance_mat_clipped = tf.clip_by_value(distance_mat,
+                                                -max_relative_position,
+                                                max_relative_position)
+        # Shift values to be >= 0. Each integer still uniquely identifies a
+        # relative position difference.
+        final_mat = distance_mat_clipped + max_relative_position
+        return final_mat
+    
+    def get_relative_embeddings(self, length_q, length_k):
+        """
+        Generates tensor of size [1 if cache else length_q, length_k, depth].
+        """
+        relative_positions_matrix = self.generate_relative_positions_matrix(length_q, length_k, self.max_relative_position)
+        key_emb = tf.gather(self.key_embedding_table, relative_positions_matrix)
+        val_emb = tf.gather(self.value_embedding_table, relative_positions_matrix)
+        return key_emb, val_emb
+    
+    @staticmethod
+    def scaled_dot_product_attention(q, k, v, mask, is_training=True, rel_key_emb=None, rel_val_emb=None):
         # attn_dim: num_joints for spatial and seq_len for temporal
         '''
         The scaled dot product attention mechanism introduced in the Transformer
@@ -121,6 +163,18 @@ class Transformer2d(BaseModel):
 
         matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., num_heads, attn_dim, attn_dim)
 
+        batch_size = tf.shape(q)[0]
+        heads = tf.shape(q)[1]
+        length = tf.shape(q)[2]
+        
+        if rel_key_emb is not None:
+            q_t = tf.transpose(q, [2, 0, 1, 3])
+            q_t_r = tf.reshape(q_t, [length, heads*batch_size, -1])
+            q_tz_matmul = tf.matmul(q_t_r, rel_key_emb, transpose_b=True)
+            q_tz_matmul_r = tf.reshape(q_tz_matmul, [length, batch_size, heads, -1])
+            q_tz_matmul_r_t = tf.transpose(q_tz_matmul_r, [1, 2, 0, 3])
+            matmul_qk += q_tz_matmul_r_t
+
         # scale matmul_qk
         dk = tf.cast(tf.shape(k)[-1], tf.float32)
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
@@ -132,7 +186,16 @@ class Transformer2d(BaseModel):
         # normalized on the last axis (seq_len_k) so that the scores add up to 1.
         attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)  # (..., num_heads, attn_dim, attn_dim)
 
+        # attention_weights = tf.layers.dropout(attention_weights, training=is_training, rate=0.2)
         output = tf.matmul(attention_weights, v)  # (..., num_heads, attn_dim, depth)
+        
+        if rel_val_emb is not None:
+            w_t = tf.transpose(attention_weights, [2, 0, 1, 3])
+            w_t_r = tf.reshape(w_t, [length, heads*batch_size, -1])
+            w_tz_matmul = tf.matmul(w_t_r, rel_val_emb, transpose_b=False)
+            w_tz_matmul_r = tf.reshape(w_tz_matmul, [length, batch_size, heads, -1])
+            w_tz_matmul_r_t = tf.transpose(w_tz_matmul_r, [1, 2, 0, 3])
+            output += w_tz_matmul_r_t
 
         return output, attention_weights
 
@@ -193,11 +256,26 @@ class Transformer2d(BaseModel):
         :param scope: the name of the scope
         :return: the output (batch_size, seq_len, num_joints, d_model)
         '''
+        
+        if self.temp_abs_pos_encoding:
+            inp_seq_len = tf.shape(x)[1]
+            x += self.pos_encoding[:, :inp_seq_len]
+        
         outputs = []
         attn_weights = []
         batch_size = tf.shape(x)[0]
         seq_len = tf.shape(x)[1]
         x = tf.transpose(x, perm=[2, 0, 1, 3])  # (num_joints, batch_size, seq_len, d_model)
+        
+        if self.shared_templ_kv:
+            with tf.variable_scope(scope + '_key', reuse=self.reuse):
+                k_all = tf.layers.dense(x, self.d_model)  # (batch_size, seq_len, d_model)
+            with tf.variable_scope(scope + '_value', reuse=self.reuse):
+                v_all = tf.layers.dense(x, self.d_model)  # (batch_size, seq_len, d_model)
+
+        rel_key_emb, rel_val_emb = None, None
+        if self.temp_rel_pos_encoding:
+            rel_key_emb, rel_val_emb = self.get_relative_embeddings(seq_len, seq_len)
 
         # different joints have different embedding matrices
         for joint_idx in range(self.NUM_JOINTS):
@@ -211,10 +289,14 @@ class Transformer2d(BaseModel):
                 # embed it to query, key and value vectors
                 with tf.variable_scope('_query', reuse=self.reuse):
                     q = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope('_key', reuse=self.reuse):
-                    k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                with tf.variable_scope('_value', reuse=self.reuse):
-                    v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+                if self.shared_templ_kv:
+                    v = v_all[joint_idx]
+                    k = k_all[joint_idx]
+                else:
+                    with tf.variable_scope('_key', reuse=self.reuse):
+                        k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
+                    with tf.variable_scope('_value', reuse=self.reuse):
+                        v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
 
                 # split it to several attention heads
                 q = self.sep_split_heads(q, batch_size, seq_len, self.num_heads_temporal)
@@ -224,7 +306,7 @@ class Transformer2d(BaseModel):
                 v = self.sep_split_heads(v, batch_size, seq_len, self.num_heads_temporal)
                 # (batch_size, num_heads, seq_len, depth)
                 # calculate the updated encoding by scaled dot product attention
-                scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask)
+                scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask, self.is_training, rel_key_emb, rel_val_emb)
                 # (batch_size, num_heads, seq_len, depth)
                 scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])
                 # (batch_size, seq_len, num_heads, depth)
@@ -299,7 +381,7 @@ class Transformer2d(BaseModel):
         # (batch_size, seq_len, num_heads, num_joints, depth)
 
         # calculate the updated encoding by scaled dot product attention
-        scaled_attention, attention_weights = self.scaled_dot_product_attention(q_joints, k, v, mask)
+        scaled_attention, attention_weights = self.scaled_dot_product_attention(q_joints, k, v, mask, self.is_training)
         # (batch_size, seq_len, num_heads, num_joints, depth)
         # concatenate the outputs from different heads
         scaled_attention = tf.transpose(scaled_attention, perm=[0, 1, 3, 2, 4])
@@ -388,9 +470,11 @@ class Transformer2d(BaseModel):
         x = tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], self.NUM_JOINTS, self.d_model])
         # add the positional encoding
         # x += self.pos_encoding
+        
         inp_seq_len = tf.shape(inputs)[2]
-        x += self.pos_encoding[:, :inp_seq_len]
-
+        if self.abs_pos_encoding:
+            x += self.pos_encoding[:, :inp_seq_len]
+        
         with tf.variable_scope("input_dropout", reuse=self.reuse):
             x = tf.layers.dropout(x, training=self.is_training, rate=self.dropout_rate)
 
