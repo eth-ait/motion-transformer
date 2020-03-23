@@ -39,6 +39,7 @@ from common.conversions import get_closest_rotmat, sparse_to_full, is_valid_rotm
 from metrics.distribution_metrics import power_spectrum
 from metrics.distribution_metrics import ps_entropy
 from metrics.distribution_metrics import ps_kld
+from metrics.distribution_metrics import compute_npss
 
 import seaborn as sn
 import pandas as pd
@@ -46,6 +47,11 @@ from metrics.motion_metrics import MetricsEngine
 import matplotlib.pyplot as plt
 
 plt.switch_backend('agg')
+
+
+AMASS_SIZE = 135
+AMASS_N_JOINTS = 15
+AMASS_SEED_LEN = 120
 
 
 sample_keys_amass = [
@@ -57,7 +63,7 @@ sample_keys_amass = [
     "Eyes/0/Eyes/kudowalk_SB2_07_SB2_moonwalk_SB2_kudo_dynamics",
     "BioMotion/0/BioMotion/rub0390000_treadmill_norm_dynamics",
     "BioMotion/0/BioMotion/rub0680000_treadmill_norm_dynamics",
-    "BioMotion/0/BioMotion/rub0420028_scamper_dynamics"
+    "BioMotion/0/BioMotion/rub0420028_scamper_dynamics",
     "Eyes/0/Eyes/hamashogesture_etc_SB2_20_SB2_swing_SB_chair_SB2_hamasho_dynamics",
     "HDM05/0/HDM05/bdHDM_bd_03_SB2_02_02_120_dynamics",
     "Eyes/0/Eyes/shionojump_SB2_10_SB2_rope_SB_long_SB2_shiono_dynamics",
@@ -97,15 +103,6 @@ sample_keys_amass = [
     "BioMotion/0/BioMotion/rub0640003_treadmill_jog_dynamics",
     ]
 
-
-sample_keys_h36m = [
-        "h36/0/S9_walkingd",
-        "h36/0/S7_discussi",
-        "h36/0/S9_smoki",
-        "h36/0/S6_walkingd",
-        "h36/0/S11_sitti",
-        "h36/0/S11_walkingtogeth"
-        ]
 
 try:
     from common.logger import GoogleSheetLogger
@@ -148,6 +145,24 @@ def get_model_cls(model_type):
         raise Exception("Unknown model type.")
 
 
+def create_training_data(data_dir, config, seq_len):
+    train_data_path = os.path.join(data_dir, config["data_type"], "training",
+                                   "amass-?????-of-?????")
+    meta_data_path = os.path.join(data_dir, config["data_type"], "training",
+                                  "stats.npz")
+    # Create dataset.
+    with tf.name_scope("training_data"):
+        train_data = TFRecordMotionDataset(data_path=train_data_path,
+                                           meta_data_path=meta_data_path,
+                                           batch_size=config["batch_size"],
+                                           shuffle=False,
+                                           extract_windows_of=seq_len,
+                                           window_type=C.DATA_WINDOW_RANDOM,
+                                           num_parallel_calls=2,
+                                           normalize=False)
+        return train_data
+
+
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split, mode):
     model_cls = get_model_cls(config["model_type"])
 
@@ -174,16 +189,17 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
     print("Loading test data from " + test_data_path)
     
     # Create dataset.
-    with tf.name_scope("training_data"):
-        window_length = config["source_seq_len"] // 2
-        train_data = TFRecordMotionDataset(data_path=train_data_path,
-                                           meta_data_path=meta_data_path,
-                                           batch_size=config["batch_size"],
-                                           shuffle=False,
-                                           extract_windows_of=window_length,
-                                           window_type=C.DATA_WINDOW_RANDOM,
-                                           num_parallel_calls=2,
-                                           normalize=False)
+    # with tf.name_scope("training_data"):
+    #     window_length = config["source_seq_len"] // 2
+    #     train_data = TFRecordMotionDataset(data_path=train_data_path,
+    #                                        meta_data_path=meta_data_path,
+    #                                        batch_size=config["batch_size"],
+    #                                        shuffle=False,
+    #                                        extract_windows_of=window_length,
+    #                                        window_type=C.DATA_WINDOW_RANDOM,
+    #                                        num_parallel_calls=2,
+    #                                        normalize=False)
+    train_data = None
     
     with tf.name_scope("test_data"):
         window_length = config["source_seq_len"] + config["target_seq_len"]
@@ -195,6 +211,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           window_type=window_type,
                                           num_parallel_calls=2,
                                           normalize=not config["no_normalization"],
+                                          normalization_dim=config.get("normalization_dim", "channel"),
                                           beginning_index=beginning_index,
                                           filter_by_key=filter_sample_keys,
                                           apply_length_filter=False)
@@ -291,13 +308,31 @@ def to_3d_pos(angles, fk_engine, dof=9, force_valid_rot=True, is_sparse=True):
     # make sure we don't consider the root orientation
     assert angles.shape[-1] == fk_engine.n_joints*dof
     angles[:, 0:9] = np.eye(3, 3).flatten()
-    return fk_engine.from_rotmat(angles)  # (-1, full_n_joints, 3)
+    pos = fk_engine.from_rotmat(angles)  # (-1, full_n_joints, 3)
+    pos = pos[..., [0, 2, 1]]
+    return pos
 
 
-def load_data_samples(session, dataset, n_samples=1):
-    all_samples = []
+def load_data_samples(session, data_dir, config, seq_len=120, n_samples=1):
+    # Create dataset
+    assert config["data_type"] == "rotmat"
+    train_data_path = os.path.join(data_dir, config["data_type"], "training",
+                                   "amass-?????-of-?????")
+    meta_data_path = os.path.join(data_dir, config["data_type"], "training",
+                                  "stats.npz")
+    with tf.name_scope("training_data"):
+        dataset = TFRecordMotionDataset(data_path=train_data_path,
+                                        meta_data_path=meta_data_path,
+                                        batch_size=config["batch_size"],
+                                        shuffle=False,
+                                        extract_windows_of=seq_len,
+                                        window_type=C.DATA_WINDOW_RANDOM,
+                                        num_parallel_calls=2,
+                                        normalize=False)
     data_pl = dataset.get_tf_samples()
     session.run(dataset.iterator.initializer)
+    
+    all_samples = []
     i = 0
     while i < n_samples:
         try:
@@ -308,18 +343,19 @@ def load_data_samples(session, dataset, n_samples=1):
         except tf.errors.OutOfRangeError:
             session.run(dataset.iterator.initializer)
     print("# samples: ", i)
-    
+
+    all_samples = np.vstack(all_samples)
+    all_samples = np.reshape(all_samples, [all_samples.shape[0], all_samples.shape[1], -1, 9])
     return all_samples
 
 
-def evaluate(session, test_model, test_data, args, eval_dir, use_h36m, train_data=None, mode="periodic"):
+def evaluate(session, test_model, test_data, args, eval_dir, mode="all_test"):
     test_iter = test_data.get_iterator()
 
     # Create metrics engine including summaries
     pck_thresholds = C.METRIC_PCK_THRESHS
     fk_engine = SMPLForwardKinematics()
     target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= test_model.target_seq_len]
-    sample_keys = sample_keys_amass
     
     representation = C.QUATERNION if test_model.use_quat else C.ANGLE_AXIS if test_model.use_aa else C.ROT_MATRIX
     metrics_engine = MetricsEngine(fk_engine,
@@ -331,134 +367,273 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m, train_dat
     metrics_engine.create_summaries()
     # reset computation of metrics
     metrics_engine.reset()
-
-    # Load training data.
-    print("Evaluating training set...")
-    train_batches = load_data_samples(session, train_data, n_samples=25000)
-    gt_train = []
-    for batch in train_batches:
-        for i in range(batch.shape[0]):
-            # Positions
-            gt_train.append(np.expand_dims(to_3d_pos(batch[i:i + 1], fk_engine), axis=0))
-            # # Joint angles
-            # gt_train.append(np.reshape(batch[i:i + 1], (1, 60, 135//9, 9)))
-    all_gt_train = np.transpose(np.concatenate(gt_train, axis=0), (0, 2, 1, 3))
     
     print("Evaluating test set...")
-    res_path = os.path.join(eval_dir, "eval_samples_preds_" + mode + ".npy")
-    if os.path.exists(res_path):
-        eval_result = np.load(res_path).tolist()
+    undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
+    test_metrics, eval_result, attention_weights = evaluate_model(session,
+                                                                  test_model,
+                                                                  test_iter,
+                                                                  metrics_engine,
+                                                                  undo_norm_fn,
+                                                                  _return_results=True)
+    np.save(os.path.join(eval_dir, "eval_samples_preds_" + mode), eval_result)
+    
+
+def split_into_chunks(tensor, split_len, chunk_id=None):
+    """
+    Args:
+        tensor: (batch_size, seq_len, ...)
+        split_len: chunk len
+        chunk_id: which chunk to return (0-based). None means all.
+    Returns:
+    """
+    seq_len_ = tensor.shape[1]
+    if split_len >= seq_len_:
+        return tensor
+    
+    chunks = []
+    for i in range(0, seq_len_ - split_len + 1, split_len):
+        chunks.append(tensor[:, i:i + split_len])
+    
+    if chunk_id is not None:
+        return chunks[chunk_id]
     else:
-    
-        undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
-        test_metrics, eval_result, attention_weights = evaluate_model(session,
-                                                                      test_model,
-                                                                      test_iter,
-                                                                      metrics_engine,
-                                                                      undo_norm_fn,
-                                                                      _return_results=True)
-        np.save(os.path.join(eval_dir, "eval_samples_preds_" + mode), eval_result)
-    
-    predictions = []
-    gt_seeds = []
-    print("Converting rotations into positions...")
-    for sample in eval_result.values():
-        pred, target, seed = sample
-        # Positions
-        predictions.append(np.expand_dims(to_3d_pos(np.expand_dims(pred, axis=0), fk_engine), axis=0))
-        gt_seeds.append(np.expand_dims(to_3d_pos(np.expand_dims(seed, axis=0), fk_engine), axis=0))
-        # # Joint angles
-        # predictions.append(np.reshape(pred, (1, -1, 135//9, 9)))
-        # gt_seeds.append(np.reshape(seed, (1, -1, 135//9, 9)))
-        
-    all_pred = np.transpose(np.concatenate(predictions, axis=0), (0, 2, 1, 3))
-    all_gt_seed = np.transpose(np.concatenate(gt_seeds, axis=0), (0, 2, 1, 3))
-    
-    seq_len = all_gt_seed.shape[2]
-    all_gt_seed = np.concatenate([all_gt_seed[:, :, :(seq_len//2)], all_gt_seed[:, :, (seq_len//2):]], axis=0)
-    all_gt_test = all_gt_seed
+        return np.vstack(chunks)
 
-    ps_gt_test = power_spectrum(all_gt_test)
-    ps_gt_train = power_spectrum(all_gt_train)
 
+def calculate_dist_metrics(eval_samples, sample_keys, train_samples=None,
+                           to_pos=True, eval_seq_len=60):
+    print("Computing PS KLD and PS Entropy metrics...")
+    n_joints = AMASS_N_JOINTS
     results = dict()
-    ent_gt_train = ps_entropy(ps_gt_train)
-    results["entropy_gt_train"] = ent_gt_train.mean()
+    
+    if train_samples is not None:
+        n_train_samples = train_samples.shape[0]
+        print("# of training samples ", n_train_samples)
+        if to_pos:
+            fk_engine = SMPLForwardKinematics()
+            all_gt_train = to_3d_pos(np.reshape(train_samples, [n_train_samples, train_samples.shape[1], 135]), fk_engine)
+            all_gt_train = np.reshape(all_gt_train, [n_train_samples, -1, all_gt_train.shape[1], all_gt_train.shape[2]])
+        else:
+            all_gt_train = train_samples
+    
+        # Create chunks of length eval_seq_len.
+        all_gt_train = split_into_chunks(all_gt_train, eval_seq_len)
+        all_gt_train = np.transpose(all_gt_train, (0, 2, 1, 3))
+        ps_gt_train = power_spectrum(all_gt_train)
+        ent_gt_train = ps_entropy(ps_gt_train)
+        results["entropy_gt_train"] = ent_gt_train.mean()
+    
+    all_pred, all_gt_target, all_gt_seed = convert_eval_samples(eval_samples, sample_keys, to_pos, clip_to_min_len=False)
+    
+    # all_pred = split_into_chunks(all_pred, eval_seq_len, chunk_id=0)
+    # all_gt_target = split_into_chunks(all_gt_target, eval_seq_len, chunk_id=0)
+    all_gt_seed = split_into_chunks(all_gt_seed, eval_seq_len)
+    # Split existing targets into chunks of eval_seq_len (i.e., 1 second) to
+    # increase the number of motion samples in the test distribution.
+    all_gt_target_eval_len = split_into_chunks(all_gt_target, eval_seq_len, chunk_id=0)
+    all_gt_test = np.vstack([all_gt_seed, all_gt_target_eval_len])  # Using all test chunks.
+    
+    all_pred = np.transpose(all_pred, (0, 2, 1, 3))
+    all_gt_target = np.transpose(all_gt_target, (0, 2, 1, 3))
+    all_gt_test = np.transpose(all_gt_test, (0, 2, 1, 3))
+    
+    ps_gt_test = power_spectrum(all_gt_test)
     
     ent_gt_test = ps_entropy(ps_gt_test)
     results["entropy_gt_test"] = ent_gt_test.mean()
-
-    kld_train_test = ps_kld(ps_gt_train, ps_gt_test)
-    kld_test_train = ps_kld(ps_gt_test, ps_gt_train)
-    results["kld_train_test"] = kld_train_test.mean()
-    results["kld_test_train"] = kld_test_train.mean()
-
-    pred_len = all_pred.shape[2]
-    fps = 60
+    
+    if train_samples is not None:
+        kld_train_test = ps_kld(ps_gt_train, ps_gt_test)
+        kld_test_train = ps_kld(ps_gt_test, ps_gt_train)
+        results["kld_train_test"] = kld_train_test.mean()
+        results["kld_test_train"] = kld_test_train.mean()
+    
     results["entropy_prediction"] = list()
     results["kld_train_prediction"] = list()
     results["kld_prediction_train"] = list()
     results["kld_test_prediction"] = list()
     results["kld_prediction_test"] = list()
-    for sec, frame in enumerate(range(0, pred_len-fps+1, fps)):
-        ps_pred = power_spectrum(all_pred[:, :, frame:frame+fps])
-        assert ps_pred.shape[1] == fps, "Not a second!"
+    results["kld_prediction_target"] = list()
+    results["kld_target_prediction"] = list()
+    results["kld_test_target"] = list()
+    results["kld_target_test"] = list()
     
+    pred_len = all_pred.shape[2]
+    for sec, frame in enumerate(range(0, pred_len - eval_seq_len + 1, eval_seq_len)):
+        # Compare 1 second chunk of the predictions with 1 second real data.
+        ps_pred = power_spectrum(all_pred[:, :, frame:frame + eval_seq_len])
+        
         ent_pred = ps_entropy(ps_pred)
         results["entropy_prediction"].append(ent_pred.mean())
-
-        kld_pred_train = ps_kld(ps_pred, ps_gt_train)
-        results["kld_prediction_train"].append(kld_pred_train.mean())
         
-        kld_train_pred = ps_kld(ps_gt_train, ps_pred)
-        results["kld_train_prediction"].append(kld_train_pred.mean())
-
         kld_pred_test = ps_kld(ps_pred, ps_gt_test)
         results["kld_prediction_test"].append(kld_pred_test.mean())
-
+        
         kld_test_pred = ps_kld(ps_gt_test, ps_pred)
         results["kld_test_prediction"].append(kld_test_pred.mean())
-    
-    np.save(os.path.join(eval_dir, "dist_metrics_" + mode), results)
-    log_metrics(_args, _eval_dir, results, mode)
-    
 
-def log_metrics(args, eval_dir, results, mode, sheet_name=None):
+        if train_samples is not None:
+            kld_pred_train = ps_kld(ps_pred, ps_gt_train)
+            results["kld_prediction_train"].append(kld_pred_train.mean())
+    
+            kld_train_pred = ps_kld(ps_gt_train, ps_pred)
+            results["kld_train_prediction"].append(kld_train_pred.mean())
+
+        # If ground-truth targets are available, also make a direct comparison.
+        if all_gt_target.shape[2] >= frame + eval_seq_len:
+            ps_gt_target = power_spectrum(all_gt_target[:, :, frame:frame + eval_seq_len])
+            
+            kld_pred_target = ps_kld(ps_pred, ps_gt_target)
+            results["kld_prediction_target"].append(kld_pred_target.mean())
+            
+            kld_target_pred = ps_kld(ps_gt_target, ps_pred)
+            results["kld_target_prediction"].append(kld_target_pred.mean())
+            
+            kld_test_target = ps_kld(ps_gt_test, ps_gt_target)
+            results["kld_test_target"].append(kld_test_target.mean())
+            
+            kld_target_test = ps_kld(ps_gt_target, ps_gt_test)
+            results["kld_target_test"].append(kld_target_test.mean())
+    return results
+
+
+def convert_eval_samples(eval_samples, sample_keys, to_pos, clip_to_min_len=True):
+    """
+    
+    Args:
+        eval_samples: dict of (prediction, target, seed)
+        sample_keys:
+        to_pos:
+
+    Returns: (batch_size, seq_len, n_joints, feature_size)
+
+    """
+    all_predictions = []
+    all_targets = []
+    all_seeds = []
+    for key_ in sample_keys:
+        pred, target, seed = eval_samples[key_]
+        
+        all_predictions.append(np.expand_dims(pred, 0))
+        all_targets.append(np.expand_dims(target, 0))
+        all_seeds.append(np.expand_dims(seed, 0))
+
+    # Check if there are shorter targets.
+    target_lens = np.array([tt.shape[1] for tt in all_targets])
+    max_len = (target_lens.min()//60)*60
+
+    if clip_to_min_len:
+        all_predictions = np.vstack(all_predictions)[:, :max_len]
+    else:
+        all_predictions = np.vstack(all_predictions)
+      
+    all_targets = [sample[:, :max_len] for sample in all_targets]
+    all_targets = np.vstack(all_targets)
+    all_seeds = np.vstack(all_seeds)
+
+    assert all_predictions.shape[-1] == AMASS_SIZE
+    assert all_targets.shape[-1] == AMASS_SIZE
+    assert all_seeds.shape[-1] == AMASS_SIZE
+    assert all_targets.shape[0] == all_predictions.shape[0]
+    assert all_targets.shape[-1] == all_predictions.shape[-1]
+    joint_size = 9
+    batch_size = all_predictions.shape[0]
+    seed_len = all_seeds.shape[1]
+    pred_len = all_predictions.shape[1]
+    
+    if to_pos:
+        fk_engine = SMPLForwardKinematics()
+        all_predictions = to_3d_pos(all_predictions, fk_engine, dof=9, force_valid_rot=True, is_sparse=True)
+        all_targets = to_3d_pos(all_targets, fk_engine, dof=9, force_valid_rot=True, is_sparse=True)
+        all_seeds = to_3d_pos(all_seeds, fk_engine, dof=9, force_valid_rot=True, is_sparse=True)
+        joint_size = 3
+        # animate_matplotlib([pos_[0][:240], pos_tar[0][:240]], colors=[_colors[0], _colors[1]], titles=["pred", "tar"], fig_title="", parents=fk_engine.parents, out_dir="./", to_video=True, keep_frames=True, fname="amass")
+
+    all_predictions = np.reshape(all_predictions, [batch_size, pred_len, -1, joint_size])
+    all_targets = np.reshape(all_targets, [batch_size, max_len, -1, joint_size])
+    all_seeds = np.reshape(all_seeds, [batch_size, seed_len, -1, joint_size])
+      
+    return all_predictions, all_targets, all_seeds
+      
+
+def calculate_npss_metrics(eval_samples, sample_keys, to_pos=True):
+    print("Computing NPSS metric...")
+    results = dict()
+    all_predictions, all_targets, _ = convert_eval_samples(eval_samples, sample_keys, to_pos)
+
+    if to_pos:
+        all_predictions = np.reshape(all_predictions, [all_predictions.shape[0], all_predictions.shape[1], 72])
+        all_targets = np.reshape(all_targets, [all_predictions.shape[0], all_predictions.shape[1], 72])
+    else:
+        all_predictions = np.reshape(all_predictions, [all_predictions.shape[0], all_predictions.shape[1], AMASS_SIZE])
+        all_targets = np.reshape(all_targets, [all_predictions.shape[0], all_predictions.shape[1], AMASS_SIZE])
+    
+    fps = 60    
+    time_indices = [400, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]
+    for ms in time_indices:
+        sec = (ms / 1000.0)
+        idx = int(sec * fps)
+        if all_targets.shape[1] >= idx:
+            results["npss_" + str(int(sec))] = compute_npss(all_targets[:, :idx], all_predictions[:, :idx])
+          
+    return results
+      
+
+def log_metrics(args, results, exp_id, model_name, sheet_name=None):
     sheet_name = sheet_name or "dist_metrics_amass"
     glog_entry = dict()
     
-    print("GT Train Entropy: ", results["entropy_gt_train"])
-    glog_entry["entropy_gt_train"] = results["entropy_gt_train"]
+    # Log dist-based metrics.
+    if "entropy_gt_train" in results:
+        print("GT Train Entropy: ", results["entropy_gt_train"])
+        glog_entry["entropy_gt_train"] = results["entropy_gt_train"]
+    
+        print("GT Train -> GT Test KLD: ", results["kld_train_test"])
+        glog_entry["kld_train_test"] = results["kld_train_test"]
+        print("GT Test -> GT Train KLD: ", results["kld_test_train"])
+        glog_entry["kld_test_train"] = results["kld_test_train"]
+        glog_entry["kld_avg_train_test"] = (results["kld_test_train"] + results["kld_train_test"])/2
+    
+    if "entropy_prediction" in results:
+        print("GT Test Entropy: ", results["entropy_gt_test"])
+        glog_entry["entropy_gt_test"] = results["entropy_gt_test"]
+        
+        n_entries = len(results["entropy_prediction"])
+        for sec in range(n_entries):
+            i = str(sec + 1)
+            print("[{}] Prediction Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
+            glog_entry[i + "_entropy_pred"] = results["entropy_prediction"][sec]
+        
+            print("[{}] KLD Prediction -> GT Test: {}".format(sec + 1, results["kld_prediction_test"][sec]))
+            print("[{}] KLD GT Test -> Prediction: {}".format(sec + 1, results["kld_test_prediction"][sec]))
+            glog_entry[i + "_avg_kld_pred_test"] = (results["kld_prediction_test"][sec] + results["kld_test_prediction"][sec])/2
+            
+            if len(results["kld_prediction_target"]) > sec:
+                print("[{}] KLD Prediction -> GT Target: {}".format(sec + 1, results["kld_prediction_target"][sec]))
+                print("[{}] KLD GT Target -> Prediction: {}".format(sec + 1, results["kld_target_prediction"][sec]))
+                glog_entry[i + "_avg_kld_pred_target"] = (results["kld_prediction_target"][sec] + results["kld_target_prediction"][sec])/2
+                
+                print("[{}] KLD GT Test -> GT Target: {}".format(sec + 1, results["kld_test_target"][sec]))
+                print("[{}] KLD GT Target -> GT Test: {}".format(sec + 1, results["kld_target_test"][sec]))
+                glog_entry[i + "_avg_kld_target_test"] = (results["kld_test_target"][sec] + results["kld_target_test"][sec])/2
 
-    print("GT Test Entropy: ", results["entropy_gt_test"])
-    glog_entry["entropy_gt_test"] = results["entropy_gt_test"]
-
-    print("GT Train -> GT Test KLD: ", results["kld_train_test"])
-    glog_entry["kld_train_test"] = results["kld_train_test"]
-    print("GT Test -> GT Train KLD: ", results["kld_test_train"])
-    glog_entry["kld_test_train"] = results["kld_test_train"]
-    glog_entry["kld_avg_train_test"] = (results["kld_test_train"] + results["kld_train_test"])/2
+            # Check if training results available.
+            if "entropy_gt_train" in results:
+                print("[{}] KLD Prediction -> GT Train: {}".format(sec + 1, results["kld_prediction_train"][sec]))
+                print("[{}] KLD GT Train -> Prediction: {}".format(sec + 1, results["kld_train_prediction"][sec]))
+                glog_entry[i + "_avg_kld_pred_train"] = (results["kld_prediction_train"][sec] + results["kld_train_prediction"][sec]) / 2
+            print()
     
-    n_entries = len(results["entropy_prediction"])
-    for sec in range(n_entries):
-        i = str(sec + 1)
-        print("[{}] Prediction Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
-        glog_entry[i + "_entropy_pred"] = results["entropy_prediction"][sec]
-    
-        print("[{}] KLD Prediction -> GT Train: {}".format(sec + 1, results["kld_prediction_train"][sec]))
-        print("[{}] KLD GT Train -> Prediction: {}".format(sec + 1, results["kld_train_prediction"][sec]))
-        glog_entry[i + "_avg_kld_pred_train"] = (results["kld_prediction_train"][sec] + results["kld_train_prediction"][sec]) / 2
-    
-        print("[{}] KLD Prediction -> GT Test: {}".format(sec + 1, results["kld_prediction_test"][sec]))
-        print("[{}] KLD GT Test -> Prediction: {}".format(sec + 1, results["kld_test_prediction"][sec]))
-        glog_entry[i + "_avg_kld_pred_test"] = (results["kld_prediction_test"][sec] + results["kld_test_prediction"][sec])/2
-        print()
-    
+    # Log npss results.
+    for key_ in sorted(results.keys()):
+        if key_.startswith("npss_"):
+            glog_entry[key_] = results[key_]
+            print(key_, ": ", results[key_])
+        
     if args.glog_entry and GLOGGER_AVAILABLE:
-        exp_id = os.path.split(eval_dir)[-1].split("-")[0] + "-" + mode + "_joint_angle"
         glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
         gdrive_key = os.environ["GDRIVE_API_KEY"]
-        model_name = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
         static_values = dict()
         static_values["Model ID"] = exp_id
         static_values["Model Name"] = model_name
@@ -563,17 +738,62 @@ if __name__ == '__main__':
                 exp_name = os.path.split(_experiment_dir)[-1]
                 _eval_dir = _experiment_dir if _args.eval_dir is None else os.path.join(_args.eval_dir, exp_name)
 
-                mode = "all_test"
+                eval_seq_len = 60
+                mode = "all_test"  # "periodic" or "all_test"
                 saved_metrics_p = os.path.join(_eval_dir, "dist_metrics_{}.npy".format(mode))
+                saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_all_test.npy")
+                saved_training = os.path.join(_eval_dir, "amass_train_rotmat_{}.npy".format(eval_seq_len))
+
+                exp_id = os.path.split(_eval_dir)[-1].split("-")[0] + "-" + mode
+                model_name = '-'.join(os.path.split(_eval_dir)[-1].split('-')[1:])
+                
+                if not os.path.exists(saved_predictions) and not os.path.exists(saved_training):
+                    if not os.path.exists(_eval_dir):
+                        os.mkdir(_eval_dir)
+                    _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, _args.dynamic_test_split, mode)
+                    print("Evaluating Model " + str(model_id))
+                    evaluate(sess, _test_model, _test_data, _args, _eval_dir, _train_data, mode)
+
+                if not os.path.exists(saved_training):  # Load training data for dist. metrics.
+                    training_samples = load_data_samples(sess, _data_dir, _config, n_samples=20000, seq_len=eval_seq_len)
+                    np.save(os.path.join(_eval_dir, "amass_train_rotmat_" + str(eval_seq_len)), training_samples)
+                
+                if os.path.exists(saved_predictions):  # NPSS.
+                    _eval_samples = np.load(saved_predictions).tolist()
+
+                    if mode == "periodic":
+                        _sample_keys = list(sample_keys_amass)
+                    elif mode == "all_test":
+                        _sample_keys = list(_eval_samples.keys())
+                    else:
+                        raise Exception("Unknown mode.")
+
+                    npss_results = calculate_npss_metrics(_eval_samples, _sample_keys)
+                    log_metrics(_args, npss_results, exp_id, model_name)
+
+                if os.path.exists(saved_predictions):  # ps kld
+
+                    _eval_samples = np.load(saved_predictions).tolist()
+
+                    _train_samples = None
+                    if os.path.exists(saved_training):
+                        _train_samples = np.load(saved_training)
+
+                    if mode == "periodic":
+                        _sample_keys = list(sample_keys_amass)
+                    elif mode == "all_test":
+                        _sample_keys = list(_eval_samples.keys())
+                    else:
+                        raise Exception("Unknown mode.")
+
+                    dist_results = calculate_dist_metrics(_eval_samples, _sample_keys, train_samples=_train_samples, to_pos=True, eval_seq_len=eval_seq_len)
+                    np.save(os.path.join(_eval_dir, "dist_metrics_" + mode), dist_results)
+                    log_metrics(_args, dist_results, exp_id, model_name)
+                
                 # if os.path.exists(saved_metrics_p):
                 #     dist_metrics = np.load(saved_metrics_p).tolist()
                 #     log_metrics(_args, _eval_dir, dist_metrics, mode)
-                # else:
-                if not os.path.exists(_eval_dir):
-                    os.mkdir(_eval_dir)
-                _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, _args.dynamic_test_split, mode)
-                print("Evaluating Model " + str(model_id))
-                evaluate(sess, _test_model, _test_data, _args, _eval_dir, _config["use_h36m"], _train_data, mode)
+                
                 
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))

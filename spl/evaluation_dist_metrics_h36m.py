@@ -44,6 +44,7 @@ from visualization.render import animate_matplotlib
 from metrics.distribution_metrics import power_spectrum
 from metrics.distribution_metrics import ps_entropy
 from metrics.distribution_metrics import ps_kld
+from metrics.distribution_metrics import compute_npss
 
 import matplotlib.pyplot as plt
 plt.switch_backend('agg')
@@ -70,6 +71,15 @@ try:
 except ImportError:
     GLOGGER_AVAILABLE = False
     print("GLogger not available...")
+
+# The initial 3 values corresponding to the global translation is already
+# discarded.
+SRNN_SIZE = 96
+H36M_MAJOR_JOINTS = [0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 24, 25, 26, 27]
+SRNN_ZERO_DIMS = np.array([0,  1,  2,  7,  8, 13, 14, 15, 16, 17, 22, 23, 28,
+                           29, 30, 31, 32, 45, 46, 47, 55, 56, 60, 61, 62, 63,
+                           64, 65, 66, 67, 68, 69, 70, 71, 79, 80, 84, 85, 86,
+                           87, 88, 89, 90, 91, 92, 93, 94, 95])
 
 
 def load_latest_checkpoint(session, saver, experiment_dir):
@@ -100,10 +110,9 @@ def get_model_cls(model_type):
         raise Exception("Unknown model type.")
 
 
-def create_and_restore_model(session, experiment_dir, data_dir, config, mode):
+def create_and_restore_model(session, experiment_dir, data_dir, config, srnn_dir):
     model_cls = get_model_cls(config["model_type"])
 
-    srnn_dir = "srnn_poses_25fps"
     meta_data_path = os.path.join(data_dir, config["data_type"], "training", "stats.npz")
     srnn_path = os.path.join(data_dir, config["data_type"], srnn_dir, "amass-?????-of-?????")
     
@@ -115,7 +124,8 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, mode):
                                               seed_len=config["source_seq_len"],
                                               target_len=config["target_seq_len"],
                                               num_parallel_calls=2,
-                                              normalize=not config["no_normalization"])
+                                              normalize=not config["no_normalization"],
+                                              normalization_dim=config.get("normalization_dim", "channel"))
         
         srnn_pl = srnn_data.get_tf_samples()
     print("Loading test data from " + srnn_path)
@@ -287,6 +297,46 @@ def _evaluate_srnn_poses(session, _eval_model, _srnn_iter, _srnn_pl,
     return _euler_angle_metrics, _eval_result_euler, _eval_result
 
 
+def calculate_srnn_loss_given_samples(euler_samples):
+    _euler_angle_metrics = dict()
+    
+    # Sanity check
+    pred, targ, seed = euler_samples["0/walking"]
+    
+    assert pred.shape[-1] == SRNN_SIZE
+    assert targ.shape[-1] == SRNN_SIZE
+    assert (np.where(np.reshape(seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(targ, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    
+    for sample_id in euler_samples.keys():
+        _action = sample_id.split('/')[-1]
+        
+        _pred = euler_samples[sample_id][0]
+        _targ = euler_samples[sample_id][1]
+
+        # _pred[:, idx_to_ignore] = 0
+        # _targ[:, idx_to_ignore] = 0
+        
+        # compute euler loss like Martinez does it,
+        # but we don't have global translation
+        gt_i = np.copy(_targ)
+        gt_i[:, 0:3] = 0.0
+        _pred[:, 0:3] = 0.0
+        
+        # compute the error only on the joints that we use for training
+        idx_to_use = np.where(np.std(gt_i, 0) > 1e-4)[0]
+        
+        euc_error = np.power(gt_i[:, idx_to_use] - _pred[:, idx_to_use], 2)
+        euc_error = np.sum(euc_error, axis=1)
+        euc_error = np.sqrt(euc_error)  # (seq_length, )
+        if _action not in _euler_angle_metrics:
+            _euler_angle_metrics[_action] = [euc_error]
+        else:
+            _euler_angle_metrics[_action].append(euc_error)
+    return _euler_angle_metrics
+
+
 def to_3d_pos(angles, fk_engine, dof=9, force_valid_rot=True, is_sparse=True):
     n_joints = angles.shape[2] // dof
     assert n_joints*dof == angles.shape[-1], "unexpected number of joints"
@@ -330,10 +380,9 @@ def load_data_samples(session, dataset, n_samples=1):
     return np.vstack(all_samples)
 
 
-def log_euler_loss(euler_losses):
+def log_euler_loss(euler_losses, exp_id, model_name):
     log_data = dict()
     which_actions = ['walking', 'eating', 'discussion', 'smoking']
-    
     print("{:<10}".format(""), end="")
     for ms in [80, 160, 320, 400]:
         print("  {0:4d}  ".format(ms), end="")
@@ -370,6 +419,41 @@ def log_euler_loss(euler_losses):
             log_data[action[0] + "560"] = euler_mean[13]
             log_data[action[0] + "1000"] = euler_mean[24]
 
+    if GLOGGER_AVAILABLE:
+        which_actions = list(euler_losses.keys())
+        sheet_name = "h36m_detailed"
+        # exp_id = os.path.split(eval_dir)[-2].split("-")[0] + "-" + mode
+        glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
+        gdrive_key = os.environ["GDRIVE_API_KEY"]
+        # model_name = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
+        static_values = dict()
+        static_values["Model ID"] = exp_id
+        static_values["Model Name"] = model_name
+        credentials = tf.gfile.Open(gdrive_key, "r")
+
+        glogger = GoogleSheetLogger(
+            credentials,
+            glogger_workbook,
+            sheet_names=[sheet_name],
+            model_identifier=exp_id,
+            static_values=static_values)
+        
+        log_data = dict()
+        for action in which_actions:
+            # get the mean over all samples for that action
+            assert len(euler_losses[action]) == 8
+            euler_mean = np.mean(
+                np.stack(euler_losses[action]), axis=0)
+        
+            log_data[action + "80"] = euler_mean[1]
+            log_data[action + "160"] = euler_mean[3]
+            log_data[action + "320"] = euler_mean[7]
+            log_data[action + "400"] = euler_mean[9]
+            if euler_mean.shape[0] > 12:
+                log_data[action + "560"] = euler_mean[13]
+                log_data[action + "1000"] = euler_mean[24]
+        glogger.update_or_append_row(log_data)
+
 
 def evaluate(session, test_model, test_data, args, eval_dir, train_data=None, mode="periodic"):
     _srnn_iter = test_data.get_iterator()
@@ -377,28 +461,48 @@ def evaluate(session, test_model, test_data, args, eval_dir, train_data=None, mo
 
     # Create metrics engine including summaries
     fk_engine = H36MForwardKinematics()
-
-    # Load training data.
-    train_samples = load_data_samples(session, train_data, n_samples=20000)
-    train_samples = train_samples.astype(np.float32)
-    np.save(os.path.join(eval_dir, "h36m_train_rotmat"), train_samples)
-    train_samples_euler = rotmat_to_euler_padded(train_samples)
-    train_samples_euler= train_samples_euler.astype(np.float32)
-    np.save(os.path.join(eval_dir, "h36m_train_euler"), train_samples_euler)
     
     print("Evaluating test set...")
-    undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
+    undo_norm_fn = test_data.unnormalization_func
     euler_loss, eval_result_euler, eval_result = _evaluate_srnn_poses(session,
                                                                       test_model,
                                                                       _srnn_iter,
                                                                       _srnn_pl,
                                                                       undo_norm_fn)
 
-    log_euler_loss(euler_loss)
-    np.save(os.path.join(eval_dir, "srnn_test_preds_euler"), eval_result_euler)
-    np.save(os.path.join(eval_dir, "srnn_test_preds_rotmat"), eval_result)
+    # from visualization.render import Visualizer
+    # visualizer = Visualizer(interactive=False, fk_engine=fk_engine,
+    #                         rep="rotmat",
+    #                         output_dir=eval_dir,
+    #                         skeleton=True,
+    #                         dense=False,
+    #                         to_video=True)
+    # for i in range(8):
+    #     prediction, target, seed = eval_result["{}/walking".format(i)]
+    #     visualizer.visualize_results(seed, prediction, target,
+    #                                  title="walking" + "_i{}".format(i))
 
-    calculate_dist_metrics(eval_dir, train_samples, eval_result, rep="rotmat", fk_engine=fk_engine)
+    exp_id_ = os.path.split(eval_dir)[-1].split("-")[0] + "-" + mode
+    model_name_ = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
+    
+    log_euler_loss(euler_loss, exp_id_, model_name_)
+    
+    save_dir_ = os.path.join(eval_dir, mode)
+    if not os.path.exists(save_dir_):
+        os.mkdir(save_dir_)
+    np.save(os.path.join(save_dir_, "srnn_test_preds_euler"), eval_result_euler)
+    np.save(os.path.join(save_dir_, "srnn_test_preds_rotmat"), eval_result)
+    
+    # Load training data.
+    # train_samples = load_data_samples(session, train_data, n_samples=20000)
+    # train_samples = train_samples.astype(np.float32)
+    # np.save(os.path.join(save_dir_, "h36m_train_rotmat"), train_samples)
+    # train_samples_euler = rotmat_to_euler_padded(train_samples)
+    # train_samples_euler = train_samples_euler.astype(np.float32)
+    # np.save(os.path.join(save_dir_, "h36m_train_euler"), train_samples_euler)
+    # dist_results_ = calculate_dist_metrics(save_dir_, train_samples, eval_result, rep="rotmat", fk_engine=fk_engine)
+    # np.save(os.path.join(save_dir_, "dist_metrics_" + mode), dist_results_)
+    # log_metrics(_args, dist_results_, exp_id_, model_name_)
     
 
 def split_into_chunks(tensor, split_len, chunk_id=None):
@@ -424,6 +528,12 @@ def split_into_chunks(tensor, split_len, chunk_id=None):
     
 
 def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=25, rep="rotmat", fk_engine=None, actions=None):
+    selected_actions = ['walking', 'eating', 'discussion', 'smoking']
+    if not actions:
+        actions = set()
+        for key_ in eval_samples.keys():
+            actions.add(key_.split("/")[1])
+        
     if rep == "rotmat" and fk_engine is None:
         raise Exception("fk_engine is required for 3d pos conversion.")
     
@@ -447,12 +557,6 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     # Create chunks of length eval_seq_len.
     all_gt_train = split_into_chunks(all_gt_train, eval_seq_len)
     
-    # # Sanity check
-    # animate_matplotlib([all_gt_train[50]],
-    #                    colors=[_colors[0]], titles=[""], fig_title="",
-    #                    parents=fk_engine.parents, out_dir=eval_dir,
-    #                    to_video=True,
-    #                    keep_frames=True, fname="train_h36m")
     predictions = []
     targets = []
     gt_seeds = []
@@ -471,7 +575,7 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
         eval_pos_path = os.path.join(eval_dir, "srnn_test_preds_pos.npy")
         if not os.path.exists(eval_pos_path):
             np.save(os.path.join(eval_dir, "srnn_test_preds_pos"), pos_dict)
-    else:
+    elif rep is "pos" or rep is "euler":
         for key_, sample in eval_samples.items():
             pred, target, seed = sample
             if actions is None or key_.split("/")[1] in actions:
@@ -490,18 +594,23 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     all_gt_test = np.vstack([all_gt_seed, all_gt_target])  # Using all test chunks.
     
     # Sanity check.
-    print("Train shape: ", str(all_gt_train.shape))
-    print("Test shape: ", str(all_gt_test.shape))
-    print("Prediction shape: ", str(all_pred.shape))
-    print("Train 0 entries: ", np.where(np.reshape(all_gt_train, [-1, 96]).std(0) == 0)[0].shape[0])
-    print("Seed 0 entries: ", np.where(np.reshape(all_gt_seed, [-1, 96]).std(0) == 0)[0].shape[0])
-    print("Prediction 0 entries: ", np.where(np.reshape(all_pred, [-1, 96]).std(0) == 0)[0].shape[0])
-    print("Target 0 entries: ", np.where(np.reshape(all_gt_target, [-1, 96]).std(0) == 0)[0].shape[0])
+    assert all_gt_train.shape[-1]*all_gt_train.shape[-2] == SRNN_SIZE
+    assert all_gt_train.shape[1] == all_gt_test.shape[1]
+    assert all_pred.shape[1] == all_gt_test.shape[1]
+    assert (np.where(np.reshape(all_gt_train, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(all_gt_seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(all_pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(all_gt_target, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
 
     all_gt_train = np.transpose(all_gt_train, (0, 2, 1, 3))
     all_pred = np.transpose(all_pred, (0, 2, 1, 3))
     all_gt_target = np.transpose(all_gt_target, (0, 2, 1, 3))
     all_gt_test = np.transpose(all_gt_test, (0, 2, 1, 3))
+
+    # all_gt_train = all_gt_train[:, H36M_MAJOR_JOINTS]
+    # all_pred = all_pred[:, H36M_MAJOR_JOINTS]
+    # all_gt_target = all_gt_target[:, H36M_MAJOR_JOINTS]
+    # all_gt_test = all_gt_test[:, H36M_MAJOR_JOINTS]
     
     ps_gt_test = power_spectrum(all_gt_test)
     ps_gt_train = power_spectrum(all_gt_train)
@@ -559,56 +668,141 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     
         kld_target_test = ps_kld(ps_gt_target, ps_gt_test)
         results["kld_target_test"].append(kld_target_test.mean())
-    
-    # np.save(os.path.join(eval_dir, "dist_metrics_" + mode), results)
-    log_metrics(_args, _eval_dir, results, mode)
-    
+            
+    return results
 
-def log_metrics(args, eval_dir, results, mode, sheet_name=None):
+
+def calculate_npss_metrics(eval_samples, actions):
+    selected_actions = ['walking', 'eating', 'discussion', 'smoking']
+    if not actions:
+        actions = set()
+        for key_ in eval_samples.keys():
+            actions.add(key_.split("/")[1])
+    results = dict()
+    
+    # NPSS
+    predictions = dict()
+    targets = dict()
+    all_predictions = []
+    all_targets = []
+    main_targets = []
+    main_predictions = []
+    
+    for action in actions:
+        act_pred = []
+        act_targ = []
+        for i in range(8):
+            key_ = "{}/{}".format(i, action)
+            pred, target, _ = eval_samples[key_]
+            all_predictions.append(np.expand_dims(pred, 0))
+            all_targets.append(np.expand_dims(target, 0))
+            
+            act_pred.append(np.expand_dims(pred, 0))
+            act_targ.append(np.expand_dims(target, 0))
+        
+        predictions[action] = np.vstack(act_pred)
+        targets[action] = np.vstack(act_targ)
+    
+    all_predictions = np.vstack(all_predictions)
+    all_targets = np.vstack(all_targets)
+    
+    for action in selected_actions:
+        main_targets.append(targets[action])
+        main_predictions.append(predictions[action])
+    
+    main_targets = np.vstack(main_targets)
+    main_predictions = np.vstack(main_predictions)
+
+    assert main_targets.shape[-1] == SRNN_SIZE
+    assert main_predictions.shape[-1] == SRNN_SIZE
+    assert (np.where(np.reshape(main_targets, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    assert (np.where(np.reshape(main_predictions, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    
+    idx_400 = 10
+    idx_1000 = 25
+    
+    is_one_second = False
+    results["npss_all400"] = compute_npss(all_targets[:, :idx_400], all_predictions[:, :idx_400])
+    if all_targets.shape[1] >= idx_1000:
+        is_one_second = True
+        results["npss_all1000"] = compute_npss(all_targets[:, :idx_1000], all_predictions[:, :idx_1000])
+    
+    results["npss_main400"] = compute_npss(main_targets[:, :idx_400], main_predictions[:, :idx_400])
+    if is_one_second:
+        results["npss_main1000"] = compute_npss(main_targets[:, :idx_1000], main_predictions[:, :idx_1000])
+    
+    for action in actions:
+        results["npss_{}400".format(action)] = compute_npss(targets[action][:, :idx_400], predictions[action][:, :idx_400])
+        if is_one_second:
+            results["npss_{}1000".format(action)] = compute_npss(targets[action][:, :idx_1000], predictions[action][:, :idx_1000])
+    
+    return results
+
+
+def log_metrics(args, results, exp_id, model_name, actions=None, sheet_name=None):
     sheet_name = sheet_name or "dist_metrics_h36m"
     glog_entry = dict()
     
-    print("GT Train Entropy: ", results["entropy_gt_train"])
-    glog_entry["entropy_gt_train"] = results["entropy_gt_train"]
-
-    print("GT Test Entropy: ", results["entropy_gt_test"])
-    glog_entry["entropy_gt_test"] = results["entropy_gt_test"]
-
-    print("GT Train -> GT Test KLD: ", results["kld_train_test"])
-    glog_entry["kld_train_test"] = results["kld_train_test"]
-    print("GT Test -> GT Train KLD: ", results["kld_test_train"])
-    glog_entry["kld_test_train"] = results["kld_test_train"]
-    glog_entry["kld_avg_train_test"] = (results["kld_test_train"] + results["kld_train_test"])/2
+    # Log dist-based metrics.
+    if "entropy_gt_train" in results:
+        print("GT Train Entropy: ", results["entropy_gt_train"])
+        glog_entry["entropy_gt_train"] = results["entropy_gt_train"]
     
-    n_entries = len(results["entropy_prediction"])
-    for sec in range(n_entries):
-        i = str(sec + 1)
-        print("[{}] Prediction Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
-        glog_entry[i + "_entropy_pred"] = results["entropy_prediction"][sec]
+        print("GT Test Entropy: ", results["entropy_gt_test"])
+        glog_entry["entropy_gt_test"] = results["entropy_gt_test"]
     
-        print("[{}] KLD Prediction -> GT Train: {}".format(sec + 1, results["kld_prediction_train"][sec]))
-        print("[{}] KLD GT Train -> Prediction: {}".format(sec + 1, results["kld_train_prediction"][sec]))
-        glog_entry[i + "_avg_kld_pred_train"] = (results["kld_prediction_train"][sec] + results["kld_train_prediction"][sec]) / 2
-    
-        print("[{}] KLD Prediction -> GT Test: {}".format(sec + 1, results["kld_prediction_test"][sec]))
-        print("[{}] KLD GT Test -> Prediction: {}".format(sec + 1, results["kld_test_prediction"][sec]))
-        glog_entry[i + "_avg_kld_pred_test"] = (results["kld_prediction_test"][sec] + results["kld_test_prediction"][sec])/2
+        print("GT Train -> GT Test KLD: ", results["kld_train_test"])
+        glog_entry["kld_train_test"] = results["kld_train_test"]
+        print("GT Test -> GT Train KLD: ", results["kld_test_train"])
+        glog_entry["kld_test_train"] = results["kld_test_train"]
+        glog_entry["kld_avg_train_test"] = (results["kld_test_train"] + results["kld_train_test"])/2
         
-        print("[{}] KLD Prediction -> GT Target: {}".format(sec + 1, results["kld_prediction_target"][sec]))
-        print("[{}] KLD GT Target -> Prediction: {}".format(sec + 1, results["kld_target_prediction"][sec]))
-        glog_entry[i + "_avg_kld_pred_target"] = (results["kld_prediction_target"][sec] + results["kld_target_prediction"][sec])/2
+        n_entries = len(results["entropy_prediction"])
+        for sec in range(n_entries):
+            i = str(sec + 1)
+            print("[{}] Prediction Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
+            glog_entry[i + "_entropy_pred"] = results["entropy_prediction"][sec]
         
-        print("[{}] KLD GT Test -> GT Target: {}".format(sec + 1, results["kld_test_target"][sec]))
-        print("[{}] KLD GT Target -> GT Test: {}".format(sec + 1, results["kld_target_test"][sec]))
-        glog_entry[i + "_avg_kld_target_test"] = (results["kld_test_target"][sec] + results["kld_target_test"][sec])/2
+            print("[{}] KLD Prediction -> GT Train: {}".format(sec + 1, results["kld_prediction_train"][sec]))
+            print("[{}] KLD GT Train -> Prediction: {}".format(sec + 1, results["kld_train_prediction"][sec]))
+            glog_entry[i + "_avg_kld_pred_train"] = (results["kld_prediction_train"][sec] + results["kld_train_prediction"][sec]) / 2
         
-        print()
+            print("[{}] KLD Prediction -> GT Test: {}".format(sec + 1, results["kld_prediction_test"][sec]))
+            print("[{}] KLD GT Test -> Prediction: {}".format(sec + 1, results["kld_test_prediction"][sec]))
+            glog_entry[i + "_avg_kld_pred_test"] = (results["kld_prediction_test"][sec] + results["kld_test_prediction"][sec])/2
+            
+            print("[{}] KLD Prediction -> GT Target: {}".format(sec + 1, results["kld_prediction_target"][sec]))
+            print("[{}] KLD GT Target -> Prediction: {}".format(sec + 1, results["kld_target_prediction"][sec]))
+            glog_entry[i + "_avg_kld_pred_target"] = (results["kld_prediction_target"][sec] + results["kld_target_prediction"][sec])/2
+            
+            print("[{}] KLD GT Test -> GT Target: {}".format(sec + 1, results["kld_test_target"][sec]))
+            print("[{}] KLD GT Target -> GT Test: {}".format(sec + 1, results["kld_target_test"][sec]))
+            glog_entry[i + "_avg_kld_target_test"] = (results["kld_test_target"][sec] + results["kld_target_test"][sec])/2
+            print()
     
+    # Log npss results.
+    if "npss_all400" in results:
+        print("NPSS All 400ms: ", results["npss_all400"])
+        print("NPSS Main 400ms: ", results["npss_main400"])
+        glog_entry["npss_all400"] = results["npss_all400"]
+        glog_entry["npss_main400"] = results["npss_main400"]
+        
+        for action in actions:
+            key_ = "npss_{}400".format(action)
+            glog_entry[key_] = results[key_]
+        
+    if "npss_all1000" in results:
+        print("NPSS All 1000ms: ", results["npss_all1000"])
+        print("NPSS Main 1000ms: ", results["npss_main1000"])
+        glog_entry["npss_all1000"] = results["npss_all1000"]
+        glog_entry["npss_main1000"] = results["npss_main1000"]
+        for action in actions:
+            key_ = "npss_{}1000".format(action)
+            glog_entry[key_] = results[key_]
+        
     if args.glog_entry and GLOGGER_AVAILABLE:
-        exp_id = os.path.split(eval_dir)[-1].split("-")[0] + "-" + mode
         glogger_workbook = os.environ["GLOGGER_WORKBOOK_AMASS"]
         gdrive_key = os.environ["GDRIVE_API_KEY"]
-        model_name = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])
         static_values = dict()
         static_values["Model ID"] = exp_id
         static_values["Model Name"] = model_name
@@ -684,7 +878,7 @@ if __name__ == '__main__':
 
     # Set experiment directory.
     _save_dir = _args.save_dir if _args.save_dir else os.environ["AMASS_EXPERIMENTS"]
-    # Set data paths.
+    # # Set data paths.
     _data_dir = _args.data_dir if _args.data_dir else os.environ["AMASS_DATA"]
     _data_dir = os.path.join(_data_dir, '../h3.6m/tfrecords/')
 
@@ -714,27 +908,73 @@ if __name__ == '__main__':
                 exp_name = os.path.split(_experiment_dir)[-1]
                 _eval_dir = _experiment_dir if _args.eval_dir is None else os.path.join(_args.eval_dir, exp_name)
 
-                eval_len = 25
-                which_actions = ['walking', 'eating', 'discussion', 'smoking']
-                # which_actions = None
-                mode = "euler_ours_20k-{}_frames{}".format(eval_len, "-actions" if which_actions is not None else "")
-                saved_metrics_p = os.path.join(_eval_dir, "dist_metrics_{}.npy".format(mode))
-                saved_samples = os.path.join(_eval_dir, "h36m_train_euler.npy")
-                # saved_samples = os.path.join(_eval_dir, "dct_h36m_train_euler.npy")
-                if os.path.exists(saved_metrics_p):
-                    dist_metrics = np.load(saved_metrics_p).tolist()
-                    log_metrics(_args, _eval_dir, dist_metrics, mode)
-                elif os.path.exists(saved_samples):
-                    _train_samples = np.load(saved_samples)
-                    _eval_samples = np.load(os.path.join(_eval_dir, "srnn_test_preds_euler.npy")).tolist()
-                    fk_engine = H36MForwardKinematics()
-                    calculate_dist_metrics(_eval_dir, _train_samples, _eval_samples, rep="pos", fk_engine=fk_engine, eval_seq_len=eval_len, actions=which_actions)
-                else:
+                eval_len = 10
+                # which_actions = {'walking', 'eating', 'discussion', 'smoking'}
+                which_actions = None
+                
+                # mode = "seed123_euler_ours_20k-{}_frames{}".format(eval_len, "-actions" if which_actions is not None else "")
+                # srnn_dir = "srnn_poses_25fps_{}".format(mode)
+                # exp_id = os.path.split(_eval_dir)[-2].split("-")[0] + "-" + mode
+                # save_dir = os.path.join(_eval_dir, mode)
+                # saved_metrics_p = os.path.join(save_dir, "dist_metrics_{}.npy".format(mode))
+                
+                srnn_dir = "srnn_poses_25fps"
+                # exp_id = os.path.split(_eval_dir)[-1].split("-")[0]
+
+                mode = "euler_ours_20k-{}_frames{}_major_5fps_rerun".format(eval_len, "-actions" if which_actions is not None else "")
+                exp_id = os.path.split(_eval_dir)[-1].split("-")[0] + "-" + mode
+                model_name = '-'.join(os.path.split(_eval_dir)[-1].split('-')[1:])
+
+                save_dir = _eval_dir
+                saved_metrics_p = os.path.join(save_dir, "dist_metrics.npy")
+                saved_samples = os.path.join(save_dir, "h36m_train_euler.npy")
+                srnn_samples = os.path.join(save_dir, "srnn_test_preds_euler.npy")
+                
+                if not os.path.exists(_eval_dir):
+                    os.mkdir(_eval_dir)
+
+                # # Just log the existing metrics.
+                # if os.path.exists(saved_metrics_p):
+                #     dist_results = np.load(saved_metrics_p).tolist()
+                #     log_metrics(_args, dist_results, exp_id, model_name, which_actions)
+                
+                if not os.path.exists(saved_samples) or not os.path.exists(srnn_samples):
                     if not os.path.exists(_eval_dir):
                         os.mkdir(_eval_dir)
-                    _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, mode)
+
+                    _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, srnn_dir)
                     print("Evaluating Model " + str(model_id))
                     evaluate(sess, _test_model, _test_data, _args, _eval_dir, _train_data, mode)
+                else:
+                    if os.path.exists(saved_samples):  # Both NPSS and distribution metrics.
+                        _train_samples = np.load(saved_samples)
+                        _eval_samples = np.load(os.path.join(save_dir, "srnn_test_preds_euler.npy")).tolist()
+                        fk_engine = H36MForwardKinematics()
+
+                        # euler_loss = calculate_srnn_loss_given_samples(_eval_samples)
+                        # log_euler_loss(euler_loss, exp_id, model_name)
+                        
+                        if not os.path.exists(save_dir):
+                            os.mkdir(save_dir)
+    
+                        if not which_actions:
+                            which_actions = set()
+                            for key_ in _eval_samples.keys():
+                                which_actions.add(key_.split("/")[1])
+                        
+                        dist_results = calculate_dist_metrics(save_dir, _train_samples, _eval_samples, rep="pos", fk_engine=fk_engine, eval_seq_len=eval_len, actions=which_actions)
+                        np.save(os.path.join(save_dir, "dist_metrics_" + mode), dist_results)
+                        log_metrics(_args, dist_results, exp_id, model_name, which_actions)
+    
+                    if os.path.exists(srnn_samples):  # Only NPSS.
+                        _eval_samples = np.load(os.path.join(save_dir, "srnn_test_preds_euler.npy")).tolist()
+
+                        which_actions = set()
+                        for key_ in _eval_samples.keys():
+                            which_actions.add(key_.split("/")[1])
+
+                        npss_results = calculate_npss_metrics(_eval_samples, which_actions)
+                        log_metrics(_args, npss_results, exp_id, model_name, which_actions)
                 
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))

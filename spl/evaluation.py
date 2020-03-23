@@ -180,6 +180,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           window_type=window_type,
                                           num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
+                                          normalization_dim=config.get("normalization_dim", "channel"),
                                           beginning_index=beginning_index,
                                           filter_by_key=filter_sample_keys,
                                           apply_length_filter=False)
