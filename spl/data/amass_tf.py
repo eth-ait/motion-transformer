@@ -40,7 +40,6 @@ class TFRecordMotionDataset(Dataset):
         self.window_type = kwargs.get("window_type", True)
         self.length_threshold = kwargs.get("length_threshold", self.extract_windows_of)
         self.num_parallel_calls = kwargs.get("num_parallel_calls", 16)
-        self.normalize = kwargs.get("normalize", True)
         self.apply_length_filter = kwargs.get("apply_length_filter", True)
         keys_to_filter = kwargs.get("filter_by_key", None)
         self.tf_sample_keys = None
@@ -103,23 +102,11 @@ class TFRecordMotionDataset(Dataset):
         # Applies normalization.
         if self.normalize:
             self.tf_data = self.tf_data.map(
-                functools.partial(self.normalize_zero_mean_unit_variance_channel, key="poses"),
+                functools.partial(self.normalization_func, key="poses"),
                 num_parallel_calls=self.num_parallel_calls)
         else:  # Some models require the feature size.
             self.tf_data = self.tf_data.map(functools.partial(self.__pp_set_feature_size),
                                             num_parallel_calls=self.num_parallel_calls)
-
-    def unnormalize_zero_mean_unit_variance_all(self, sample_dict, key):
-        if self.normalize:
-            return super(TFRecordMotionDataset, self).unnormalize_zero_mean_unit_variance_all(sample_dict, key)
-        else:
-            return sample_dict
-
-    def unnormalize_zero_mean_unit_variance_channel(self, sample_dict, key):
-        if self.normalize:
-            return super(TFRecordMotionDataset, self).unnormalize_zero_mean_unit_variance_channel(sample_dict, key)
-        else:
-            return sample_dict
 
     def tf_data_to_model(self):
         # Converts the data into the format that a model expects. Creates input, target, sequence_length, etc.
