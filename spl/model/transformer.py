@@ -20,28 +20,21 @@ class Transformer2d(BaseModel):
 
         super(Transformer2d, self).__init__(config, data_pl, mode, reuse, **kwargs)
 
-        self.window_len = config.get('transformer_window_length')  #self.source_seq_len  # attention window length
+        self.window_len = config.get('transformer_window_length')
         self.use_6d_outputs = config.get('use_6d_outputs', False)
 
-        # Modified to handle variable-length sequences.
-        # If you want to checkout to
-        # commit 3b42d95f4d0c519a0531a792c04ef99d8800848e
-        
-        # self.window_len = self.source_seq_len
-        # self.prediction_targets = self.data_inputs[:, :self.window_len + 1, :]
+        self.abs_pos_encoding = config.get('abs_pos_encoding', True)
+        self.temp_abs_pos_encoding = config.get('temp_abs_pos_encoding', False)
+        self.temp_rel_pos_encoding = config.get('temp_rel_pos_encoding', False)
+        self.shared_templ_kv = config.get('shared_templ_kv', False)
+
         self.window_len = self.source_seq_len + self.target_seq_len - 1
-        
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
         # self.data_input and self.data_targets are aligned, but there might be
         # differences between them in terms of preprocessing or representation.
         self.target_input = self.data_inputs[:, :-1, :]
         self.target_real = self.data_targets[:, 1:, :]
-
-        self.abs_pos_encoding = config.get('abs_pos_encoding', True)
-        self.temp_abs_pos_encoding = config.get('temp_abs_pos_encoding', False)
-        self.temp_rel_pos_encoding = config.get('temp_rel_pos_encoding', False)
-        self.shared_templ_kv = config.get('shared_templ_kv', False)
         
         self.max_relative_position = config.get('max_relative_position', 50)
         if self.temp_rel_pos_encoding:

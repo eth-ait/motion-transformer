@@ -77,6 +77,7 @@ class Constants(object):
     ANGLE_AXIS = "aa"
     POSITIONAL = "pos"
     QUATERNION = "quat"
+    EULER_ANGLE = "euler"
 
     LAYER_FC = "fc"
     LAYER_RNN = "rnn"

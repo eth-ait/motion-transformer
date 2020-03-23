@@ -70,7 +70,7 @@ tf.app.flags.DEFINE_integer("test_frequency", 1000, "Runs validation every this 
 tf.app.flags.DEFINE_string("glog_comment", None, "A descriptive text for Google Sheet entry.")
 # If from_config is used, the rest will be ignored.
 # Data
-tf.app.flags.DEFINE_enum("data_type", "rotmat", ["rotmat", "aa", "quat"],
+tf.app.flags.DEFINE_enum("data_type", "rotmat", ["rotmat", "aa", "quat", "euler"],
                          "Which data representation: rotmat (rotation matrix), aa (angle axis), quat (quaternion).")
 tf.app.flags.DEFINE_boolean("use_h36m", False, "Use H36M for training and validation.")
 tf.app.flags.DEFINE_boolean("no_normalization", False, "If set, do not use zero-mean unit-variance normalization.")
@@ -99,7 +99,7 @@ tf.app.flags.DEFINE_enum("cell_type", "lstm", ["lstm", "gru"], "RNN cell type: g
 tf.app.flags.DEFINE_integer("cell_size", 1024, "RNN cell size.")
 tf.app.flags.DEFINE_integer("cell_layers", 1, "Number of cells in the RNN model.")
 tf.app.flags.DEFINE_boolean("residual_velocity", True, "Add a residual connection that effectively models velocities.")
-tf.app.flags.DEFINE_enum("loss_type", "joint_sum", ["joint_sum", "all_mean"], "Joint-wise or vanilla mean loss.")
+tf.app.flags.DEFINE_enum("loss_type", "joint_sum", ["joint_sum", "all_mean", "geodesic"], "Joint-wise or vanilla mean loss.")
 tf.app.flags.DEFINE_enum("joint_prediction_layer", "plain", ["spl", "spl_sparse", "plain"],
                          "Whether to use structured prediction layer (sparse or dense) "
                          "or a standard dense layer to make predictions.")
@@ -132,6 +132,14 @@ tf.app.flags.DEFINE_boolean("shared_pw_ffn", False, "-")
 tf.app.flags.DEFINE_boolean("residual_attention_block", False, "-")
 tf.app.flags.DEFINE_integer("random_window_min", 0, "-")
 tf.app.flags.DEFINE_float("temporal_mask_drop", 0, "-")
+
+# Positional encoding stuff.
+tf.app.flags.DEFINE_boolean("abs_pos_encoding", False, "-")
+tf.app.flags.DEFINE_boolean("temp_abs_pos_encoding", False, "-")
+tf.app.flags.DEFINE_boolean("temp_rel_pos_encoding", False, "-")
+tf.app.flags.DEFINE_boolean("shared_templ_kv", False, "-")
+tf.app.flags.DEFINE_integer("max_relative_position", 50, "-")
+tf.app.flags.DEFINE_enum("normalization_dim", "channel", ["channel", "all"], "Channel-wise or global normalization.")
 
 args = tf.app.flags.FLAGS
 
@@ -229,8 +237,13 @@ def create_model(session):
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_RANDOM,
                                            num_parallel_calls=2,
-                                           normalize=not config["no_normalization"])
+                                           normalize=not config["no_normalization"],
+                                           normalization_dim=config.get("normalization_dim", "channel"))
         train_pl = train_data.get_tf_samples()
+    
+    # 1-second evaluation.
+    eval_target_len = 25 if config["use_h36m"] else 60
+    window_length = config["source_seq_len"] + eval_target_len
     
     with tf.name_scope("validation_data"):
         if config.get("exhaustive_validation", False):
@@ -242,7 +255,8 @@ def create_model(session):
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_CENTER,
                                            num_parallel_calls=2,
-                                           normalize=not config["no_normalization"])
+                                           normalize=not config["no_normalization"],
+                                           normalization_dim=config.get("normalization_dim", "channel"))
         valid_pl = valid_data.get_tf_samples()
     
     with tf.name_scope("test_data"):
@@ -255,6 +269,7 @@ def create_model(session):
                                           window_type=C.DATA_WINDOW_BEGINNING,
                                           num_parallel_calls=2,
                                           normalize=not config["no_normalization"],
+                                          normalization_dim=config.get("normalization_dim", "channel"),
                                           beginning_index=beginning_index)
         test_pl = test_data.get_tf_samples()
 
@@ -267,9 +282,11 @@ def create_model(session):
             reuse=False)
         train_model.build_graph()
 
+    eval_config = config.copy()
+    # eval_config["target_seq_len"] = 25 if config["use_h36m"] else 60
     with tf.name_scope(C.SAMPLE):
         valid_model = model_cls(
-            config=config,
+            config=eval_config,
             data_pl=valid_pl,
             mode=C.SAMPLE,
             reuse=True)
@@ -277,7 +294,7 @@ def create_model(session):
 
     with tf.name_scope(C.TEST):
         test_model = model_cls(
-            config=config,
+            config=eval_config,
             data_pl=test_pl,
             mode=C.SAMPLE,
             reuse=True)
@@ -305,7 +322,8 @@ def create_model(session):
                                                   # extract_windows_of=extract_windows_of,
                                                   # extract_random_windows=False,
                                                   num_parallel_calls=2,
-                                                  normalize=not config["no_normalization"])
+                                                  normalize=not config["no_normalization"],
+                                                  normalization_dim=config.get("normalization_dim", "channel"))
             srnn_pl = srnn_data.get_tf_samples()
 
         with tf.name_scope("SRNN"):
@@ -359,7 +377,7 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
     try:
         while True:
             # Get the predictions and ground truth values
-            res = _eval_model.sampled_step(sess)
+            res = _eval_model.sampled_step(sess, prediction_steps=_eval_model.target_seq_len)
             if args.model_type=="transformer2d" or args.model_type=="transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
@@ -417,9 +435,11 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
             elif _eval_model.use_aa:
                 p_euler = rotmat2euler(
                     aa2rotmat(np.reshape(p, [batch_size, seq_length, -1, 3])))
-            else:
+            elif _eval_model.use_rotmat:
                 p_euler = rotmat2euler(
                     np.reshape(p, [batch_size, seq_length, -1, 3, 3]))
+            else:
+                p_euler = np.reshape(p, [batch_size, seq_length, -1, 3])
 
             p_euler_padded = np.zeros([batch_size, seq_length, 32, 3])
             p_euler_padded[:, :, H36M_MAJOR_JOINTS] = p_euler
@@ -494,20 +514,21 @@ def train():
         if config["use_h36m"]:
             fk_engine = H36MForwardKinematics()
             tls = C.METRIC_TARGET_LENGTHS_H36M_25FPS
-            target_lengths = [x for x in tls if x <= train_model.target_seq_len]
+            target_lengths = [x for x in tls if x <= valid_model.target_seq_len]
         else:
-            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= train_model.target_seq_len]
+            target_lengths = [x for x in C.METRIC_TARGET_LENGTHS_AMASS if x <= valid_model.target_seq_len]
             fk_engine = SMPLForwardKinematics()
-
-        metrics_engine = MetricsEngine(fk_engine,
-                                       target_lengths,
-                                       pck_threshs=pck_thresholds,
-                                       rep=config["data_type"],
-                                       force_valid_rot=True)
-        # create the necessary summary placeholders and ops
-        metrics_engine.create_summaries()
-        # reset computation of metrics
-        metrics_engine.reset()
+        
+        if not config["use_h36m"]:
+            metrics_engine = MetricsEngine(fk_engine,
+                                           target_lengths,
+                                           pck_threshs=pck_thresholds,
+                                           rep=config["data_type"],
+                                           force_valid_rot=True)
+            # create the necessary summary placeholders and ops
+            metrics_engine.create_summaries()
+            # reset computation of metrics
+            metrics_engine.reset()
 
         # Summary writers for train and test runs
         summaries_dir = os.path.normpath(os.path.join(experiment_dir, "log"))
@@ -548,6 +569,8 @@ def train():
         num_steps_wo_improvement = 0
         stop_signal = False
         checkpoint_step = 0
+        # Print results for 400 ms horizon.
+        summary_at_frame = 10 if config["use_h36m"] else 24
 
         # Training loop configuration.
         time_counter = 0.0
@@ -564,7 +587,7 @@ def train():
         sess.run(train_iter.initializer)
         sess.run(valid_iter.initializer)
 
-        undo_norm_fn = train_data.unnormalize_zero_mean_unit_variance_channel
+        undo_norm_fn = train_data.unnormalization_func
         train_str = "Train [{:04d}] \t Loss: {:.3f} \t time/batch: {:.3f}"
         valid_str = "Valid [{:04d}] \t {} \t total_time: {:.3f}"
         while not stop_signal:
@@ -573,6 +596,7 @@ def train():
                 try:
                     start_time = time.perf_counter()
                     step += 1
+                    print_steps += 1
                     
                     if step % args.print_frequency == 0:
                         train_loss_avg = train_loss / print_steps
@@ -585,7 +609,6 @@ def train():
                     step_loss, summary, _ = train_model.step(sess)
                     train_writer.add_summary(summary, step)
                     train_loss += step_loss
-                    print_steps += 1
 
                     time_counter += (time.perf_counter() - start_time)
                 except tf.errors.OutOfRangeError:
@@ -594,47 +617,49 @@ def train():
                     if epoch >= config["num_epochs"]:
                         stop_signal = True
                         break
-
-            # Evaluation: make a full pass on the validation split.
-            valid_metrics, valid_time, _ = evaluate_model(sess, valid_model,
-                                                          valid_iter,
-                                                          metrics_engine,
-                                                          undo_norm_fn)
-            # print an informative string to the console
-            valid_log = metrics_engine.get_summary_string_all(valid_metrics,
-                                                              [config["target_seq_len"]],
-                                                              pck_thresholds)
-            print(valid_str.format(step,
-                                   valid_log,
-                                   valid_time))
-            # get the summary feed dict
-            summary_feed = metrics_engine.get_summary_feed_dict(valid_metrics)
-            # get the writable summaries
-            summaries = sess.run(metrics_engine.all_summaries_op,
-                                 feed_dict=summary_feed)
-            # write to log
-            test_writer.add_summary(summaries, step)
-            # reset the computation of the metrics
-            metrics_engine.reset()
-            # reset the validation iterator
-            sess.run(valid_iter.initializer)
-
-            # Early stopping check.
-            valid_loss = valid_metrics[early_stopping_metric_key].sum()
-
+            
             if config["use_h36m"]:
                 # do early stopping based on euler angle loss
                 predictions_euler, _ = _evaluate_srnn_poses(sess, srnn_model,
                                                             srnn_iter, srnn_gts,
                                                             undo_norm_fn)
                 selected_actions_mean_error = []
-
-                for action in ['walking', 'eating', 'discussion', 'smoking']:
+                es_actions = ['walking', 'eating', 'discussion', 'smoking']
+                for action in es_actions:
                     selected_actions_mean_error.append(np.stack(predictions_euler[action]))
 
                 srnn_valid_loss = np.mean(np.concatenate(selected_actions_mean_error, axis=0), 0)[[1, 3, 7, 9]].mean()
                 print("Euler angle valid loss on SRNN samples: {}".format(srnn_valid_loss))
                 valid_loss = srnn_valid_loss
+            
+            else:
+                # Evaluation: make a full pass on the validation split.
+                valid_metrics, valid_time, _ = evaluate_model(sess, valid_model,
+                                                              valid_iter,
+                                                              metrics_engine,
+                                                              undo_norm_fn)
+                # print an informative string to the console
+                valid_log = metrics_engine.get_summary_string_all(valid_metrics,
+                                                                  [summary_at_frame],
+                                                                  pck_thresholds)
+                print(valid_str.format(step,
+                                       valid_log,
+                                       valid_time))
+                # get the summary feed dict
+                summary_feed = metrics_engine.get_summary_feed_dict(valid_metrics)
+                # get the writable summaries
+                summaries = sess.run(metrics_engine.all_summaries_op,
+                                     feed_dict=summary_feed)
+                # write to log
+                test_writer.add_summary(summaries, step)
+                # reset the computation of the metrics
+                metrics_engine.reset()
+                # reset the validation iterator
+                sess.run(valid_iter.initializer)
+    
+                # Early stopping check.
+                # valid_loss = valid_metrics[early_stopping_metric_key].sum()
+                valid_loss = valid_metrics[early_stopping_metric_key][:summary_at_frame].sum()
 
             # Check if the improvement is good enough. If not, we wait to see
             # if there is an improvement (i.e., early_stopping_tolerance).
@@ -698,7 +723,7 @@ def train():
                                                           metrics_engine,
                                                           undo_norm_fn)
             valid_log = metrics_engine.get_summary_string_all(valid_metrics,
-                                                              [config["target_seq_len"]],
+                                                              [summary_at_frame],
                                                               pck_thresholds)
             print(valid_str.format(step,
                                    valid_log,
@@ -714,7 +739,7 @@ def train():
             print(test_str.format(step,
                                   metrics_engine.get_summary_string_all(
                                       test_metrics,
-                                      target_lengths,
+                                      [summary_at_frame],
                                       pck_thresholds),
                                   test_time))
             if GLOGGER_AVAILABLE:
