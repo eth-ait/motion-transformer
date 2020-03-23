@@ -28,6 +28,7 @@ from preprocessing.preprocess_dip import create_tfrecord_writers
 from preprocessing.preprocess_dip import write_tfexample
 from preprocessing.preprocess_dip import split_into_windows
 from preprocessing.preprocess_dip import close_tfrecord_writers
+from common.conversions import aa2rotmat, rotmat2euler
 
 H36M_MAJOR_JOINTS = [0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 24, 25, 26, 27]
 H36M_NR_JOINTS = 32
@@ -195,7 +196,7 @@ def load_data(path_to_dataset, subjects, actions, one_hot, rep):
         k=(subject, action, subaction, 'even'), v=(nxd) un-normalized data
       completeData: nxd matrix with all the data. Used to normlization stats
     """
-    assert rep in ["aa", "rotmat", "quat"]
+    assert rep in ["aa", "rotmat", "quat", "euler"]
     nactions = len(actions)
 
     poses = []
@@ -236,6 +237,11 @@ def load_data(path_to_dataset, subjects, actions, one_hot, rep):
                     quats = quaternion.from_rotation_vector(expmap)
                     quats = np.reshape(quaternion.as_float_array(quats), [n_samples, n_joints*4])
                     action_sequence = quats
+                elif rep == "euler":
+                    expmap = np.reshape(action_sequence, [n_samples*n_joints, 3])
+                    pose_rot = aa2rotmat(expmap)
+                    pose_eul = rotmat2euler(pose_rot)
+                    action_sequence = np.reshape(pose_eul, [n_samples, -1])
                 else:
                     pass  # the data is already in angle-axis format
 
@@ -259,8 +265,7 @@ if __name__ == '__main__':
     n_shards = 5  # need to save the data in shards, it's too big otherwise
     train_subjects = [1, 6, 7, 8, 9, 11]  # for h3.6m this is fixed
     test_subjects = [5]  # for h3.6m this is fixed, use test subject as validation
-    as_quat = False  # converts the data to quaternions
-    as_aa = False  # converts tha data to angle_axis
+    rep = "euler"  # "quat", "aa", "rotmat" or "euler"
     test_window_size = 75  # 3 seconds
     test_window_stride = 50  # 2 seconds
 
@@ -269,9 +274,6 @@ if __name__ == '__main__':
                "sittingdown", "takingphoto", "waiting", "walkingdog",
                "walkingtogether"]
 
-    assert not (as_quat and as_aa), 'must choose between quat or aa'
-
-    rep = "quat" if as_quat else "aa" if as_aa else "rotmat"
     train_data, train_one_hot, train_ids = load_data(h36m_folder, train_subjects, actions,
                                                      one_hot=True, rep=rep)
     test_data, test_one_hot, test_ids = load_data(h36m_folder, test_subjects, actions,

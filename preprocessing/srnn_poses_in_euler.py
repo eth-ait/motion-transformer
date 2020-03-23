@@ -10,7 +10,7 @@ import os
 import tensorflow as tf
 import quaternion
 
-from common.conversions import aa2rotmat
+from common.conversions import aa2rotmat, rotmat2euler
 from visualization.fk import H36M_MAJOR_JOINTS
 
 from preprocessing.preprocess_dip import create_tfrecord_writers
@@ -34,7 +34,7 @@ def to_tfexample(pose, euler_target, file_id, db_name):
 
 
 def process_poses(data, rep, output_path, n_shards):
-    assert rep in ["aa", "rotmat", "quat"]
+    assert rep in ["aa", "rotmat", "quat", "euler"]
     print("storing into {}".format(output_path))
 
     if not os.path.exists(output_path):
@@ -75,6 +75,10 @@ def process_poses(data, rep, output_path, n_shards):
             elif rep == "rotmat":
                 pose_rot = aa2rotmat(pose_r)
                 pose = np.reshape(pose_rot, [seq_len, -1])
+            elif rep == "euler":
+                pose_rot = aa2rotmat(pose_r)
+                pose_eul = rotmat2euler(pose_rot)
+                pose = np.reshape(pose_eul, [seq_len, -1])
             else:
                 pose_quat = quaternion.as_float_array(quaternion.from_rotation_vector(pose_r))
                 pose = np.reshape(pose_quat, [seq_len, -1])
@@ -109,16 +113,12 @@ def process_poses(data, rep, output_path, n_shards):
 
 
 if __name__ == '__main__':
-    srnn_poses = '/media/eaksan/Warehouse-SSD2/Projects/motion-modelling/data/h3.6m/tfrecords/martinez_euler_gt_25fps.npz'
-    output_folder = '/media/eaksan/Warehouse-SSD2/Projects/motion-modelling/data/h3.6m/tfrecords/'
+    seed_name = ""
+    srnn_poses = '<path-to>/h3.6m/tfrecords/martinez_euler_gt_25fps{}.npz'.format(seed_name)
+    output_folder = '<path-to>/h3.6m/tfrecords/'
     n_shards = 1  # need to save the data in shards, it's too big otherwise
-    as_quat = False  # converts the data to quaternions
-    as_aa = False  # converts tha data to angle_axis
-
-    assert not (as_quat and as_aa), 'must choose between quat or aa'
+    rep = "euler"  # "quat", "aa", "rotmat" or "euler"
 
     data = np.load(srnn_poses)['data'].tolist()
-
-    rep = "quat" if as_quat else "aa" if as_aa else "rotmat"
-    output_path = os.path.join(output_folder, rep, "srnn_poses_25fps")
+    output_path = os.path.join(output_folder, rep, "srnn_poses_25fps{}".format(seed_name))
     _ = process_poses(data, rep, output_path, n_shards)

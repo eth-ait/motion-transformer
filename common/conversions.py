@@ -19,7 +19,7 @@ import numpy as np
 import quaternion
 import cv2
 import tensorflow as tf
-
+import sys
 
 def rad2deg(v):
     """Convert from radians to degrees."""
@@ -79,10 +79,10 @@ def rotmat2euler(rotmats):
     Converts rotation matrices to euler angles. This is an adaptation of Martinez et al.'s code to work with batched
     inputs. Original code can be found here:
     https://github.com/una-dinosauria/human-motion-prediction/blob/master/src/data_utils.py#L12
-
+    
     Args:
         rotmats: An np array of shape (..., 3, 3)
-
+    
     Returns:
         An np array of shape (..., 3) containing the Euler angles for each rotation matrix in `rotmats`
     """
@@ -90,21 +90,21 @@ def rotmat2euler(rotmats):
     orig_shape = rotmats.shape[:-2]
     rs = np.reshape(rotmats, [-1, 3, 3])
     n_samples = rs.shape[0]
-
+    
     # initialize to zeros
     e1 = np.zeros([n_samples])
     e2 = np.zeros([n_samples])
     e3 = np.zeros([n_samples])
-
+    
     # find indices where we need to treat special cases
     is_one = rs[:, 0, 2] == 1
     is_minus_one = rs[:, 0, 2] == -1
     is_special = np.logical_or(is_one, is_minus_one)
-
+    
     e1[is_special] = np.arctan2(rs[is_special, 0, 1], rs[is_special, 0, 2])
     e2[is_minus_one] = np.pi/2
     e2[is_one] = -np.pi/2
-
+    
     # normal cases
     is_normal = ~np.logical_or(is_one, is_minus_one)
     # clip inputs to arcsin
@@ -115,9 +115,66 @@ def rotmat2euler(rotmats):
                                rs[is_normal, 2, 2]/e2_cos)
     e3[is_normal] = np.arctan2(rs[is_normal, 0, 1]/e2_cos,
                                rs[is_normal, 0, 0]/e2_cos)
-
+    
     eul = np.stack([e1, e2, e3], axis=-1)
     eul = np.reshape(eul, np.concatenate([orig_shape, eul.shape[1:]]))
+    return eul
+
+
+def rotmat2euler_tf(rotmats, msg):
+    """
+    Converts rotation matrices to euler angles by using TF routines. This is an
+    adaptation of Martinez et al.'s code to work with batched inputs.
+    Original code can be found here:
+    https://github.com/una-dinosauria/human-motion-prediction/blob/master/src/data_utils.py#L12
+  
+    Args:
+        rotmats: A TF tensor of shape (n_samples, 3, 3)
+  
+    Returns:
+        A TF tensor of shape n_samples, 3) containing the Euler angles for each
+        rotation matrix in `rotmats`
+    """
+    rotmats = tf.cast(rotmats, tf.float32)
+    n_samples = tf.shape(rotmats)[0]
+    
+    e1 = tf.zeros([n_samples])
+    e2 = tf.zeros([n_samples])
+    e3 = tf.zeros([n_samples])
+    
+    # find indices where we need to treat special cases
+    is_one = tf.equal(rotmats[:, 0, 2], 1)
+    is_minus_one = tf.equal(rotmats[:, 0, 2], -1)
+    is_special = tf.logical_or(is_one, is_minus_one)
+
+    # tf.print(tf.concat([rotmats[:, 0, 1:2], rotmats[:, 0, 2:3]], axis=-1), output_stream=sys.stdout)
+    # rotmats = tf.Print(rotmats, [tf.concat([rotmats[:, 0, 1:2], rotmats[:, 0, 2:3]], axis=-1)], message=msg, summarize=10)
+    atan = tf.math.atan2(rotmats[:, 0, 1], rotmats[:, 0, 2])
+    # atan = tf.debugging.check_numerics(atan, "First atan nan")
+    e1 = tf.where(is_special, tf.cast(atan, tf.float32), e1)
+    e2 = tf.where(is_minus_one, tf.ones([n_samples])*np.pi/2, e2)
+    e2 = tf.where(is_minus_one, tf.ones([n_samples])*-np.pi/2, e2)
+    
+    # normal cases
+    is_normal = tf.logical_not(is_special)
+    # clip inputs to arcsin
+    asin = -tf.math.asin(tf.clip_by_value(rotmats[:, 0, 2], -1, 1))
+    e2 = tf.where(is_normal, asin, e2)
+    
+    e2_cos = tf.cos(e2)
+    e2_cos = tf.where(e2_cos > 0, tf.maximum(e2_cos, 1e-6), e2_cos)
+    e2_cos = tf.where(e2_cos < 0, tf.minimum(e2_cos, -1e-6), e2_cos)
+    
+    e1_atan = tf.math.atan2(rotmats[:, 1, 2] / e2_cos, rotmats[:, 2, 2] / e2_cos)
+    # e1_atan = tf.debugging.check_numerics(e1_atan, "e1_atan nan")
+    e1 = tf.where(is_normal, e1_atan, e1)
+    
+    e3_atan = tf.math.atan2(rotmats[:, 0, 1] / e2_cos, rotmats[:, 0, 0] / e2_cos)
+    # e3_atan = tf.debugging.check_numerics(e3_atan, "e3_atan nan")
+    e3 = tf.where(is_normal, e3_atan, e3)
+    
+    eul = tf.concat([e1[:, tf.newaxis], e2[:, tf.newaxis], e3[:, tf.newaxis]], axis=-1)
+    # eul = tf.debugging.check_numerics(eul, "eul nan")
     return eul
 
 
