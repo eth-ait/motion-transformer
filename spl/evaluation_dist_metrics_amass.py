@@ -739,7 +739,7 @@ if __name__ == '__main__':
                 _eval_dir = _experiment_dir if _args.eval_dir is None else os.path.join(_args.eval_dir, exp_name)
 
                 eval_seq_len = 60
-                mode = "all_test"  # "periodic" or "all_test"
+                mode = "periodic"  # "periodic" or "all_test"
                 saved_metrics_p = os.path.join(_eval_dir, "dist_metrics_{}.npy".format(mode))
                 saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_all_test.npy")
                 saved_training = os.path.join(_eval_dir, "amass_train_rotmat_{}.npy".format(eval_seq_len))
@@ -747,17 +747,17 @@ if __name__ == '__main__':
                 exp_id = os.path.split(_eval_dir)[-1].split("-")[0] + "-" + mode
                 model_name = '-'.join(os.path.split(_eval_dir)[-1].split('-')[1:])
                 
-                if not os.path.exists(saved_predictions) and not os.path.exists(saved_training):
+                if not os.path.exists(saved_predictions):  # and not os.path.exists(saved_training):
                     if not os.path.exists(_eval_dir):
                         os.mkdir(_eval_dir)
                     _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, _args.dynamic_test_split, mode)
                     print("Evaluating Model " + str(model_id))
-                    evaluate(sess, _test_model, _test_data, _args, _eval_dir, _train_data, mode)
+                    evaluate(sess, _test_model, _test_data, _args, _eval_dir, mode)
 
                 if not os.path.exists(saved_training):  # Load training data for dist. metrics.
                     training_samples = load_data_samples(sess, _data_dir, _config, n_samples=20000, seq_len=eval_seq_len)
                     np.save(os.path.join(_eval_dir, "amass_train_rotmat_" + str(eval_seq_len)), training_samples)
-                
+
                 if os.path.exists(saved_predictions):  # NPSS.
                     _eval_samples = np.load(saved_predictions).tolist()
 

@@ -284,7 +284,7 @@ class Transformer1d(BaseModel):
             outputs = session.run(output_feed)
             return outputs[0], outputs[1], outputs[2]
 
-    def sampled_step(self, session):
+    def sampled_step(self, session, prediction_steps=None):
         assert self.is_eval, "Only works in sampling mode."
         batch = session.run(self.data_placeholders)
         data_id = batch[C.BATCH_ID]

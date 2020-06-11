@@ -46,11 +46,11 @@ class Dataset(object):
         self.data_summary()
 
         self.mean_all = self.meta_data['mean_all']
-        self.var_all = np.sqrt(self.meta_data['var_all'])
-        # self.var_all = self.meta_data['var_all']
+        # self.var_all = np.sqrt(self.meta_data['var_all'])
+        self.var_all = self.meta_data['var_all']
         self.mean_channel = self.meta_data['mean_channel']
-        self.var_channel = np.sqrt(self.meta_data['var_channel'])
-        # self.var_channel = self.meta_data['var_channel']
+        # self.var_channel = np.sqrt(self.meta_data['var_channel'])
+        self.var_channel = self.meta_data['var_channel']
 
         self.tf_data_transformations()
         self.tf_data_normalization()

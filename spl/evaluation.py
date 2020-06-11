@@ -256,6 +256,10 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
                                 else:
                                     _attention_weights[data_id[i].decode("utf-8")] += [[attention[num_frame]['temporal'][i], attention[num_frame]['spatial'][i]]]
                 n_batches += 1
+            
+            if n_batches % 5 == 0:
+                print("Evaluated on {} batches...".format(n_batches))
+            
     except tf.errors.OutOfRangeError:
         pass
     print("Evaluated on " + str(n_batches) + " batches.")
@@ -435,10 +439,10 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                 
                 print(out_dir + ' visualizing.')
 
-                if using_attention_model:
-                    for num_frame in range(12):
-                        visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
-                        visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
+                # if using_attention_model:
+                #     for num_frame in range(12):
+                #         visualize_temporal(attention_weights[k][num_frame][0], out_dir, num_frame*5)
+                #         visualize_spatial(attention_weights[k][num_frame][1], out_dir, num_frame*5)
 
                 prediction, target, seed = eval_result[k]
 

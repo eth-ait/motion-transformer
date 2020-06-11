@@ -377,7 +377,8 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
     try:
         while True:
             # Get the predictions and ground truth values
-            res = _eval_model.sampled_step(sess, prediction_steps=_eval_model.target_seq_len)
+            prediction_steps = _eval_model.target_seq_len
+            res = _eval_model.sampled_step(sess, prediction_steps=prediction_steps)
             if args.model_type=="transformer2d" or args.model_type=="transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
@@ -387,7 +388,7 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
                 {"poses": prediction}, "poses")
             t = undo_normalization_fn(
                 {"poses": targets}, "poses")
-            _metrics_engine.compute_and_aggregate(p["poses"], t["poses"])
+            _metrics_engine.compute_and_aggregate(p["poses"], t["poses"][:, :prediction_steps])
 
             if _return_results:
                 s = undo_normalization_fn(
