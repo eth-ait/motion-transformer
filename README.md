@@ -1,7 +1,10 @@
-# Structured Prediction Helps 3D Human Motion Modelling 
-Code repository for [our paper](https://ait.ethz.ch/projects/2019/spl/) presented at ICCV '19. 
+## A Spatio-temporal Transformer for 3D Human Motion Prediction 
+Code repository for [our paper](https://arxiv.org/abs/2004.08692). It is under review. Please do not distribute the code. 
 
-We provide data preprocessing scripts, training pipeline, evaluation and visualization tools. Model implementation and pre-trained models will come soon. 
+We implement and evaluate our model by using the publicly available code repository of [Aksan et al. (2019)](https://github.com/eth-ait/spl). 
+Instructions are copied here as they are intact. We provide data preprocessing scripts, training pipeline, evaluation and visualization tools.
+
+Our ST-Transformer and vanilla Transformer implementations can be found in `spl/model/transformer.py` and `spl/model/vanilla.py`, respectively.
 
 ### Required packages
 We recommend creating a virtual environment and install the required packages by running:
@@ -56,15 +59,22 @@ python spl/evaluation.py --model_id <experiment-timestamp> --visualize --seq_len
 
 Please note that by default the visualization code displays interactive animations using matplotlib. To make interactive frame-rates possible, only the skeleton is displayed. You can also create videos of the full SMPL mesh or skeleton by adding the `--to_video` option. However, in order to get videos with SMPL mesh, you need the SMPL model, which we cannot provide due to licensing issues. If you are interested in using SMPL, the best option is to download the latest code from the AMASS repo and integrate it with our repo. Feel free to contact us if you have questions about this.
 
-### Pre-trained Models
+TODO: evaluation of the distribution-based metrics may give an error.  
+
+### Training with Pre-trained Model Configuration
 In `pretrained_configs` folder, you can find the configuration we used. In order to re-run an experiment you can simply run:
 ```
 python spl/training.py --from_config <path-to-a-model-config.json>
 ``` 
+Training our ST-Transformer model (`pretrained_configs/1573450146-transformer2d`) takes 10-12 hours on a RTX 2080 Ti GPU. 
+
 Due to the stochastic nature of training, you many not get exactly the same results. 
 However, you should get marginally better or worse models. If this is not the case, please contact us. 
 The models we used in the paper can be [downloaded from here](https://ait.ethz.ch/projects/2019/spl/downloads/spl_models.zip).
 You can run evaluation with them or visualize their results. Note that `QuaterNet` models are not there yet. 
+
+### Pre-trained Models
+You can download our [ST-transformer](https://drive.google.com/drive/folders/14EX8BN1lnTsP2SDduucj-pa58UUWRzbA?usp=sharing) and vanilla transformer models for evaluation and generating motion clips.
 
 ### Sample scripts
 Under `spl/test/`, we share sample scripts showing how to use components (i.e., metrics, visualization, tfrecord data) of this repository without requiring the entire pipeline.
@@ -77,22 +87,6 @@ export GDRIVE_API_KEY=<path-to-gdrive-api-json>
 export GLOGGER_WORKBOOK_AMASS=<id-of-google-sheet>
 ```
 You can use google for the detailed steps.
- 
-
-### Citation
-If you use code from this repository, please cite 
-
-```
-@inproceedings{Aksan_2019_ICCV,
-  title={Structured Prediction Helps 3D Human Motion Modelling},
-  author={Aksan, Emre and Kaufmann, Manuel and Hilliges, Otmar},
-  booktitle={The IEEE International Conference on Computer Vision (ICCV)},
-  month={Oct},
-  year={2019},
-  note={First two authors contributed equally.}
-}
-```
-
 If you use data from DIP or AMASS, please cite the original papers as detailed on their website.
 
 ### Contact
