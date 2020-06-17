@@ -31,14 +31,25 @@ class Dataset(object):
         self.data_path = data_path
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.normalize = kwargs.get("normalize", True)
+        self.normalization_dim = kwargs.get("normalization_dim", "channel")  # "channel" or "all"
+        
+        if self.normalization_dim == "channel":
+            self.normalization_func = self.normalize_zero_mean_unit_variance_channel
+            self.unnormalization_func = self.unnormalize_zero_mean_unit_variance_channel
+        else:  #"all"
+            self.normalization_func = self.normalize_zero_mean_unit_variance_all
+            self.unnormalization_func = self.unnormalize_zero_mean_unit_variance_all
 
         # Load statistics and other data summary stored in the meta-data file.
         self.meta_data = self.load_meta_data(meta_data_path)
         self.data_summary()
 
         self.mean_all = self.meta_data['mean_all']
+        # self.var_all = np.sqrt(self.meta_data['var_all'])
         self.var_all = self.meta_data['var_all']
         self.mean_channel = self.meta_data['mean_channel']
+        # self.var_channel = np.sqrt(self.meta_data['var_channel'])
         self.var_channel = self.meta_data['var_channel']
 
         self.tf_data_transformations()
@@ -68,19 +79,23 @@ class Dataset(object):
         raise NotImplementedError('Subclass must override sample method')
 
     def normalize_zero_mean_unit_variance_all(self, sample_dict, key):
-        sample_dict[key] = (sample_dict[key] - self.mean_all) / self.var_all
+        if self.normalize:
+            sample_dict[key] = (sample_dict[key] - self.mean_all) / self.var_all
         return sample_dict
 
     def normalize_zero_mean_unit_variance_channel(self, sample_dict, key):
-        sample_dict[key] = (sample_dict[key] - self.mean_channel) / self.var_channel
+        if self.normalize:
+            sample_dict[key] = (sample_dict[key] - self.mean_channel) / self.var_channel
         return sample_dict
 
     def unnormalize_zero_mean_unit_variance_all(self, sample_dict, key):
-        sample_dict[key] = sample_dict[key] * self.var_all + self.mean_all
+        if self.normalize:
+            sample_dict[key] = sample_dict[key] * self.var_all + self.mean_all
         return sample_dict
 
     def unnormalize_zero_mean_unit_variance_channel(self, sample_dict, key):
-        sample_dict[key] = sample_dict[key] * self.var_channel + self.mean_channel
+        if self.normalize:
+            sample_dict[key] = sample_dict[key] * self.var_channel + self.mean_channel
         return sample_dict
 
     def get_iterator(self):

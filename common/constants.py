@@ -25,6 +25,7 @@ class Constants(object):
     MODEL_ZERO_VEL = "zero_velocity"
     MODEL_RNN = "rnn"
     MODEL_SEQ2SEQ = "seq2seq"
+    MODEL_TRANS2D = "transformer2d"
     
     # Pre-defined colors for plots.
     RGB_COLORS = [np.array((0, 13, 53)), np.array((0, 91, 149)), np.array((171, 19, 19)), np.array((254, 207, 103)),
@@ -76,12 +77,14 @@ class Constants(object):
     ANGLE_AXIS = "aa"
     POSITIONAL = "pos"
     QUATERNION = "quat"
+    EULER_ANGLE = "euler"
 
     LAYER_FC = "fc"
     LAYER_RNN = "rnn"
 
     LOSS_POSE_ALL_MEAN = "all_mean"
     LOSS_POSE_JOINT_SUM = "joint_sum"
+    LOSS_GEODESIC = "geodesic"
 
     LOSS_ACTION_CENT = "cross_entropy"
     LOSS_ACTION_L2 = "l2"

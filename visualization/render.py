@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import os
+import shutil
 import subprocess
 import numpy as np
 import quaternion
@@ -43,7 +44,7 @@ class Visualizer(object):
      Helper class to visualize motion. It supports an interactive mode as well as saving frames/videos.
     """
     def __init__(self, interactive, rep="rotmat", is_sparse=True,
-                 fk_engine=None, output_dir=None, skeleton=True, dense=True, to_video=False):
+                 fk_engine=None, output_dir=None, skeleton=True, dense=True, to_video=False, keep_frames=True):
         """
         Initializer. Determines if visualizations are shown interactively or saved to disk.
         Args:
@@ -58,15 +59,18 @@ class Visualizer(object):
             skeleton: Boolean if skeleton should be shown in non-interactive mode.
             dense: Boolean if mesh should be shown in non-interactive mode.
             to_video: Boolean if a video should be dumped to disk in non-interactive mode.
+            keep_frames: Boolean if the video frames should be kept.
         """
         self.interactive = interactive
         self.fk_engine = fk_engine
         self.video_dir = output_dir
+        self.out_dir = output_dir
         self.rep = rep
         self.is_sparse = is_sparse
         self.dense = dense  # also plots the SMPL mesh, WARNING: this is very slow
         self.skeleton = skeleton
         self.to_video = to_video
+        self.keep_frames = keep_frames
         self.base_color = _colors[0]  # what color to use to display ground-truth and seed
         self.prediction_color = _colors[2]  # what color to use for predictions, use _colors[2] for non-SPL models
         assert rep in ["rotmat", "quat", "aa"]
@@ -76,7 +80,8 @@ class Visualizer(object):
         else:
             assert self.skeleton or self.dense, "either skeleton or mesh (or both) should be displayed"
             assert output_dir
-            self.expected_n_input_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
+            # self.expected_n_input_joints = len(SMPL_MAJOR_JOINTS) if is_sparse else SMPL_NR_JOINTS
+            self.expected_n_input_joints = len(self.fk_engine.major_joints) if is_sparse else self.fk_engine.n_joints
             
     def create_clip_skeleton(self, joint_angles, title):
         """Creates clip of a given sequence in rotation matrix format.
@@ -99,16 +104,18 @@ class Visualizer(object):
 
         fname = title.replace('/', '.')
         fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
-        dir_prefix = 'skeleton'
-        out_dir = os.path.join(self.video_dir, dir_prefix, fname)
+        # dir_prefix = 'skeleton'
+        # out_dir = os.path.join(self.video_dir, dir_prefix, fname)
 
         animate_matplotlib(positions=[pos],
                            colors=[self.base_color],
                            titles=[""],
                            fig_title=title,
                            parents=self.fk_engine.parents,
-                           out_dir=out_dir,
-                           to_video=self.to_video)
+                           out_dir=self.out_dir,
+                           to_video=self.to_video,
+                           keep_frames=self.keep_frames,
+                           fname=fname)
 
     def create_clip_smpl(self, joint_angles, title):
         """Creates clip of a given sequence in rotation matrix format. Uses SMPL model.
@@ -269,8 +276,8 @@ class Visualizer(object):
     
         fname = title.replace('/', '.')
         fname = fname.split('_')[0]  # reduce name otherwise stupid OSes (i.e., all of them) can't handle it
-        dir_prefix = 'skeleton'
-        out_dir = os.path.join(self.video_dir, dir_prefix, fname)
+        # dir_prefix = 'skeleton'
+        # out_dir = os.path.join(self.video_dir, dir_prefix, fname)
 
         animate_matplotlib(positions=[pred_pos, targ_pos],
                            colors=[self.base_color, self.base_color],
@@ -279,9 +286,10 @@ class Visualizer(object):
                            parents=self.fk_engine.parents,
                            change_color_after_frame=(change_color_after_frame, None),
                            color_after_change=self.prediction_color,
-                           out_dir=out_dir,
+                           out_dir=self.out_dir,
                            fname=fname,
-                           to_video=self.to_video)
+                           to_video=self.to_video,
+                           keep_frames=self.keep_frames)
     
     def _visualize_offline_smpl(self, pred, targ, title, change_color_after_frame):
         """
@@ -325,7 +333,8 @@ class Visualizer(object):
 
 
 def animate_matplotlib(positions, colors, titles, fig_title, parents, change_color_after_frame=None,
-                       color_after_change=None, overlay=False, fps=60, out_dir=None, to_video=True, fname=None):
+                       color_after_change=None, overlay=False, fps=60, out_dir=None, to_video=True, fname=None,
+                       keep_frames=True):
     """
     Visualize motion given 3D positions. Can visualize several motions side by side. If the sequence lengths don't
     match, all animations are displayed until the shortest sequence length.
@@ -342,6 +351,7 @@ def animate_matplotlib(positions, colors, titles, fig_title, parents, change_col
         out_dir: output directory where the frames and video is stored. Don't pass for interactive visualization.
         to_video: whether to convert frames into video clip or not.
         fname: video file name.
+        keep_frames: Whether to keep video frames or not.
     """
     seq_length = np.amin([pos.shape[0] for pos in positions])
     n_joints = positions[0].shape[1]
@@ -435,11 +445,14 @@ def animate_matplotlib(positions, colors, titles, fig_title, parents, change_col
     if out_dir is None:
         plt.show()  # interactive
     else:
-        out_file = os.path.join(out_dir, fname + ".mp4")
-        save_to = os.path.join(out_dir, "frames")
+        video_dir = os.path.join(out_dir, "videos")
+        save_to = os.path.join(out_dir, "frames", fname + "_skeleton")
 
         if not os.path.exists(save_to):
             os.makedirs(save_to)
+            
+        if not os.path.exists(video_dir):
+            os.makedirs(video_dir)
 
         # Save frames to disk.
         for j in range(0, seq_length):
@@ -448,9 +461,11 @@ def animate_matplotlib(positions, colors, titles, fig_title, parents, change_col
 
         # Create a video clip.
         if to_video:
-            save_to_movie(out_file, os.path.join(save_to, 'frame_%04d.png'))
-            # Delete frames if they are not required to store.
-            # shutil.rmtree(save_to)
+            save_to_movie(os.path.join(video_dir, fname + "_skeleton.mp4"), os.path.join(save_to, 'frame_%04d.png'))
+        
+        # Delete frames if they are not required to store.
+        if not keep_frames:
+            shutil.rmtree(save_to)
         
     plt.close()
 

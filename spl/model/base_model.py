@@ -79,6 +79,7 @@ class BaseModel(object):
         self.use_quat = config['data_type'] == C.QUATERNION
         self.use_aa = config['data_type'] == C.ANGLE_AXIS
         self.use_rotmat = config['data_type'] == C.ROT_MATRIX
+        self.use_euler = config['data_type'] == C.EULER_ANGLE
         self.use_h36m = config.get("use_h36m", False)
         
         # Architecture.
@@ -100,7 +101,7 @@ class BaseModel(object):
         self.summary_update = None  # Summary op to write summaries. Set by `summary_routines`.
         
         # Hard-coded parameters.
-        self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa else 9
+        self.JOINT_SIZE = 4 if self.use_quat else 3 if self.use_aa or self.use_euler else 9
         self.NUM_JOINTS = 21 if self.use_h36m else 15
         self.HUMAN_SIZE = self.NUM_JOINTS*self.JOINT_SIZE
         self.input_size = self.HUMAN_SIZE
@@ -169,6 +170,19 @@ class BaseModel(object):
                 per_joint_loss = tf.reduce_sum(per_joint_loss, axis=-1)
                 per_joint_loss = tf.reduce_mean(per_joint_loss)
                 loss_ = per_joint_loss
+            
+            elif self.loss_type == C.LOSS_GEODESIC:
+                target_angles = tf.reshape(target_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                predicted_angles = tf.reshape(predicted_pose, [-1, seq_len, self.NUM_JOINTS, 3, 3])
+                m = tf.matmul(target_angles, predicted_angles, transpose_b=True)
+                cos = (m[:,:,:, 0,0] + m[:,:,:, 1,1] + m[:,:,:, 2,2] - 1) / 2
+                cos = tf.minimum(cos, tf.ones_like(cos))
+                cos = tf.maximum(cos, -1*tf.ones_like(cos))
+                theta = tf.acos(cos)
+
+                per_joint_loss = tf.reduce_sum(theta, axis=-1)
+                per_joint_loss = tf.reduce_mean(per_joint_loss)
+                loss_ = per_joint_loss
             else:
                 raise Exception("Unknown loss.")
             return loss_
@@ -215,8 +229,8 @@ class BaseModel(object):
         global_step = tf.train.get_global_step(graph=None)
         learning_rate = tf.train.exponential_decay(self.config.get('learning_rate'),
                                                    global_step=global_step,
-                                                   decay_steps=self.config.get('learning_rate_decay_steps'),
-                                                   decay_rate=self.config.get('learning_rate_decay_rate'),
+                                                   decay_steps=self.config.get('learning_rate_decay_steps', 1000),
+                                                   decay_rate=self.config.get('learning_rate_decay_rate', 0.98),
                                                    staircase=True)
         if self.config["optimizer"] == C.OPTIMIZER_ADAM:
             optimizer = tf.train.AdamOptimizer(learning_rate)
@@ -272,6 +286,7 @@ class BaseModel(object):
             config['use_h36m'] = args.use_h36m
     
             config['no_normalization'] = args.no_normalization
+            config['normalization_dim'] = args.normalization_dim
             config['batch_size'] = args.batch_size
             config['source_seq_len'] = args.source_seq_len
             config['target_seq_len'] = args.target_seq_len
@@ -299,6 +314,23 @@ class BaseModel(object):
             config['residual_velocity'] = args.residual_velocity
             config['loss_type'] = args.loss_type
             config['joint_prediction_layer'] = args.joint_prediction_layer
+
+            config['transformer_lr'] = args.transformer_lr
+            config['transformer_d_model'] = args.transformer_d_model
+            config['transformer_dropout_rate'] = args.transformer_dropout_rate
+            config['transformer_dff'] = args.transformer_dff
+            config['transformer_num_layers'] = args.transformer_num_layers
+            config['transformer_num_heads_temporal'] = args.transformer_num_heads_temporal
+            config['transformer_num_heads_spacial'] = args.transformer_num_heads_spacial
+            config['transformer_warm_up_steps'] = args.warm_up_steps
+            config['transformer_window_length'] = args.transformer_window_length
+
+            config['abs_pos_encoding'] = args.abs_pos_encoding
+            config['temp_abs_pos_encoding'] = args.temp_abs_pos_encoding
+            config['temp_rel_pos_encoding'] = args.temp_rel_pos_encoding
+            config['shared_templ_kv'] = args.shared_templ_kv
+            config['max_relative_position'] = args.max_relative_position
+
         else:
             config = from_config
         

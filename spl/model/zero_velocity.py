@@ -62,7 +62,7 @@ class ZeroVelocityBaseline(BaseModel):
         outputs = session.run(output_feed)
         return outputs[0], outputs[1], outputs[2]
     
-    def sampled_step(self, session):
+    def sampled_step(self, session, prediction_steps=None):
         assert self.is_eval, "Only works in sampling mode."
         prediction, targets, seed_sequence, data_id = session.run([self.outputs,
                                                                    self.prediction_targets,
