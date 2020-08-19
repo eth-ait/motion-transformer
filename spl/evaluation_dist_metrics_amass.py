@@ -741,7 +741,7 @@ if __name__ == '__main__':
                 eval_seq_len = 60
                 mode = "periodic"  # "periodic" or "all_test"
                 saved_metrics_p = os.path.join(_eval_dir, "dist_metrics_{}.npy".format(mode))
-                saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_all_test.npy")
+                saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_{}.npy".format(mode))
                 saved_training = os.path.join(_eval_dir, "amass_train_rotmat_{}.npy".format(eval_seq_len))
 
                 exp_id = os.path.split(_eval_dir)[-1].split("-")[0] + "-" + mode

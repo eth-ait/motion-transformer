@@ -117,4 +117,4 @@ class Dataset(object):
             print("Meta-data not found.")
             return False
         else:
-            return dict(np.load(meta_data_path))
+            return dict(np.load(meta_data_path, allow_pickle=True))
