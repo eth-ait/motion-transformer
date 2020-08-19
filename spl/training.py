@@ -35,6 +35,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+# from spl.model.transformer2d_full_baseline import Transformer2d
 from spl.model.vanilla import Transformer1d
 
 from visualization.fk import H36MForwardKinematics
