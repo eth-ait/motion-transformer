@@ -357,7 +357,7 @@ def create_model(session):
     train_model.optimization_routines()
     train_model.summary_routines()
     valid_model.summary_routines()
-    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=3, save_relative_paths=True)
 
     # Initialize a new model or load a pre-trained one.
     if args.experiment_id is None:
