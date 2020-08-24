@@ -44,6 +44,8 @@ from visualization.fk import H36M_MAJOR_JOINTS
 
 from metrics.motion_metrics import MetricsEngine
 from common.conversions import rotmat2euler, aa2rotmat
+from common.export_code import export_code
+
 
 try:
     from common.logger import GoogleSheetLogger
@@ -237,7 +239,7 @@ def create_model(session):
                                            shuffle=True,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_RANDOM,
-                                           num_parallel_calls=2,
+                                           num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
                                            normalization_dim=config.get("normalization_dim", "channel"))
         train_pl = train_data.get_tf_samples()
@@ -255,7 +257,7 @@ def create_model(session):
                                            shuffle=False,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_CENTER,
-                                           num_parallel_calls=2,
+                                           num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
                                            normalization_dim=config.get("normalization_dim", "channel"))
         valid_pl = valid_data.get_tf_samples()
@@ -268,7 +270,7 @@ def create_model(session):
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
-                                          num_parallel_calls=2,
+                                          num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
                                           normalization_dim=config.get("normalization_dim", "channel"),
                                           beginning_index=beginning_index)
@@ -322,7 +324,7 @@ def create_model(session):
                                                   target_len=config["target_seq_len"],
                                                   # extract_windows_of=extract_windows_of,
                                                   # extract_random_windows=False,
-                                                  num_parallel_calls=2,
+                                                  num_parallel_calls=4,
                                                   normalize=not config["no_normalization"],
                                                   normalization_dim=config.get("normalization_dim", "channel"))
             srnn_pl = srnn_data.get_tf_samples()
@@ -484,6 +486,8 @@ def train():
 
         # Create the model
         models, data, saver, global_step, experiment_dir, config = create_model(sess)
+        code_files = glob.glob('**/*.py', recursive=True)
+        export_code(code_files, os.path.join(experiment_dir, 'code.zip'))
 
         # If it is h36m data, iterate once over entire dataset to load all
         # ground-truth samples.
