@@ -419,7 +419,8 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     output_dir=eval_dir,
                                     skeleton=not args.no_skel,
                                     dense=not args.no_mesh,
-                                    to_video=args.to_video)
+                                    to_video=args.to_video,
+                                    keep_frames=False)
 
         # Find an entry by name
         # idxs = [i for i in range(32)]

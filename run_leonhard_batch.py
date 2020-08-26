@@ -1,6 +1,7 @@
 from subprocess import call
 import time
 
+
 """
 The working directory must be the same with python file's directory.
 """
@@ -9,7 +10,7 @@ NUM_CPU = 2
 MEMORY = 10000
 NUM_GPU = 1
 WALL_TIME = 23
-cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" -R "select[gpu_model0==GeForceGTX1080Ti]" '
+cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:00 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" -R "select[gpu_model0==GeForceRTX2080Ti]" '
 # cluster_command_format = 'bsub -G ls_hilli -n {} -W {}:50 -o log_{} -R "rusage[mem={}, ngpus_excl_p={}]" '
 
 
@@ -68,8 +69,7 @@ transformer_experiments = [
     # '--transformer_num_heads_spacial 8 --transformer_num_heads_temporal 8 '
     # '--transformer_num_layers 8 --transformer_d_model 128 '
     # '--transformer_dff 256 --data_type rotmat --shared_templ_kv ',
-]
-
+    ]
 
 transformer_h36m = [
     'python spl/training.py '
@@ -107,43 +107,33 @@ transformer_h36m = [
     '--transformer_dropout_rate 0.1 --transformer_lr 1 '
     '--temp_pos_encoding --temp_rel_pos_encoding --data_type rotmat '
     '--normalization_dim channel --warm_up_steps 1000 ',
+    ]
+
+reproducing_exp = [
+    'python spl/training.py '
+    '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
+    '--glog_comment "24efb498-wuLR20k" ',
     
-    # 'python spl/training.py '
-    # '--glog_comment "idrop02-clip1" '
-    # '--input_dropout_rate 0.2 '
-    # '--num_epochs 15000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    # '--data_type rotmat --batch_size 64 '
-    # '--model_type rnn --cell_type gru '
-    # '--joint_prediction_layer spl ',
-    #
-    # 'python spl/training.py '
-    # '--glog_comment "idrop02-clip1" '
-    # '--input_dropout_rate 0.2 '
-    # '--num_epochs 15000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    # '--data_type rotmat --batch_size 100 '
-    # '--model_type rnn --cell_type gru '
-    # '--joint_prediction_layer spl ',
-    #
-    # 'python spl/training.py '
-    # '--glog_comment "idrop01" '
-    # '--input_dropout_rate 0.1 '
-    # '--num_epochs 15000 --use_h36m --source_seq_len 50 --target_seq_len 10 '
-    # '--data_type rotmat --batch_size 64 '
-    # '--model_type rnn --cell_type gru '
-    # '--joint_prediction_layer spl_sparse ',
-]
+    'python spl/training.py '
+    '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
+    '--glog_comment "24efb498-wuLR20k" ',
+    
+    'python spl/training.py '
+    '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
+    '--glog_comment "24efb498-wuLR20k" ',
+    ]
 
 # Create a unique experiment timestamp.
 experiment_timestamp = str(int(time.time()))
-for work_id, experiment in enumerate(transformer_experiments):
-    experiment_id = "{}.{}".format(experiment_timestamp, work_id+1)
-    time.sleep(1)
-    print(experiment_id)
-    experiment_command = experiment + ' --new_experiment_id ' + experiment_id
-
-    cluster_command = cluster_command_format.format(NUM_CPU,
-                                                    WALL_TIME,
-                                                    experiment_id,
-                                                    MEMORY,
-                                                    NUM_GPU)
-    call([cluster_command + experiment_command], shell=True)
+for work_id, experiment in enumerate(reproducing_exp):
+  experiment_id = "{}.{}".format(experiment_timestamp, work_id + 1)
+  time.sleep(1)
+  print(experiment_id)
+  experiment_command = experiment + ' --new_experiment_id ' + experiment_id
+  
+  cluster_command = cluster_command_format.format(NUM_CPU,
+                                                  WALL_TIME,
+                                                  experiment_id,
+                                                  MEMORY,
+                                                  NUM_GPU)
+  call([cluster_command + experiment_command], shell=True)
