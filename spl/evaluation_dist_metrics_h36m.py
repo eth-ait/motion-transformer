@@ -30,7 +30,7 @@ from spl.data.amass_tf import TFRecordMotionDataset
 from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
-from spl.model.transformer import Transformer2d
+from spl.model.transformer_h36m import Transformer2d
 from spl.model.vanilla import Transformer1d
 
 import visualization.fk as fk
@@ -38,8 +38,6 @@ from common.constants import Constants as C
 from visualization.fk import H36MForwardKinematics
 from common.conversions import get_closest_rotmat, sparse_to_full, is_valid_rotmat
 from common.conversions import rotmat2euler, aa2rotmat
-
-from visualization.render import animate_matplotlib
 
 from metrics.distribution_metrics import power_spectrum
 from metrics.distribution_metrics import ps_entropy
@@ -469,18 +467,6 @@ def evaluate(session, test_model, test_data, args, eval_dir, train_data=None, mo
                                                                       _srnn_iter,
                                                                       _srnn_pl,
                                                                       undo_norm_fn)
-
-    # from visualization.render import Visualizer
-    # visualizer = Visualizer(interactive=False, fk_engine=fk_engine,
-    #                         rep="rotmat",
-    #                         output_dir=eval_dir,
-    #                         skeleton=True,
-    #                         dense=False,
-    #                         to_video=True)
-    # for i in range(8):
-    #     prediction, target, seed = eval_result["{}/walking".format(i)]
-    #     visualizer.visualize_results(seed, prediction, target,
-    #                                  title="walking" + "_i{}".format(i))
 
     exp_id_ = os.path.split(eval_dir)[-1].split("-")[0] + "-" + mode
     model_name_ = '-'.join(os.path.split(eval_dir)[-1].split('-')[1:])

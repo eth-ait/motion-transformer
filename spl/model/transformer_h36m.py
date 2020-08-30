@@ -1,6 +1,30 @@
+"""
+Our ST-Transformer implementation for the H3.6M dataset. On this dataset, we
+share key and value layers in the temporal block. We also experimented with 6D
+representation and geodesic loss, but did not use in the final model.
+
+We use different files for amass (transformer.py) and h36m (transformer_h36m.py)
+datasets to be able to restore our old models trained on amass dataset.
+"""
+"""
+Copyright (C) 2019 ETH Zurich, Emre Aksan, Manuel Kaufmann
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
 import numpy as np
 import tensorflow as tf
-import spl.util.tf_utils as model_utils
 from spl.model.base_model import BaseModel
 from common.constants import Constants as C
 from common.conversions import compute_rotation_matrix_from_ortho6d
@@ -158,6 +182,18 @@ class Transformer2d(BaseModel):
 
         matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., num_heads, attn_dim, attn_dim)
 
+        batch_size = tf.shape(q)[0]
+        heads = tf.shape(q)[1]
+        length = tf.shape(q)[2]
+        
+        if rel_key_emb is not None:
+            q_t = tf.transpose(q, [2, 0, 1, 3])
+            q_t_r = tf.reshape(q_t, [length, heads*batch_size, -1])
+            q_tz_matmul = tf.matmul(q_t_r, rel_key_emb, transpose_b=True)
+            q_tz_matmul_r = tf.reshape(q_tz_matmul, [length, batch_size, heads, -1])
+            q_tz_matmul_r_t = tf.transpose(q_tz_matmul_r, [1, 2, 0, 3])
+            matmul_qk += q_tz_matmul_r_t
+
         # scale matmul_qk
         dk = tf.cast(tf.shape(k)[-1], tf.float32)
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
@@ -171,6 +207,14 @@ class Transformer2d(BaseModel):
 
         # attention_weights = tf.layers.dropout(attention_weights, training=is_training, rate=0.2)
         output = tf.matmul(attention_weights, v)  # (..., num_heads, attn_dim, depth)
+        
+        if rel_val_emb is not None:
+            w_t = tf.transpose(attention_weights, [2, 0, 1, 3])
+            w_t_r = tf.reshape(w_t, [length, heads*batch_size, -1])
+            w_tz_matmul = tf.matmul(w_t_r, rel_val_emb, transpose_b=False)
+            w_tz_matmul_r = tf.reshape(w_tz_matmul, [length, batch_size, heads, -1])
+            w_tz_matmul_r_t = tf.transpose(w_tz_matmul_r, [1, 2, 0, 3])
+            output += w_tz_matmul_r_t
 
         return output, attention_weights
 
@@ -181,9 +225,7 @@ class Transformer2d(BaseModel):
         '''
         size = self.window_len
         mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-        # return mask  # (seq_len, seq_len)
-        tiled_mask = tf.reshape(tf.tile(tf.expand_dims(mask, axis=-1), [1, 1, self.NUM_JOINTS]), [size, size*self.NUM_JOINTS])
-        return tiled_mask  # (seq_len, n_joints*seq_len)
+        return mask  # (seq_len, seq_len)
 
     def get_angles(self, pos, i):
         '''
@@ -257,7 +299,6 @@ class Transformer2d(BaseModel):
         # different joints have different embedding matrices
         for joint_idx in range(self.NUM_JOINTS):
             joint_var_scope = scope + "joint_" + str(joint_idx)
-            # joint_var_scope = scope + "joint_x"
             with tf.variable_scope(joint_var_scope, reuse=tf.AUTO_REUSE):
                 # with tf.variable_scope('joint_' + str(joint_idx), reuse=self.reuse):
 
@@ -268,27 +309,20 @@ class Transformer2d(BaseModel):
                 with tf.variable_scope('_query', reuse=self.reuse):
                     q = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
                 if self.shared_templ_kv:
-                    v = tf.reshape(tf.transpose(v_all, [1, 2, 0, 3]), [batch_size, self.NUM_JOINTS*seq_len, self.d_model])  # (batch_size, seq_len*num_joints, d_model)
-                    k = tf.reshape(tf.transpose(k_all, [1, 2, 0, 3]), [batch_size, self.NUM_JOINTS*seq_len, self.d_model])  # (batch_size, seq_len*num_joints, d_model)
-                    # v = v_all[joint_idx]
-                    # k = k_all[joint_idx]
+                    v = v_all[joint_idx]
+                    k = k_all[joint_idx]
                 else:
-                    kv_data = tf.reshape(tf.transpose(x, [1, 2, 0, 3]), [batch_size, self.NUM_JOINTS*seq_len, self.d_model])  # (batch_size, seq_len*num_joints, d_model)
                     with tf.variable_scope('_key', reuse=self.reuse):
-                        # k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                        k = tf.layers.dense(kv_data, self.d_model)  # (batch_sizm_seq_len*num_joints, d_model)
+                        k = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
                     with tf.variable_scope('_value', reuse=self.reuse):
-                        # v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
-                        v = tf.layers.dense(kv_data, self.d_model)  # (batch_size, seq_len*num_joints, d_model)
+                        v = tf.layers.dense(joint_rep, self.d_model)  # (batch_size, seq_len, d_model)
 
                 # split it to several attention heads
                 q = self.sep_split_heads(q, batch_size, seq_len, self.num_heads_temporal)
                 # (batch_size, num_heads, seq_len, depth)
-                # k = self.sep_split_heads(k, batch_size, seq_len, self.num_heads_temporal)
-                k = self.sep_split_heads(k, batch_size, self.NUM_JOINTS*seq_len, self.num_heads_temporal)
+                k = self.sep_split_heads(k, batch_size, seq_len, self.num_heads_temporal)
                 # (batch_size, num_heads, seq_len, depth)
-                # v = self.sep_split_heads(v, batch_size, seq_len, self.num_heads_temporal)
-                v = self.sep_split_heads(v, batch_size, self.NUM_JOINTS*seq_len, self.num_heads_temporal)
+                v = self.sep_split_heads(v, batch_size, seq_len, self.num_heads_temporal)
                 # (batch_size, num_heads, seq_len, depth)
                 # calculate the updated encoding by scaled dot product attention
                 scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask, self.is_training, rel_key_emb, rel_val_emb)
@@ -417,7 +451,15 @@ class Transformer2d(BaseModel):
             with tf.variable_scope("ln_temporal", reuse=self.reuse):
                 temporal_out = tf.contrib.layers.layer_norm(attn1 + x)
 
-            out = temporal_out
+            # spatial attention
+            attn2, attn_weights_block2 = self.sep_spacial_attention(x, None, scope="spatial_attn")
+            with tf.variable_scope("dropout_spatial", reuse=self.reuse):
+                attn2 = tf.layers.dropout(attn2, training=self.is_training, rate=self.dropout_rate)
+            with tf.variable_scope("ln_spatial", reuse=self.reuse):
+                spatial_out = tf.contrib.layers.layer_norm(attn2 + x)
+
+            # add the temporal output and the spatial output
+            out = temporal_out + spatial_out
 
             # feed forward
             ffn_output = self.point_wise_feed_forward_network(out, scope='feed_forward')
@@ -426,7 +468,7 @@ class Transformer2d(BaseModel):
             with tf.variable_scope("ln_ff", reuse=self.reuse):
                 final = tf.contrib.layers.layer_norm(ffn_output + out)
 
-            return final, attn_weights_block1, tf.ones_like(attn_weights_block1)
+            return final, attn_weights_block1, attn_weights_block2
 
     def transformer(self, inputs, look_ahead_mask):
         '''
@@ -460,7 +502,7 @@ class Transformer2d(BaseModel):
         attention_weights_spatial = []
         attention_weights = {}
         
-        # look_ahead_mask = look_ahead_mask[:inp_seq_len, :inp_seq_len]
+        look_ahead_mask = look_ahead_mask[:inp_seq_len, :inp_seq_len]
         for i in range(self.num_layers):
             x, block1, block2 = self.para_transformer_layer(x, look_ahead_mask, scope="transformer_layer_" + str(i))
             attention_weights_temporal += [block1]  # (batch_size, num_joints, num_heads, seq_len)

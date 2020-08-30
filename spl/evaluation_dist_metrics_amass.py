@@ -31,8 +31,6 @@ from spl.model.transformer import Transformer2d
 from spl.model.vanilla import Transformer1d
 
 from common.constants import Constants as C
-from visualization.render import Visualizer
-from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
 from common.conversions import get_closest_rotmat, sparse_to_full, is_valid_rotmat
 
@@ -41,8 +39,6 @@ from metrics.distribution_metrics import ps_entropy
 from metrics.distribution_metrics import ps_kld
 from metrics.distribution_metrics import compute_npss
 
-import seaborn as sn
-import pandas as pd
 from metrics.motion_metrics import MetricsEngine
 import matplotlib.pyplot as plt
 

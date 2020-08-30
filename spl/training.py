@@ -35,6 +35,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.transformer_h36m import Transformer2d as Transformer2dH36M
 # from spl.model.transformer2d_full_baseline import Transformer2d
 from spl.model.vanilla import Transformer1d
 
@@ -160,13 +161,15 @@ def load_latest_checkpoint(sess, saver, experiment_dir):
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
 
 
-def get_model_cls(model_type):
+def get_model_cls(model_type, is_h36m=False):
     if model_type == C.MODEL_ZERO_VEL:
         return ZeroVelocityBaseline
     elif model_type == C.MODEL_RNN:
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D and is_h36m:
+        return Transformer2dH36M
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
     elif model_type == "transformer1d":
@@ -183,24 +186,25 @@ def create_model(session):
     if args.experiment_id is not None:
         experiment_dir = glob.glob(os.path.join(save_dir, args.experiment_id + "-*"), recursive=False)[0]
         config = json.load(open(os.path.join(experiment_dir, "config.json"), "r"))
-        model_cls = get_model_cls(config["model_type"])
+        model_cls = get_model_cls(config["model_type"], config["use_h36m"])
     else:
         # Initialize config and experiment name.
         if args.from_config is not None:
             from_config = json.load(open(args.from_config, "r"))
-            model_cls = get_model_cls(from_config["model_type"])
+            model_cls = get_model_cls(from_config["model_type"], from_config["use_h36m"])
             
             # TODO(emre) quick hack to run with shorter seed sequence.
             if args.source_seq_len < 120:
                 from_config["source_seq_len"] = args.source_seq_len
         else:
             from_config = None
-            model_cls = get_model_cls(args.model_type)
+            model_cls = get_model_cls(args.model_type, args.use_h36m)
         config, experiment_name = model_cls.get_model_config(args, from_config)
         experiment_dir = os.path.normpath(os.path.join(save_dir, experiment_name))
         os.mkdir(experiment_dir)
 
     tf.random.set_random_seed(config["seed"])
+    print("Using model " + model_cls.__name__)
 
     # Set data paths.
     data_dir = args.data_dir if args.data_dir else os.environ["AMASS_DATA"]
@@ -376,7 +380,7 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
             # Get the predictions and ground truth values
             prediction_steps = _eval_model.target_seq_len
             res = _eval_model.sampled_step(sess, prediction_steps=prediction_steps)
-            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+            if args.model_type == "transformer2d" or args.model_type == "transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
                 prediction, targets, seed_sequence, data_id = res
@@ -413,7 +417,7 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
         while True:
             # get the predictions and ground truth values
             res = _eval_model.sampled_step(sess)
-            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+            if args.model_type == "transformer2d" or args.model_type == "transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
                 prediction, targets, seed_sequence, data_id = res

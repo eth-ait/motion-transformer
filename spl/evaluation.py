@@ -28,6 +28,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.transformer_h36m import Transformer2d as Transformer2dH36M
 from spl.model.vanilla import Transformer1d
 
 from common.constants import Constants as C
@@ -127,13 +128,15 @@ def load_latest_checkpoint(session, saver, experiment_dir):
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
 
 
-def get_model_cls(model_type):
+def get_model_cls(model_type, is_h36m=False):
     if model_type == C.MODEL_ZERO_VEL:
         return ZeroVelocityBaseline
     elif model_type == C.MODEL_RNN:
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D and is_h36m:
+        return Transformer2dH36M
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
     elif model_type == "transformer1d":
@@ -143,7 +146,8 @@ def get_model_cls(model_type):
 
 
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split):
-    model_cls = get_model_cls(config["model_type"])
+    model_cls = get_model_cls(config["model_type"], config["use_h36m"])
+    print("Using model " + model_cls.__name__)
 
     window_length = config["source_seq_len"] + config["target_seq_len"]
     sample_keys = sample_keys_amass
