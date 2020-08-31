@@ -123,7 +123,8 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, srnn_dir
                                               target_len=config["target_seq_len"],
                                               num_parallel_calls=2,
                                               normalize=not config["no_normalization"],
-                                              normalization_dim=config.get("normalization_dim", "channel"))
+                                              normalization_dim=config.get("normalization_dim", "channel"),
+                                              use_std_norm=config.get("use_std_norm", False),)
         
         srnn_pl = srnn_data.get_tf_samples()
     print("Loading test data from " + srnn_path)

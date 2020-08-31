@@ -143,7 +143,9 @@ tf.app.flags.DEFINE_boolean("temp_abs_pos_encoding", False, "-")
 tf.app.flags.DEFINE_boolean("temp_rel_pos_encoding", False, "-")
 tf.app.flags.DEFINE_boolean("shared_templ_kv", False, "-")
 tf.app.flags.DEFINE_integer("max_relative_position", 50, "-")
+
 tf.app.flags.DEFINE_enum("normalization_dim", "channel", ["channel", "all"], "Channel-wise or global normalization.")
+tf.app.flags.DEFINE_boolean("use_std_norm", False, "-")
 
 args = tf.app.flags.FLAGS
 
@@ -245,7 +247,8 @@ def create_model(session):
                                            window_type=C.DATA_WINDOW_RANDOM,
                                            num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
-                                           normalization_dim=config.get("normalization_dim", "channel"))
+                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                           use_std_norm=config.get("use_std_norm", False))
         train_pl = train_data.get_tf_samples()
     
     with tf.name_scope("validation_data"):
@@ -259,7 +262,8 @@ def create_model(session):
                                            window_type=C.DATA_WINDOW_CENTER,
                                            num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
-                                           normalization_dim=config.get("normalization_dim", "channel"))
+                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                           use_std_norm=config.get("use_std_norm", False))
         valid_pl = valid_data.get_tf_samples()
     
     with tf.name_scope("test_data"):
@@ -273,7 +277,8 @@ def create_model(session):
                                           num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
                                           normalization_dim=config.get("normalization_dim", "channel"),
-                                          beginning_index=beginning_index)
+                                          beginning_index=beginning_index,
+                                          use_std_norm=config.get("use_std_norm", False))
         test_pl = test_data.get_tf_samples()
 
     # Models.
@@ -324,7 +329,8 @@ def create_model(session):
                                                   # extract_random_windows=False,
                                                   num_parallel_calls=4,
                                                   normalize=not config["no_normalization"],
-                                                  normalization_dim=config.get("normalization_dim", "channel"))
+                                                  normalization_dim=config.get("normalization_dim", "channel"),
+                                                  use_std_norm=config.get("use_std_norm", False))
             srnn_pl = srnn_data.get_tf_samples()
 
         with tf.name_scope("SRNN"):

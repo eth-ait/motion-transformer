@@ -33,6 +33,7 @@ class Dataset(object):
         self.shuffle = shuffle
         self.normalize = kwargs.get("normalize", True)
         self.normalization_dim = kwargs.get("normalization_dim", "channel")  # "channel" or "all"
+        self.use_std_norm = kwargs.get("use_std_norm", False)  # Use variance or standard deviation of the data for normalization. This was a bug :) But we found that variance works much better for amass.
         
         if self.normalization_dim == "channel":
             self.normalization_func = self.normalize_zero_mean_unit_variance_channel
@@ -46,11 +47,14 @@ class Dataset(object):
         self.data_summary()
 
         self.mean_all = self.meta_data['mean_all']
-        # self.var_all = np.sqrt(self.meta_data['var_all'])
-        self.var_all = self.meta_data['var_all']
         self.mean_channel = self.meta_data['mean_channel']
-        # self.var_channel = np.sqrt(self.meta_data['var_channel'])
-        self.var_channel = self.meta_data['var_channel']
+        
+        if self.use_std_norm:
+            self.var_all = np.sqrt(self.meta_data['var_all'])
+            self.var_channel = np.sqrt(self.meta_data['var_channel'])
+        else:
+            self.var_all = self.meta_data['var_all']
+            self.var_channel = self.meta_data['var_channel']
 
         self.tf_data_transformations()
         self.tf_data_normalization()

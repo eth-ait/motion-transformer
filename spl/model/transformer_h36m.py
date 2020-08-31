@@ -52,12 +52,12 @@ class Transformer2d(BaseModel):
         self.temp_rel_pos_encoding = config.get('temp_rel_pos_encoding', False)
         self.shared_templ_kv = config.get('shared_templ_kv', False)
     
-        self.window_len = min(config.get('transformer_window_length', 120), self.source_seq_len + self.target_seq_len - 1)  # It may not fit into gpu memory.
-        
-        # self.data_input and self.data_targets are aligned, but there might be
-        # differences between them in terms of preprocessing or representation.
-        self.target_input = self.data_inputs[:, :self.window_len, :]  # Ignore the rest if the input/target sequences are longer.
-        self.target_real = self.data_targets[:, 1:self.window_len+1, :]
+        # self.window_len = min(config.get('transformer_window_length', 120), self.source_seq_len + self.target_seq_len - 1)  # It may not fit into gpu memory.
+        #
+        # # self.data_input and self.data_targets are aligned, but there might be
+        # # differences between them in terms of preprocessing or representation.
+        self.target_input = self.data_inputs[:, :-1, :]
+        self.target_real = self.data_targets[:, 1:, :]
 
         self.pos_encoding = self.positional_encoding()
         self.look_ahead_mask = self.create_look_ahead_mask()
