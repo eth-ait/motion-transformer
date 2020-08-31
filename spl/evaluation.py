@@ -222,7 +222,7 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
     session.run(_eval_iter.initializer)
 
     using_attention_model = False
-    if isinstance(_eval_model, Transformer2d):
+    if isinstance(_eval_model, Transformer2d) or isinstance(_eval_model, Transformer2dH36M):
         print("Using Attention Model.")
         using_attention_model = True
     
@@ -345,7 +345,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     test_iter = test_data.get_iterator()
 
     using_attention_model = False
-    if isinstance(test_model, Transformer2d):
+    if isinstance(test_model, Transformer2d) or isinstance(test_model, Transformer2dH36M):
         using_attention_model = True
 
     # Create metrics engine including summaries
@@ -390,12 +390,11 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
             static_values=static_values)
 
     print("Evaluating test set...")
-    undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
     test_metrics, eval_result, attention_weights = evaluate_model(session,
                                                                   test_model,
                                                                   test_iter,
                                                                   metrics_engine,
-                                                                  undo_norm_fn,
+                                                                  test_data.unnormalization_func,
                                                                   _return_results=True)
 
     print(metrics_engine.get_summary_string_all(test_metrics, target_lengths,

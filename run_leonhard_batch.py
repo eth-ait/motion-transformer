@@ -112,15 +112,11 @@ transformer_h36m = [
 reproducing_exp = [
     'python spl/training.py '
     '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
-    '--glog_comment "24efb498-wuLR20k" ',
+    '--glog_comment "f7fb419fc-std" ',
     
     'python spl/training.py '
     '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
-    '--glog_comment "24efb498-wuLR20k" ',
-    
-    'python spl/training.py '
-    '--from_config ./pretrained_configs/1573450146-transformer2d/config.json '
-    '--glog_comment "24efb498-wuLR20k" ',
+    '--glog_comment "f7fb419fc-std" ',
     ]
 
 # Create a unique experiment timestamp.
