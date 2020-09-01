@@ -52,8 +52,8 @@ class Transformer2d(BaseModel):
         self.temp_rel_pos_encoding = config.get('temp_rel_pos_encoding', False)
         self.shared_templ_kv = config.get('shared_templ_kv', False)
     
-        # self.window_len = min(config.get('transformer_window_length', 120), self.source_seq_len + self.target_seq_len - 1)  # It may not fit into gpu memory.
-        #
+        self.window_len = min(config.get('transformer_window_length', 120), self.source_seq_len + self.target_seq_len - 1)  # It may not fit into gpu memory.
+        
         # # self.data_input and self.data_targets are aligned, but there might be
         # # differences between them in terms of preprocessing or representation.
         self.target_input = self.data_inputs[:, :-1, :]
@@ -83,7 +83,7 @@ class Transformer2d(BaseModel):
         """
         config, experiment_name = super(Transformer2d, cls).get_model_config(args, from_config)
 
-        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
+        experiment_name_format = "{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         config["model_type"],
                                                         "h36m" if config["use_h36m"] else "amass",

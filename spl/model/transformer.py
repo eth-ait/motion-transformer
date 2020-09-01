@@ -64,7 +64,7 @@ class Transformer2d(BaseModel):
         """
         config, experiment_name = super(Transformer2d, cls).get_model_config(args, from_config)
 
-        experiment_name_format = "{}-{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
+        experiment_name_format = "{}-{}-{}_{}-b{}-in{}_out{}-t{}-s{}-l{}-dm{}-df{}-w{}-{}"
         experiment_name = experiment_name_format.format(config["experiment_id"],
                                                         config["model_type"],
                                                         "h36m" if config["use_h36m"] else "amass",

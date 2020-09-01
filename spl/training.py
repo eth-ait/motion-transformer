@@ -206,7 +206,7 @@ def create_model(session):
         os.mkdir(experiment_dir)
 
     tf.random.set_random_seed(config["seed"])
-    print("Using model " + model_cls.__name__)
+    print("Using model " + str(model_cls))
 
     # Set data paths.
     data_dir = args.data_dir if args.data_dir else os.environ["AMASS_DATA"]
