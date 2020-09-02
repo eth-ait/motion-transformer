@@ -47,8 +47,6 @@ from metrics.motion_metrics import MetricsEngine
 from common.conversions import rotmat2euler, aa2rotmat
 from common.export_code import export_code
 
-try:
-    from common.logger import GoogleSheetLogger
 
 try:
     from common.logger import GoogleSheetLogger
@@ -253,10 +251,6 @@ def create_model(session):
                                            use_std_norm=config.get("use_std_norm", False))
         train_pl = train_data.get_tf_samples()
     
-    # 1-second evaluation.
-    eval_target_len = 25 if config["use_h36m"] else 60
-    window_length = config["source_seq_len"] + eval_target_len
-    
     with tf.name_scope("validation_data"):
         if config.get("exhaustive_validation", False):
             window_length = 0
@@ -296,11 +290,9 @@ def create_model(session):
             reuse=False)
         train_model.build_graph()
 
-    eval_config = config.copy()
-    # eval_config["target_seq_len"] = 25 if config["use_h36m"] else 60
     with tf.name_scope(C.SAMPLE):
         valid_model = model_cls(
-            config=eval_config,
+            config=config,
             data_pl=valid_pl,
             mode=C.SAMPLE,
             reuse=True)
@@ -308,7 +300,7 @@ def create_model(session):
 
     with tf.name_scope(C.TEST):
         test_model = model_cls(
-            config=eval_config,
+            config=config,
             data_pl=test_pl,
             mode=C.SAMPLE,
             reuse=True)
