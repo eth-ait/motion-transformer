@@ -28,6 +28,7 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.transformer_h36m import Transformer2d as Transformer2dH36M
 from spl.model.vanilla import Transformer1d
 
 from common.constants import Constants as C
@@ -127,13 +128,15 @@ def load_latest_checkpoint(session, saver, experiment_dir):
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
 
 
-def get_model_cls(model_type):
+def get_model_cls(model_type, is_h36m=False):
     if model_type == C.MODEL_ZERO_VEL:
         return ZeroVelocityBaseline
     elif model_type == C.MODEL_RNN:
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D and is_h36m:
+        return Transformer2dH36M
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
     elif model_type == "transformer1d":
@@ -143,7 +146,8 @@ def get_model_cls(model_type):
 
 
 def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_test_split):
-    model_cls = get_model_cls(config["model_type"])
+    model_cls = get_model_cls(config["model_type"], config["use_h36m"])
+    print("Using model " + model_cls.__name__)
 
     window_length = config["source_seq_len"] + config["target_seq_len"]
     sample_keys = sample_keys_amass
@@ -181,6 +185,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                          use_std_norm=config.get("use_std_norm", False),
                                           beginning_index=beginning_index,
                                           filter_by_key=filter_sample_keys,
                                           apply_length_filter=False)
@@ -217,7 +222,7 @@ def evaluate_model(session, _eval_model, _eval_iter, _metrics_engine,
     session.run(_eval_iter.initializer)
 
     using_attention_model = False
-    if isinstance(_eval_model, Transformer2d):
+    if isinstance(_eval_model, Transformer2d) or isinstance(_eval_model, Transformer2dH36M):
         print("Using Attention Model.")
         using_attention_model = True
     
@@ -340,7 +345,7 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
     test_iter = test_data.get_iterator()
 
     using_attention_model = False
-    if isinstance(test_model, Transformer2d):
+    if isinstance(test_model, Transformer2d) or isinstance(test_model, Transformer2dH36M):
         using_attention_model = True
 
     # Create metrics engine including summaries
@@ -385,12 +390,11 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
             static_values=static_values)
 
     print("Evaluating test set...")
-    undo_norm_fn = test_data.unnormalize_zero_mean_unit_variance_channel
     test_metrics, eval_result, attention_weights = evaluate_model(session,
                                                                   test_model,
                                                                   test_iter,
                                                                   metrics_engine,
-                                                                  undo_norm_fn,
+                                                                  test_data.unnormalization_func,
                                                                   _return_results=True)
 
     print(metrics_engine.get_summary_string_all(test_metrics, target_lengths,
@@ -419,7 +423,8 @@ def evaluate(session, test_model, test_data, args, eval_dir, use_h36m):
                                     output_dir=eval_dir,
                                     skeleton=not args.no_skel,
                                     dense=not args.no_mesh,
-                                    to_video=args.to_video)
+                                    to_video=args.to_video,
+                                    keep_frames=False)
 
         # Find an entry by name
         # idxs = [i for i in range(32)]

@@ -1,6 +1,6 @@
 """
 SPL: training and evaluation of neural networks with a structured prediction layer.
-Copyright (C) .
+Copyright (C) 2019 ETH Zurich, Emre Aksan, Manuel Kaufmann
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -31,8 +31,6 @@ from spl.model.transformer import Transformer2d
 from spl.model.vanilla import Transformer1d
 
 from common.constants import Constants as C
-from visualization.render import Visualizer
-from visualization.fk import H36MForwardKinematics
 from visualization.fk import SMPLForwardKinematics
 from common.conversions import get_closest_rotmat, sparse_to_full, is_valid_rotmat
 
@@ -41,8 +39,6 @@ from metrics.distribution_metrics import ps_entropy
 from metrics.distribution_metrics import ps_kld
 from metrics.distribution_metrics import compute_npss
 
-import seaborn as sn
-import pandas as pd
 from metrics.motion_metrics import MetricsEngine
 import matplotlib.pyplot as plt
 
@@ -212,6 +208,7 @@ def create_and_restore_model(session, experiment_dir, data_dir, config, dynamic_
                                           num_parallel_calls=2,
                                           normalize=not config["no_normalization"],
                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                          use_std_norm=config.get("use_std_norm", False),
                                           beginning_index=beginning_index,
                                           filter_by_key=filter_sample_keys,
                                           apply_length_filter=False)
@@ -741,7 +738,7 @@ if __name__ == '__main__':
                 eval_seq_len = 60
                 mode = "periodic"  # "periodic" or "all_test"
                 saved_metrics_p = os.path.join(_eval_dir, "dist_metrics_{}.npy".format(mode))
-                saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_all_test.npy")
+                saved_predictions = os.path.join(_eval_dir, "eval_samples_preds_{}.npy".format(mode))
                 saved_training = os.path.join(_eval_dir, "amass_train_rotmat_{}.npy".format(eval_seq_len))
 
                 exp_id = os.path.split(_eval_dir)[-1].split("-")[0] + "-" + mode

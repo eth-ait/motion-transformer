@@ -287,6 +287,8 @@ class BaseModel(object):
     
             config['no_normalization'] = args.no_normalization
             config['normalization_dim'] = args.normalization_dim
+            config['use_std_norm'] = args.use_std_norm
+            
             config['batch_size'] = args.batch_size
             config['source_seq_len'] = args.source_seq_len
             config['target_seq_len'] = args.target_seq_len

@@ -15,7 +15,7 @@ tf.enable_eager_execution()
 # Here we load full-length test dataset in rotation matrix format. You can set
 # the path manually.
 DATA_DIR = os.environ["AMASS_DATA"]
-# DATA_DIR = '<path-to-data>'
+# DATA_DIR = '/media/eaksan/Warehouse-SSD2/Projects/motion-modelling/data/h3.6m/tfrecords'
 TRAIN_DATA_PATH = os.path.join(DATA_DIR, "quat", "training",
                                "amass-?????-of-?????")
 VALID_DATA_PATH = os.path.join(DATA_DIR, "quat", "validation",
@@ -85,3 +85,43 @@ print("Validation Entropy: ", valid_ent.mean())
 
 print("Train -> Valid KLD: ", ps_kld(train_ps, valid_ps).mean())
 print("Valid -> Train KLD: ", ps_kld(valid_ps, train_ps).mean())
+
+"""
+H3.6M ROTMAT
+Training Entropy:  0.6879303034898961
+Validation Entropy:  0.6914626436299748
+Train -> Valid KLD:  0.00019910731667157326
+Valid -> Train KLD:  0.00020651284232743624
+
+H3.6M AA
+Training Entropy:  1.030456081442283
+Validation Entropy:  1.0256683212345559
+Train -> Valid KLD:  0.000935693467787958
+Valid -> Train KLD:  0.0009007654765174061
+
+H3.6M QUAT
+Training Entropy:  0.7616054139405295
+Validation Entropy:  0.759497232470289
+Train -> Valid KLD:  0.0006352943544436511
+Valid -> Train KLD:  0.0006281378823478356
+
+###########################33
+
+AMASS ROTMAT
+Training Entropy:  0.3190181311324122
+Validation Entropy:  0.20668640466683785
+Train -> Valid KLD:  0.016662914189846546
+Valid -> Train KLD:  0.00914850194890248
+
+AMASS AA
+Training Entropy:  0.6378890617154102
+Validation Entropy:  0.25937128132463455
+Train -> Valid KLD:  0.1251075505438437
+Valid -> Train KLD:  0.05372268695675013
+
+AMASS QUAT
+Training Entropy:  0.37272389837598313
+Validation Entropy:  0.19645105700035953
+Train -> Valid KLD:  0.03156473215301844
+Valid -> Train KLD:  0.018747517068028532
+"""

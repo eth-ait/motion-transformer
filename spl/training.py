@@ -35,6 +35,8 @@ from spl.model.zero_velocity import ZeroVelocityBaseline
 from spl.model.rnn import RNN
 from spl.model.seq2seq import Seq2SeqModel
 from spl.model.transformer import Transformer2d
+from spl.model.transformer_h36m import Transformer2d as Transformer2dH36M
+# from spl.model.transformer2d_full_baseline import Transformer2d
 from spl.model.vanilla import Transformer1d
 
 from visualization.fk import H36MForwardKinematics
@@ -43,6 +45,10 @@ from visualization.fk import H36M_MAJOR_JOINTS
 
 from metrics.motion_metrics import MetricsEngine
 from common.conversions import rotmat2euler, aa2rotmat
+from common.export_code import export_code
+
+try:
+    from common.logger import GoogleSheetLogger
 
 try:
     from common.logger import GoogleSheetLogger
@@ -139,7 +145,9 @@ tf.app.flags.DEFINE_boolean("temp_abs_pos_encoding", False, "-")
 tf.app.flags.DEFINE_boolean("temp_rel_pos_encoding", False, "-")
 tf.app.flags.DEFINE_boolean("shared_templ_kv", False, "-")
 tf.app.flags.DEFINE_integer("max_relative_position", 50, "-")
+
 tf.app.flags.DEFINE_enum("normalization_dim", "channel", ["channel", "all"], "Channel-wise or global normalization.")
+tf.app.flags.DEFINE_boolean("use_std_norm", False, "-")
 
 args = tf.app.flags.FLAGS
 
@@ -157,13 +165,15 @@ def load_latest_checkpoint(sess, saver, experiment_dir):
         raise (ValueError, "Checkpoint {0} does not seem to exist".format(ckpt.model_checkpoint_path))
 
 
-def get_model_cls(model_type):
+def get_model_cls(model_type, is_h36m=False):
     if model_type == C.MODEL_ZERO_VEL:
         return ZeroVelocityBaseline
     elif model_type == C.MODEL_RNN:
         return RNN
     elif model_type == C.MODEL_SEQ2SEQ:
         return Seq2SeqModel
+    elif model_type == C.MODEL_TRANS2D and is_h36m:
+        return Transformer2dH36M
     elif model_type == C.MODEL_TRANS2D:
         return Transformer2d
     elif model_type == "transformer1d":
@@ -180,24 +190,25 @@ def create_model(session):
     if args.experiment_id is not None:
         experiment_dir = glob.glob(os.path.join(save_dir, args.experiment_id + "-*"), recursive=False)[0]
         config = json.load(open(os.path.join(experiment_dir, "config.json"), "r"))
-        model_cls = get_model_cls(config["model_type"])
+        model_cls = get_model_cls(config["model_type"], config["use_h36m"])
     else:
         # Initialize config and experiment name.
         if args.from_config is not None:
             from_config = json.load(open(args.from_config, "r"))
-            model_cls = get_model_cls(from_config["model_type"])
+            model_cls = get_model_cls(from_config["model_type"], from_config["use_h36m"])
             
-            # TODO quick hack to run with shorter seed sequence.
+            # TODO(emre) quick hack to run with shorter seed sequence.
             if args.source_seq_len < 120:
                 from_config["source_seq_len"] = args.source_seq_len
         else:
             from_config = None
-            model_cls = get_model_cls(args.model_type)
+            model_cls = get_model_cls(args.model_type, args.use_h36m)
         config, experiment_name = model_cls.get_model_config(args, from_config)
         experiment_dir = os.path.normpath(os.path.join(save_dir, experiment_name))
         os.mkdir(experiment_dir)
 
     tf.random.set_random_seed(config["seed"])
+    print("Using model " + str(model_cls))
 
     # Set data paths.
     data_dir = args.data_dir if args.data_dir else os.environ["AMASS_DATA"]
@@ -236,9 +247,10 @@ def create_model(session):
                                            shuffle=True,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_RANDOM,
-                                           num_parallel_calls=2,
+                                           num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
-                                           normalization_dim=config.get("normalization_dim", "channel"))
+                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                           use_std_norm=config.get("use_std_norm", False))
         train_pl = train_data.get_tf_samples()
     
     # 1-second evaluation.
@@ -254,9 +266,10 @@ def create_model(session):
                                            shuffle=False,
                                            extract_windows_of=window_length,
                                            window_type=C.DATA_WINDOW_CENTER,
-                                           num_parallel_calls=2,
+                                           num_parallel_calls=4,
                                            normalize=not config["no_normalization"],
-                                           normalization_dim=config.get("normalization_dim", "channel"))
+                                           normalization_dim=config.get("normalization_dim", "channel"),
+                                           use_std_norm=config.get("use_std_norm", False))
         valid_pl = valid_data.get_tf_samples()
     
     with tf.name_scope("test_data"):
@@ -267,10 +280,11 @@ def create_model(session):
                                           shuffle=False,
                                           extract_windows_of=window_length,
                                           window_type=C.DATA_WINDOW_BEGINNING,
-                                          num_parallel_calls=2,
+                                          num_parallel_calls=4,
                                           normalize=not config["no_normalization"],
                                           normalization_dim=config.get("normalization_dim", "channel"),
-                                          beginning_index=beginning_index)
+                                          beginning_index=beginning_index,
+                                          use_std_norm=config.get("use_std_norm", False))
         test_pl = test_data.get_tf_samples()
 
     # Models.
@@ -321,9 +335,10 @@ def create_model(session):
                                                   target_len=config["target_seq_len"],
                                                   # extract_windows_of=extract_windows_of,
                                                   # extract_random_windows=False,
-                                                  num_parallel_calls=2,
+                                                  num_parallel_calls=4,
                                                   normalize=not config["no_normalization"],
-                                                  normalization_dim=config.get("normalization_dim", "channel"))
+                                                  normalization_dim=config.get("normalization_dim", "channel"),
+                                                  use_std_norm=config.get("use_std_norm", False))
             srnn_pl = srnn_data.get_tf_samples()
 
         with tf.name_scope("SRNN"):
@@ -354,7 +369,7 @@ def create_model(session):
     train_model.optimization_routines()
     train_model.summary_routines()
     valid_model.summary_routines()
-    saver = tf.train.Saver(tf.global_variables(), max_to_keep=1, save_relative_paths=True)
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=3, save_relative_paths=True)
 
     # Initialize a new model or load a pre-trained one.
     if args.experiment_id is None:
@@ -379,7 +394,7 @@ def evaluate_model(sess, _eval_model, _eval_iter, _metrics_engine,
             # Get the predictions and ground truth values
             prediction_steps = _eval_model.target_seq_len
             res = _eval_model.sampled_step(sess, prediction_steps=prediction_steps)
-            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+            if args.model_type == "transformer2d" or args.model_type == "transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
                 prediction, targets, seed_sequence, data_id = res
@@ -416,7 +431,7 @@ def _evaluate_srnn_poses(sess, _eval_model, _srnn_iter, _gt_euler,
         while True:
             # get the predictions and ground truth values
             res = _eval_model.sampled_step(sess)
-            if args.model_type=="transformer2d" or args.model_type=="transformer1d":
+            if args.model_type == "transformer2d" or args.model_type == "transformer1d":
                 prediction, targets, seed_sequence, data_id, attention = res
             else:
                 prediction, targets, seed_sequence, data_id = res
@@ -483,6 +498,8 @@ def train():
 
         # Create the model
         models, data, saver, global_step, experiment_dir, config = create_model(sess)
+        code_files = glob.glob('**/*.py', recursive=True)
+        export_code(code_files, os.path.join(experiment_dir, 'code.zip'))
 
         # If it is h36m data, iterate once over entire dataset to load all
         # ground-truth samples.

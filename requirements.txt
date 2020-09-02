@@ -11,3 +11,7 @@ ujson==1.35
 jsonschema==2.6.0
 scipy==1.1.0
 numpy==1.14.5
+gspread==3.0.1
+llvmlite==0.32.1
+seaborn==0.9.0
+pandas==0.23.4
