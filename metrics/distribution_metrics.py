@@ -3,6 +3,7 @@ import numpy as np
 
 def power_spectrum(seq):
     """
+    # seq = seq[:, :, 0:-1:12, :]  # 5 fps for amass (in 60 fps)
     
     Args:
       seq: (batch_size, n_joints, seq_len, feature_size)
@@ -19,9 +20,6 @@ def power_spectrum(seq):
 
     seq_t = np.reshape(seq_t, [seq_t.shape[0], seq_t.shape[1], 1, -1])
     seq = np.transpose(seq_t, [0, 2, 1, 3])
-    
-    # seq = seq[:, :, 0:25:5, :]  # 5 fps for h36m (in 25 fps)
-    # seq = seq[:, :, 0:-1:12, :]  # 5 fps for amass (in 60 fps)
     
     seq_fft = np.fft.fft(seq, axis=2)
     seq_ps = np.abs(seq_fft)**2

@@ -304,9 +304,9 @@ def calculate_srnn_loss_given_samples(euler_samples):
     
     assert pred.shape[-1] == SRNN_SIZE
     assert targ.shape[-1] == SRNN_SIZE
-    assert (np.where(np.reshape(seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(targ, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(targ, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
     
     for sample_id in euler_samples.keys():
         _action = sample_id.split('/')[-1]
@@ -474,22 +474,24 @@ def evaluate(session, test_model, test_data, args, eval_dir, train_data=None, mo
     
     log_euler_loss(euler_loss, exp_id_, model_name_)
     
-    save_dir_ = os.path.join(eval_dir, mode)
-    if not os.path.exists(save_dir_):
-        os.mkdir(save_dir_)
-    np.save(os.path.join(save_dir_, "srnn_test_preds_euler"), eval_result_euler)
-    np.save(os.path.join(save_dir_, "srnn_test_preds_rotmat"), eval_result)
+    # save_dir_ = os.path.join(eval_dir, mode)
+    # if not os.path.exists(save_dir_):
+    #     os.mkdir(save_dir_)
+    # np.save(os.path.join(save_dir_, "srnn_test_preds_euler"), eval_result_euler)
+    # np.save(os.path.join(save_dir_, "srnn_test_preds_rotmat"), eval_result)
     
-    # Load training data.
+    # # Load training data.
     # train_samples = load_data_samples(session, train_data, n_samples=20000)
     # train_samples = train_samples.astype(np.float32)
     # np.save(os.path.join(save_dir_, "h36m_train_rotmat"), train_samples)
     # train_samples_euler = rotmat_to_euler_padded(train_samples)
     # train_samples_euler = train_samples_euler.astype(np.float32)
     # np.save(os.path.join(save_dir_, "h36m_train_euler"), train_samples_euler)
-    # dist_results_ = calculate_dist_metrics(save_dir_, train_samples, eval_result, rep="rotmat", fk_engine=fk_engine)
+    # # dist_results_ = calculate_dist_metrics(save_dir_, train_samples, eval_result, rep="rotmat", fk_engine=fk_engine)
+    # dist_results_ = calculate_dist_metrics(save_dir_, train_samples_euler, eval_result_euler, rep="euler", fk_engine=fk_engine)
     # np.save(os.path.join(save_dir_, "dist_metrics_" + mode), dist_results_)
     # log_metrics(_args, dist_results_, exp_id_, model_name_)
+    return eval_result_euler, eval_result
     
 
 def split_into_chunks(tensor, split_len, chunk_id=None):
@@ -584,10 +586,10 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     assert all_gt_train.shape[-1]*all_gt_train.shape[-2] == SRNN_SIZE
     assert all_gt_train.shape[1] == all_gt_test.shape[1]
     assert all_pred.shape[1] == all_gt_test.shape[1]
-    assert (np.where(np.reshape(all_gt_train, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(all_gt_seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(all_pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(all_gt_target, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(all_gt_train, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(all_gt_seed, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(all_pred, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(all_gt_target, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
 
     all_gt_train = np.transpose(all_gt_train, (0, 2, 1, 3))
     all_pred = np.transpose(all_pred, (0, 2, 1, 3))
@@ -599,9 +601,9 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     # all_gt_target = all_gt_target[:, H36M_MAJOR_JOINTS]
     # all_gt_test = all_gt_test[:, H36M_MAJOR_JOINTS]
     
-    ps_gt_test = power_spectrum(all_gt_test)
-    ps_gt_train = power_spectrum(all_gt_train)
-    ps_gt_target = power_spectrum(all_gt_target)
+    ps_gt_test = power_spectrum(all_gt_test[:, :, 0:25:5, :])  # 5 fps for h36m (in 25 fps)
+    ps_gt_train = power_spectrum(all_gt_train[:, :, 0:25:5, :])
+    ps_gt_target = power_spectrum(all_gt_target[:, :, 0:25:5, :])
     
     results = dict()
     ent_gt_train = ps_entropy(ps_gt_train)
@@ -626,8 +628,9 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     results["kld_target_test"] = list()
     
     pred_len = all_pred.shape[2]
+    # all_pred = all_pred[:, :, 0:25:5, :]  # 5 fps for h36m (in 25 fps)
     for sec, frame in enumerate(range(0, pred_len - eval_seq_len + 1, eval_seq_len)):
-        ps_pred = power_spectrum(all_pred[:, :, frame:frame + eval_seq_len])
+        ps_pred = power_spectrum(all_pred[:, :, frame:frame + eval_seq_len][:, :, 0:25:5, :])
         
         ent_pred = ps_entropy(ps_pred)
         results["entropy_prediction"].append(ent_pred.mean())
@@ -655,7 +658,7 @@ def calculate_dist_metrics(eval_dir, train_samples, eval_samples, eval_seq_len=2
     
         kld_target_test = ps_kld(ps_gt_target, ps_gt_test)
         results["kld_target_test"].append(kld_target_test.mean())
-            
+        
     return results
 
 
@@ -702,8 +705,8 @@ def calculate_npss_metrics(eval_samples, actions):
 
     assert main_targets.shape[-1] == SRNN_SIZE
     assert main_predictions.shape[-1] == SRNN_SIZE
-    assert (np.where(np.reshape(main_targets, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
-    assert (np.where(np.reshape(main_predictions, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(main_targets, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
+    # assert (np.where(np.reshape(main_predictions, [-1, 96]).std(0) == 0)[0] != SRNN_ZERO_DIMS).sum() == 0, "0-dims don't match!"
     
     idx_400 = 10
     idx_1000 = 25
@@ -743,13 +746,16 @@ def log_metrics(args, results, exp_id, model_name, actions=None, sheet_name=None
         print("GT Test -> GT Train KLD: ", results["kld_test_train"])
         glog_entry["kld_test_train"] = results["kld_test_train"]
         glog_entry["kld_avg_train_test"] = (results["kld_test_train"] + results["kld_train_test"])/2
+        print("Test PS KLD: ", (results["kld_test_train"] + results["kld_train_test"])/2)
         
         n_entries = len(results["entropy_prediction"])
         for sec in range(n_entries):
             i = str(sec + 1)
+            print("[{}] PS Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
+            print("[{}] PS KLD: {}".format(sec + 1, (results["kld_prediction_target"][sec] + results["kld_target_prediction"][sec])/2))
+            
             print("[{}] Prediction Entropy: {}".format(sec + 1, results["entropy_prediction"][sec]))
             glog_entry[i + "_entropy_pred"] = results["entropy_prediction"][sec]
-        
             print("[{}] KLD Prediction -> GT Train: {}".format(sec + 1, results["kld_prediction_train"][sec]))
             print("[{}] KLD GT Train -> Prediction: {}".format(sec + 1, results["kld_train_prediction"][sec]))
             glog_entry[i + "_avg_kld_pred_train"] = (results["kld_prediction_train"][sec] + results["kld_train_prediction"][sec]) / 2
@@ -913,12 +919,15 @@ if __name__ == '__main__':
                 model_name = '-'.join(os.path.split(_eval_dir)[-1].split('-')[1:])
 
                 save_dir = _eval_dir
-                saved_metrics_p = os.path.join(save_dir, "dist_metrics.npy")
-                saved_samples = os.path.join(save_dir, "h36m_train_euler.npy")
-                srnn_samples = os.path.join(save_dir, "srnn_test_preds_euler.npy")
+                saved_metrics_p = os.path.join(save_dir, mode, "dist_metrics.npy")
+                saved_samples = os.path.join(save_dir, mode, "h36m_train_euler.npy")
+                srnn_samples = os.path.join(save_dir, mode, "srnn_test_preds_euler.npy")
                 
-                if not os.path.exists(_eval_dir):
-                    os.mkdir(_eval_dir)
+                if not os.path.exists(save_dir):
+                    os.mkdir(save_dir)
+                
+                if not os.path.exists(os.path.join(save_dir, mode)):
+                    os.mkdir(os.path.join(save_dir, mode))
 
                 # # Just log the existing metrics.
                 # if os.path.exists(saved_metrics_p):
@@ -926,42 +935,35 @@ if __name__ == '__main__':
                 #     log_metrics(_args, dist_results, exp_id, model_name, which_actions)
                 
                 if not os.path.exists(saved_samples) or not os.path.exists(srnn_samples):
-                    if not os.path.exists(_eval_dir):
-                        os.mkdir(_eval_dir)
-
                     _test_model, _test_data, _train_data = create_and_restore_model(sess, _experiment_dir, _data_dir, _config, srnn_dir)
                     print("Evaluating Model " + str(model_id))
-                    evaluate(sess, _test_model, _test_data, _args, _eval_dir, _train_data, mode)
+                    eval_result_euler, eval_result_rotmat = evaluate(sess, _test_model, _test_data, _args, _eval_dir, _train_data, mode)
+
+                    np.save(os.path.join(save_dir, mode, "srnn_test_preds_euler"), eval_result_euler)
+                    np.save(os.path.join(save_dir, mode, "srnn_test_preds_rotmat"), eval_result_rotmat)
+                    
+                    train_samples = load_data_samples(sess, _train_data, n_samples=20000)
+                    train_samples = train_samples.astype(np.float32)
+                    np.save(os.path.join(save_dir, mode, "h36m_train_rotmat"), train_samples)
+                    train_samples_euler = rotmat_to_euler_padded(train_samples)
+                    train_samples_euler = train_samples_euler.astype(np.float32)
+                    np.save(os.path.join(save_dir, mode, "h36m_train_euler"), train_samples_euler)
                 else:
-                    if os.path.exists(saved_samples):  # Both NPSS and distribution metrics.
-                        _train_samples = np.load(saved_samples)
-                        _eval_samples = np.load(os.path.join(save_dir, "srnn_test_preds_euler.npy")).tolist()
-                        fk_engine = H36MForwardKinematics()
+                    train_samples_euler = np.load(saved_samples)
+                    eval_result_euler = np.load(os.path.join(save_dir, mode, "srnn_test_preds_euler.npy")).tolist()
+            
+                # euler_loss = calculate_srnn_loss_given_samples(eval_result_euler)
+                # log_euler_loss(euler_loss, exp_id, model_name)
 
-                        # euler_loss = calculate_srnn_loss_given_samples(_eval_samples)
-                        # log_euler_loss(euler_loss, exp_id, model_name)
-                        
-                        if not os.path.exists(save_dir):
-                            os.mkdir(save_dir)
-    
-                        if not which_actions:
-                            which_actions = set()
-                            for key_ in _eval_samples.keys():
-                                which_actions.add(key_.split("/")[1])
-                        
-                        dist_results = calculate_dist_metrics(save_dir, _train_samples, _eval_samples, rep="pos", fk_engine=fk_engine, eval_seq_len=eval_len, actions=which_actions)
-                        np.save(os.path.join(save_dir, "dist_metrics_" + mode), dist_results)
-                        log_metrics(_args, dist_results, exp_id, model_name, which_actions)
-    
-                    if os.path.exists(srnn_samples):  # Only NPSS.
-                        _eval_samples = np.load(os.path.join(save_dir, "srnn_test_preds_euler.npy")).tolist()
+                if not which_actions:
+                    which_actions = set()
+                    for key_ in eval_result_euler.keys():
+                        which_actions.add(key_.split("/")[1])
 
-                        which_actions = set()
-                        for key_ in _eval_samples.keys():
-                            which_actions.add(key_.split("/")[1])
-
-                        npss_results = calculate_npss_metrics(_eval_samples, which_actions)
-                        log_metrics(_args, npss_results, exp_id, model_name, which_actions)
+                fk_engine = H36MForwardKinematics()
+                dist_results = calculate_dist_metrics(save_dir, train_samples_euler, eval_result_euler, rep="euler", fk_engine=fk_engine, eval_seq_len=eval_len, actions=which_actions)
+                np.save(os.path.join(save_dir, "dist_metrics_" + mode), dist_results)
+                log_metrics(_args, dist_results, exp_id, model_name, which_actions)
                 
         except Exception as e:
             print("Something went wrong when evaluating model {}".format(model_id))
