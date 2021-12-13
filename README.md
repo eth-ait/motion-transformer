@@ -1,7 +1,7 @@
 ## A Spatio-temporal Transformer for 3D Human Motion Prediction 
-Code repository for [our paper](https://arxiv.org/abs/2004.08692). It is under review. Please do not distribute the code. 
+Code repository for [our paper](https://arxiv.org/abs/2004.08692).
 
-We implement and evaluate our model by using the publicly available code repository of [Aksan et al. (2019)](https://github.com/eth-ait/spl). 
+We implement and evaluate our model by using our previous work's publicly available code repository [SPL](https://github.com/eth-ait/spl). 
 Instructions are copied here as they are intact. We provide data preprocessing scripts, training pipeline, evaluation and visualization tools.
 
 Our ST-Transformer and vanilla Transformer implementations can be found in `spl/model/transformer.py` and `spl/model/vanilla.py`, respectively.
