@@ -90,4 +90,4 @@ You can use google for the detailed steps.
 If you use data from DIP or AMASS, please cite the original papers as detailed on their website.
 
 ### Contact
-Please file an issue or contact [Emre Aksan (emre.aksan@inf.ethz.ch)](mailto:emre.aksan@inf.ethz.ch) or [Manuel Kaufmann (manuel.kaufmann@inf.ethz.ch)](mailto:manuel.kaufmann@inf.ethz.ch)
+Please file an issue or contact [Emre Aksan](mailto:emre.aksan@inf.ethz.ch) or [Manuel Kaufmann](mailto:manuel.kaufmann@inf.ethz.ch)
