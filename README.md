@@ -68,9 +68,9 @@ python spl/training.py --from_config <path-to-a-model-config.json>
 ``` 
 Training our ST-Transformer model (`pretrained_configs/1573450146-transformer2d`) takes 10-12 hours on a RTX 2080 Ti GPU. 
 
-Due to the stochastic nature of training, you many not get exactly the same results. 
+Due to the stochastic nature of training, you may not get exactly the same results. 
 However, you should get marginally better or worse models. If this is not the case, please contact us. 
-The models we used in the paper can be [downloaded from here](https://ait.ethz.ch/projects/2019/spl/downloads/spl_models.zip).
+The models we used in the paper can be [downloaded from here](https://files.ait.ethz.ch/projects/spl/spl_models.zip).
 You can run evaluation with them or visualize their results. Note that `QuaterNet` models are not there yet. 
 
 ### Pre-trained Models
